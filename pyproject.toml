@@ -9,7 +9,12 @@ version = "0.1.0"
 description = "One large, connected, seamless local memory system on DuckDB: every useful kind of memory welded into one suite that works with DuckDB, a true superset of Letta, Zep/Graphiti, Cognee and Mem0, modular so new kinds of memory can be added as they appear, free and open for everyone to use and maintain."
 requires-python = ">=3.10"
 # The packages this project's code needs, as name==version, one per line.
-dependencies = []
+dependencies = [
+    "alembic>=1.20.0",
+    "duckdb==1.5.6",
+    "duckdb-engine==0.17.0",
+    "sqlalchemy>=2.0.35"
+]
 
 [dependency-groups]
 # The gating checkers, pinned to the versions the laptop's sovereign_tools
@@ -24,6 +29,8 @@ dev = [
     "deptry==0.25.1",
     "pytest==9.1.1",
     "coverage==7.15.4",
+    "cognee==1.6.5",
+    "pytest-asyncio==1.4.0",
 ]
 # Reported, never blocking.
 advisory = [
@@ -91,4 +98,7 @@ package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "sem
 
 [tool.deptry.per_rule_ignores]
 # The test runner is declared as a development package and imported by tests.
-DEP004 = ["pytest"]
+DEP004 = ["pytest", "pytest_asyncio"]
+
+[project.entry-points."sqlalchemy.dialects"]
+"duckdb.aio" = "src.duckdb_sqlalchemy_async_dialect:DuckDBAsyncDialect"

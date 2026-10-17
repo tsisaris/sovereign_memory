@@ -1,0 +1,4 @@
+__init__
+duckdb_sqlalchemy_async_alembic
+duckdb_sqlalchemy_async_bridge
+duckdb_sqlalchemy_async_dialect

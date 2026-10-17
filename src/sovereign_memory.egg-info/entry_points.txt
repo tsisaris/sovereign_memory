@@ -1,0 +1,2 @@
+[sqlalchemy.dialects]
+duckdb.aio = src.duckdb_sqlalchemy_async_dialect:DuckDBAsyncDialect

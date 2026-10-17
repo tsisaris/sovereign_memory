@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: sovereign_memory
+Version: 0.1.0
+Summary: One large, connected, seamless local memory system on DuckDB: every useful kind of memory welded into one suite that works with DuckDB, a true superset of Letta, Zep/Graphiti, Cognee and Mem0, modular so new kinds of memory can be added as they appear, free and open for everyone to use and maintain.
+Requires-Python: >=3.10
+License-File: LICENSE
+License-File: NOTICE
+Requires-Dist: duckdb==1.5.6
+Requires-Dist: duckdb-engine==0.17.0
+Requires-Dist: sqlalchemy>=2.0.39
+Dynamic: license-file
