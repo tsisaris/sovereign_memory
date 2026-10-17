@@ -7,7 +7,7 @@
 name = "sovereign_memory"
 version = "0.1.0"
 description = "One large, connected, seamless local memory system on DuckDB: every useful kind of memory welded into one suite that works with DuckDB, a true superset of Letta, Zep/Graphiti, Cognee and Mem0, modular so new kinds of memory can be added as they appear, free and open for everyone to use and maintain."
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 # The packages this project's code needs, as name==version, one per line.
 dependencies = [
     "alembic==1.13.3",
@@ -59,7 +59,7 @@ select = [
 ]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 ignore_missing_imports = true
 check_untyped_defs = true
 # Classes ruled ADVISORY in sovereign/pyproject.toml (no birth case yet).
@@ -73,7 +73,7 @@ disable_error_code = [
 exclude = ["^data/sovereign/", "^local/"]
 
 [tool.pyright]
-pythonVersion = "3.10"
+pythonVersion = "3.12"
 # Gating class: reportUndefinedVariable (UC-5). Nothing else gates.
 typeCheckingMode = "off"
 reportUndefinedVariable = "error"
@@ -104,7 +104,7 @@ DEP004 = ["pytest", "pytest_asyncio"]
 "duckdb.aio" = "duckdb_sqlalchemy_async_dialect:DuckDBAsyncDialect"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
