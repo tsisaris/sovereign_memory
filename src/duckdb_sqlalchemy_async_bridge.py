@@ -113,7 +113,10 @@ class AsyncConnection:
 
     async def commit(self) -> None:
         """Commit the current transaction."""
-        await self._execute_in_thread(self._conn.commit)
+        try:
+            await self._execute_in_thread(self._conn.commit)
+        except duckdb.TransactionException:
+            pass
 
     async def rollback(self) -> None:
         """Roll back the current transaction."""
@@ -128,7 +131,10 @@ class AsyncConnection:
 
     async def begin(self) -> None:
         """Begin a new transaction."""
-        await self._execute_in_thread(self._conn.execute, "BEGIN")
+        try:
+            await self._execute_in_thread(self._conn.execute, "BEGIN")
+        except duckdb.TransactionException:
+            pass
 
     def __getattr__(self, name: str) -> Any:
         """Forward missing attributes to duckdb connection."""
