@@ -1,0 +1,70 @@
+# Runs on GitHub's own machines for every pull request and every push to main.
+# Everything installs from public package indexes, so nothing depends on the
+# laptop. When this fails on a pull request Jules created, Jules receives the
+# failure and fixes it inside the same task.
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gating:
+    name: gating checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.10"
+      - name: install the project and its checkers
+        run: uv sync --group dev
+      - name: every check in .pre-commit-config.yaml
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+      - name: every import declared, every declaration used (deptry)
+        run: |
+          set -o pipefail
+          uv run deptry src tests 2>&1 | tee deptry_output.txt
+          if grep -q '^Assuming' deptry_output.txt; then
+            echo "FAIL: deptry guessed a package's module name instead of reading it from an installed package."
+            exit 1
+          fi
+      - name: tests
+        run: |
+          set +e
+          uv run coverage run -m pytest
+          status=$?
+          set -e
+          if [ "$status" -eq 5 ]; then
+            if find src -name '*.py' -print -quit | grep -q .; then
+              echo "FAIL: src/ holds code but no test was collected from tests/."
+              exit 1
+            fi
+            echo "NO CODE AND NO TESTS YET: nothing to test in an empty project."
+            exit 0
+          fi
+          exit "$status"
+
+  advisory:
+    name: advisory checks (reported, never blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.10"
+      - name: install the advisory checkers
+        run: uv sync --only-group advisory
+      - name: unused code (vulture)
+        run: uv run --no-sync vulture src --min-confidence 80
+      - name: complexity (radon)
+        run: |
+          uv run --no-sync radon cc -n C src
+          uv run --no-sync radon mi -n B src
+      - name: rule files (semgrep)
+        run: uv run --no-sync semgrep scan --config rules --metrics off --error src
