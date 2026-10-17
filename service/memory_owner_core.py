@@ -70,6 +70,20 @@ class OwnerCore:
         """
         # Validate syntax and semantics
         self.validator.validate_event(event_data, payload_content)
+        import hashlib
+
+        # Actual v2 hash validation strictly required.
+        if payload_content is not None:
+            actual_hash = hashlib.sha256(payload_content).hexdigest()
+            if event_data.get("payload_sha256", "") != actual_hash:
+                raise ValueError(
+                    f"Payload hash mismatch: expected {event_data.get('payload_sha256')}, got {actual_hash}"
+                )
+        elif (
+            event_data.get("schema_version", "").startswith("2.")
+            and event_data.get("payload_ref", "") == "inline"
+        ):
+            raise ValueError("Missing inline payload content bytes to verify against SHA256")
 
         event_id = event_data["event_id"]
         schema_version = event_data.get("schema_version", "1.0.0")
@@ -117,7 +131,41 @@ class OwnerCore:
             # Check for idempotency: if event exists, simply return it (or its current state)
             cursor = await self.conn.cursor()
             await cursor.execute("SELECT 1 FROM memory_events WHERE event_id = ?", (event_id,))
-            if await cursor.fetchone():
+            existing = await cursor.fetchone()
+            if existing:
+                # Enforce hash conflict verification on retry identical
+                await cursor.execute(
+                    "SELECT payload_sha256 FROM memory_events WHERE event_id = ?", (event_id,)
+                )
+                existing_hash = await cursor.fetchone()
+                if existing_hash and existing_hash[0] != payload_sha256:
+                    await self.conn.rollback()
+                    raise ValueError(
+                        f"Conflict: Event {event_id} already exists with different payload hash {existing_hash[0]}"
+                    )
+
+                # Return durable current receipts, not incoming state
+                await cursor.execute(
+                    "SELECT tier, processor_id, processor_version, projection_version, status, attempt_id, attempted_at, completed_at, error_ref FROM memory_receipts WHERE event_id = ?",
+                    (event_id,),
+                )
+                existing_receipts = await cursor.fetchall()
+
+                result_receipts = {}
+                for r in existing_receipts:
+                    result_receipts[r[0]] = {
+                        "event_id": event_id,
+                        "processor_id": r[1],
+                        "processor_version": r[2],
+                        "projection_version": r[3],
+                        "status": r[4],
+                        "attempt_id": r[5],
+                        "attempted_at": r[6],
+                        "completed_at": r[7],
+                        "error_ref": r[8],
+                    }
+
+                event_data["tier_receipts"] = result_receipts
                 await self.conn.commit()
                 return event_data
 
@@ -150,6 +198,22 @@ class OwnerCore:
                     """,
                     r,
                 )
+
+            # Reconstruct the return dictionary from the actual durably written pending receipts
+            result_receipts = {}
+            for r in receipts:
+                result_receipts[r[1]] = {
+                    "event_id": event_id,
+                    "processor_id": r[2],
+                    "processor_version": r[3],
+                    "projection_version": r[4],
+                    "status": r[5],
+                    "attempt_id": r[6],
+                    "attempted_at": r[7],
+                    "completed_at": r[8],
+                    "error_ref": r[9],
+                }
+            event_data["tier_receipts"] = result_receipts
 
             await self.conn.commit()
             return event_data
