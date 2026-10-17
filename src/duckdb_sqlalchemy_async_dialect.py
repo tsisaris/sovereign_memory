@@ -1,179 +1,72 @@
-"""
-Asynchronous SQLAlchemy dialect for DuckDB.
-
-This dialect wraps duckdb_engine's Dialect using the asynchronous bridge,
-implementing standard SQLAlchemy asynchronous interfaces.
-"""
+"""Adapt the buffered asynchronous DuckDB bridge to SQLAlchemy's async engine."""
 
 from duckdb_engine import Dialect as DuckDBDialect
-from sqlalchemy.connectors.asyncio import (
-    AsyncAdapt_dbapi_connection,
-    AsyncAdapt_dbapi_cursor,
-    await_fallback,
-)
+from sqlalchemy.connectors.asyncio import AsyncAdapt_dbapi_connection, AsyncAdapt_dbapi_cursor
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
+from sqlalchemy.util.concurrency import await_only
 
 import duckdb_sqlalchemy_async_bridge
 
 
 class AsyncAdapt_duckdb_cursor(AsyncAdapt_dbapi_cursor):
-    """
-    Async cursor adapter for DuckDB.
-
-    This adapts the DuckDB async cursor to SQLAlchemy's expected async cursor interface.
-    """
+    """Expose a buffered bridge cursor through SQLAlchemy's synchronous facade."""
 
     def _aenter_cursor(self, cursor):
-        """
-        Await the cursor generation correctly.
-        """
-        if hasattr(cursor, "__aenter__"):
-            return self.await_(cursor.__aenter__())
+        """Resolve the bridge's asynchronous logical-cursor factory."""
         return self.await_(cursor)
+
+    @property
+    def connection(self):
+        """Expose the owner for inherited PostgreSQL notice processing."""
+        return self._adapt_connection
 
 
 class AsyncAdapt_duckdb_connection(AsyncAdapt_dbapi_connection):
-    """
-    Async connection adapter for DuckDB.
-
-    This adapts the DuckDB async connection to SQLAlchemy's expected async connection interface.
-    """
+    """Use the normal SQLAlchemy async adapter and the bridge's transaction gate."""
 
     _cursor_cls = AsyncAdapt_duckdb_cursor
 
+    @property
+    def notices(self):
+        """Return this connection's notices to the inherited execution context."""
+        return self._connection.notices
+
     def begin(self):
-        """Begin."""
+        """Begin on the same handle that all logical cursors execute against."""
         self.await_(self._connection.begin())
 
-    def rollback(self):
-        """Rollback."""
-        self.await_(self._connection.rollback())
-
-    def commit(self):
-        """Commit."""
-        self.await_(self._connection.commit())
-
-
-class AsyncAdaptFallback_duckdb_connection(AsyncAdapt_duckdb_connection):
-    """
-    Fallback connection wrapper for DuckDB.
-
-    This creates an async connection from an awaitable connect function for SQLAlchemy.
-    """
-
-    __slots__ = ()
-
-    await_ = staticmethod(await_fallback)  # type: ignore[assignment]
-
-    def __init__(self, dbapi, connection_awaitable):
-        """
-        Initialize the fallback adapter.
-
-        Input: A dbapi instance and a coroutine to resolve a connection.
-        Output: None.
-        Never: Leaves the connection unresolved.
-        """
-        self.dbapi = dbapi
-        self._connection = self.await_(connection_awaitable)
-        import asyncio
-
-        self._execute_mutex = asyncio.Lock()
-
-
-# Define execution context clearly to avoid monkey patching global psycopg2.
-# We map it securely without monkey patching process-wide state.
-class DuckDBAsyncExecutionContext(DuckDBDialect.execution_ctx_cls):  # type: ignore[valid-type, name-defined, misc]
-    """
-    Custom execution context for DuckDB async dialect.
-
-    Overrides post_exec without globally patching PostgreSQL contexts.
-    duckdb_engine's dialect overrides post_exec to read notices from the connection.
-    For this to be safe without breaking anything, we just pass since duckdb does not generate
-    these standard notices that psycopg2 reads.
-    """
-
-    def post_exec(self):
-        """
-        Post-execution hook.
-
-        Input: None.
-        Output: None.
-        Never: Pollutes other dialects' execution contexts.
-        """
-        pass
+    def cursor(self, server_side=False):
+        """Return a buffered cursor; reject unimplemented server-side streaming."""
+        if server_side:
+            raise duckdb_sqlalchemy_async_bridge.NotSupportedError("Streaming is not supported")
+        return super().cursor()
 
 
 class DuckDBAsyncDialect(DuckDBDialect):
-    """
-    Async dialect for DuckDB.
-
-    This provides the dialect settings and adapters required for SQLAlchemy
-    to connect and interact asynchronously with a DuckDB database.
-    """
+    """Retain DuckDB SQL compilation while adapting connections asynchronously."""
 
     name = "duckdb"
     driver = "aio"
-    supports_statement_cache = True
+    # Inherit the upstream safety policy until compiler cache behavior is proven.
+    supports_statement_cache = False
     is_async = True
     paramstyle = "qmark"
 
-    execution_ctx_cls = DuckDBAsyncExecutionContext
-
     @classmethod
     def import_dbapi(cls):
-        """
-        Import the DBAPI module.
-
-        Input: None.
-        Output: The duckdb_sqlalchemy_async_bridge module.
-        Never: Returns a synchronous driver directly.
-        """
+        """Return the bridge's DB-API exception and connection interface."""
         return duckdb_sqlalchemy_async_bridge
 
     @classmethod
     def get_pool_class(cls, url):
-        """
-        Get the pool class for the given URL.
-
-        Input: The connection URL.
-        Output: NullPool for memory databases, AsyncAdaptedQueuePool for others.
-        Never: Shares a memory database across multiple unrelated connections.
-        """
-        if url.database == ":memory:":
+        """Keep memory connections independent and queue file-backed connections."""
+        if not url.database or url.database == ":memory:":
             return NullPool
         return AsyncAdaptedQueuePool
 
-    @classmethod
-    def get_async_dialect_cls(cls, url):
-        """
-        Get the async dialect class.
-
-        Input: Connection URL.
-        Output: This dialect class itself.
-        Never: Returns a synchronous dialect accidentally.
-        """
-        return cls
-
-    def get_driver_connection(self, connection):
-        """
-        Get the raw driver connection from an adapted connection.
-
-        Input: An adapted connection object.
-        Output: The underlying bridge connection object.
-        Never: Returns a connection that isn't the underlying driver connection.
-        """
-        return connection._connection
-
     def connect(self, *cargs, **cparams):
-        """
-        Establish a connection.
-
-        Input: Connection arguments.
-        Output: An AsyncAdaptFallback_duckdb_connection instance.
-        Never: Connects synchronously to the database.
-        """
-        creator_fn = cparams.pop("async_creator_fn", self.import_dbapi().connect)
-        return AsyncAdaptFallback_duckdb_connection(
-            self.import_dbapi(),
-            creator_fn(*cargs, **cparams),
+        """Await the configured async creator inside SQLAlchemy's greenlet."""
+        creator = cparams.pop("async_creator_fn", self.import_dbapi().connect)
+        return AsyncAdapt_duckdb_connection(
+            self.import_dbapi(), await_only(creator(*cargs, **cparams))
         )
