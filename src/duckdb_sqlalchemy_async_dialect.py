@@ -31,15 +31,6 @@ class AsyncAdapt_duckdb_cursor(AsyncAdapt_dbapi_cursor):
             return self.await_(cursor.__aenter__())
         return self.await_(cursor)
 
-    @property
-    def connection(self):
-        """
-        Return the adapted connection.
-
-        This satisfies PGExecutionContext_psycopg2._log_notices expectations.
-        """
-        return self._adapt_connection
-
 
 class AsyncAdapt_duckdb_connection(AsyncAdapt_dbapi_connection):
     """
@@ -49,20 +40,6 @@ class AsyncAdapt_duckdb_connection(AsyncAdapt_dbapi_connection):
     """
 
     _cursor_cls = AsyncAdapt_duckdb_cursor
-
-    @property
-    def notices(self):
-        """
-        Return notices from the underlying connection.
-        """
-        return getattr(self._connection, "notices", [])
-
-    @notices.setter
-    def notices(self, value):
-        """
-        Set notices.
-        """
-        self._connection.notices = value
 
     def begin(self):
         """Begin."""
@@ -103,6 +80,29 @@ class AsyncAdaptFallback_duckdb_connection(AsyncAdapt_duckdb_connection):
         self._execute_mutex = asyncio.Lock()
 
 
+# Define execution context clearly to avoid monkey patching global psycopg2.
+# We map it securely without monkey patching process-wide state.
+class DuckDBAsyncExecutionContext(DuckDBDialect.execution_ctx_cls):  # type: ignore[valid-type, name-defined, misc]
+    """
+    Custom execution context for DuckDB async dialect.
+
+    Overrides post_exec without globally patching PostgreSQL contexts.
+    duckdb_engine's dialect overrides post_exec to read notices from the connection.
+    For this to be safe without breaking anything, we just pass since duckdb does not generate
+    these standard notices that psycopg2 reads.
+    """
+
+    def post_exec(self):
+        """
+        Post-execution hook.
+
+        Input: None.
+        Output: None.
+        Never: Pollutes other dialects' execution contexts.
+        """
+        pass
+
+
 class DuckDBAsyncDialect(DuckDBDialect):
     """
     Async dialect for DuckDB.
@@ -116,6 +116,8 @@ class DuckDBAsyncDialect(DuckDBDialect):
     supports_statement_cache = True
     is_async = True
     paramstyle = "qmark"
+
+    execution_ctx_cls = DuckDBAsyncExecutionContext
 
     @classmethod
     def import_dbapi(cls):
