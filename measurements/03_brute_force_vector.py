@@ -13,8 +13,8 @@ def run_size(conn, size):
 
     conn.execute(f"""
         INSERT INTO vectors
-        SELECT id, (SELECT list(random()) FROM generate_series(1, 1024))::FLOAT[1024]
-        FROM generate_series(1, {size}) g(id);
+        SELECT g.id, list_transform(range(1, 1025), x -> random() + g.id*0)::FLOAT[1024]
+        FROM range(1, {size} + 1) g(id);
     """)
     target = [0.5] * 1024
 

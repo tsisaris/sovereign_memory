@@ -2,31 +2,28 @@
 
 import datetime
 import multiprocessing
-import time
 
 import duckdb
 
 
-def writer(filename, ready_event):
-    """Writer."""
-    try:
-        conn = duckdb.connect(filename, read_only=False)
-        ready_event.set()
-        time.sleep(2)
-        conn.close()
-    except duckdb.Error as e:
-        print(f"Writer exception: {e}")
+def hold_write(db_path, ready_event):
+    """Hold."""
+    conn = duckdb.connect(db_path)
+    ready_event.set()
+    import time
+
+    time.sleep(10)
+    conn.close()
 
 
-def reader(filename, output_dict):
-    """Reader."""
+def try_read(db_path, result_queue):
+    """Try read."""
     try:
-        conn = duckdb.connect(filename, read_only=True)
-        output_dict["success"] = True
+        conn = duckdb.connect(db_path, read_only=True)
         conn.close()
+        result_queue.put("Success")
     except duckdb.Error as e:
-        output_dict["success"] = False
-        output_dict["error"] = str(e)
+        result_queue.put(f"Failed: {e}")
 
 
 def main():
@@ -34,31 +31,39 @@ def main():
     date_str = datetime.datetime.now().strftime("%Y-%m-%d")
     out = []
     out.append(f"Date: {date_str}")
-    out.append("Measurement: One-writer rule (read-write and read-only concurrently)")
+    out.append("Measurement: One-writer rule")
 
-    filename = "test_one_writer.duckdb"
+    db_path = "measurements/test_writer.duckdb"
+    # cleanup
+    import os
+
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
     manager = multiprocessing.Manager()
     ready_event = manager.Event()
-    output_dict = manager.dict()
+    result_queue = manager.Queue()
 
-    p_writer = multiprocessing.Process(target=writer, args=(filename, ready_event))
+    p_writer = multiprocessing.Process(target=hold_write, args=(db_path, ready_event))
     p_writer.start()
 
-    ready_event.wait()
+    ready_event.wait(5)
 
-    p_reader = multiprocessing.Process(target=reader, args=(filename, output_dict))
+    p_reader = multiprocessing.Process(target=try_read, args=(db_path, result_queue))
     p_reader.start()
     p_reader.join()
-    p_writer.join()
 
-    if output_dict.get("success"):
-        out.append("Result: A second process CAN open the same file read-only.")
-    else:
-        out.append("Result: A second process CANNOT open the same file read-only.")
-        out.append(f"DuckDB's exact message: {output_dict.get('error')}")
+    res = result_queue.get()
+    out.append(f"Result: {res}")
+
+    p_writer.terminate()
+    p_writer.join()
 
     with open("measurements/02_one_writer_rule.md", "w") as f:
         f.write("\n".join(out) + "\n")
+
+    if os.path.exists(db_path):
+        os.remove(db_path)
 
 
 if __name__ == "__main__":

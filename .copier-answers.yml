@@ -1,7 +1,8 @@
 # Answers recorded by Copier. Changed only by copier update, never by hand.
-_commit: 6a0f779
+_commit: 4f10dcf
 _src_path: https://github.com/tsisaris/portable_system.git
 code_dir: src
+environment: sovereign_tools
 line_length: 100
 mirror_dirs:
 - data/sovereign

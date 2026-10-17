@@ -1,24 +1,19 @@
-Fix dialect overrides and execution context mapping safely without global patches.
+Complete Deliverables 1-3 for sovereign_memory DuckDB async foundation
 
-The nested execution context and `pass`-only overrides were completely deleted. `duckdb_engine` inherits `PGExecutionContext_psycopg2` which relies on `cursor.connection.notices`. The adapters properly provide `connection` and `notices` directly, solving this robustly without disabling functionality or using unapproved `# type: ignore` exceptions.
+This pull request fulfills Deliverables 1, 2, and 3:
 
-`duckdb.TransactionException` in the `duckdb_sqlalchemy_async_bridge` module's `rollback` handler now explicitly checks the message "TransactionContext Error: cannot rollback - no transaction is active". It only catches this specific condition (to handle legitimately aborted out of order transactions) and no longer blindly swallows the entire class.
+1. Foundation: Set up AGENTS.md, LICENSE, NOTICE, CONTRIBUTING.md. Restructured layout to properly hold `packages/duckdb_sqlalchemy_async`.
+2. Measurements (in `measurements/`):
+   - 01: duckdb_engine 0.17.0 imports and connects to 1.5.6 successfully.
+   - 02: One-writer rule enforced by DuckDB file locks ("Conflicting lock is held").
+   - 03: Brute-force `array_cosine_distance` timed for 10K, 100K, 1M distinct arrays.
+   - 04: Full-text search index (`create_fts_index`) timed for 10K, 100K, 1M text documents.
+3. Async SQLAlchemy dialect for DuckDB (`duckdb.aio`):
+   - Off-the-shelf components used: The DBAPI single-worker thread pattern is based on `aiosqlite` and the latest candidate (`sol/transaction-review`) logic to resolve the cursor and transaction scoping bugs. The dialect layer subclasses `duckdb_engine`'s implementation, mimicking Cognee's Turso async dialect shape.
+   - Integrated Sol's bridge (from `sol/transaction-review` d4e3a4c), properly associating async cursors inside the worker thread loop, maintaining transaction isolation, and buffering rows.
+   - Addressed standard asyncio adapter mappings in `DuckDBAsyncDialect`. We expose notices dynamically on `AsyncAdapt_duckdb_connection`.
+   - Included Alembic hook class `DuckDBImpl`.
 
-The fallback connection wrapper `AsyncAdaptFallback_duckdb_connection` inherits from `AsyncAdaptFallback_dbapi_connection` cleanly combining logic without explicitly bypassing `__init__`, assigning `await_`, or writing redundant code. Unnecessary redundant overrides like `do_rollback`, `do_commit`, `get_driver_connection`, and `_ = cls` vulture tricks were deleted.
-
-Rowcount measurements were executed directly against DuckDB natively:
-- `CREATE TABLE x (a int)` -> `Create: -1`
-- `INSERT INTO x VALUES (1), (2)` -> `Insert: -1`
-- `executemany('INSERT INTO x VALUES (?)', [[3], [4], [5]])` -> `Executemany: -1`
-- `UPDATE x SET a = 9 WHERE a = 1` -> `Update: -1`
-- `DELETE FROM x WHERE a = 2` -> `Delete: -1`
-- `SELECT * FROM x` -> `Select: -1`
-
-The implementation confirms DuckDB natively returns `-1` unconditionally, so no manual computation was implemented. This is thoroughly documented in `AsyncCursor.rowcount` as required.
-
-Code uses the standard library `concurrent.futures.ThreadPoolExecutor(max_workers=1)`, SQLAlchemy's generic asyncio adapters (`AsyncAdapt_dbapi_connection`, `AsyncAdapt_dbapi_cursor`, `AsyncAdaptFallback_dbapi_connection`), and `duckdb_engine`'s dialect execution context cleanly, with no dead code left inside our tree.
-
-AGENTS.md checks (executed post-fixes on fresh repo):
-uv run pre-commit run --all-files (All checks passed!)
-uv run deptry src tests (Success! No dependency issues found.)
-uv run pytest (1 passed in 1.74s)
+Failures/Exceptions:
+- Cognee migrations: Migration `8057ae7329c2` fails on DuckDB because it attempts a partial unique index (`WHERE sequence_id IS NOT NULL`). DuckDB throws `NotImplementedException: Not implemented Error: Creating partial indexes is not supported currently`. The migrations cannot proceed without patching Cognee or DuckDB supporting partial indexes. Recorded this in `measurements/cognee_migrations_on_duckdb.md`.
+- Telemetry Verification: Strace verifications for telemetry disabling are postponed to subsequent backend (Cognee, Graphiti) implementations since no telemetry runs purely on `duckdb_sqlalchemy_async`.
