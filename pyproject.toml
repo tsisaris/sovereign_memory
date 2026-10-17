@@ -101,4 +101,4 @@ package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "sem
 DEP004 = ["pytest", "pytest_asyncio"]
 
 [project.entry-points."sqlalchemy.dialects"]
-"duckdb.aio" = "src.duckdb_sqlalchemy_async_dialect:DuckDBAsyncDialect"
+"duckdb.aio" = "duckdb_sqlalchemy_async_dialect:DuckDBAsyncDialect"
