@@ -132,7 +132,7 @@ class AsyncCursor:
         Output: The underlying cursor rowcount. Measurements show DuckDB reports -1 for SELECT, INSERT, UPDATE, DELETE, and executemany.
         Never: Computes the rowcount manually.
         """
-        return getattr(self._cursor, "rowcount", -1)
+        return self._cursor.rowcount
 
     @property
     def lastrowid(self) -> None:
@@ -160,6 +160,7 @@ class AsyncConnection:
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._in_transaction = False
         self._is_closed = False
+        self.notices = []  # Exposed to make PGExecutionContext_psycopg2._log_notices happy.
 
     async def _execute_in_thread(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         """
@@ -210,8 +211,11 @@ class AsyncConnection:
         if self._in_transaction:
             try:
                 await self._execute_in_thread(self._conn.rollback)
-            except duckdb.TransactionException:
-                pass
+            except duckdb.TransactionException as e:
+                # DuckDB raises "TransactionContext Error: cannot rollback - no transaction is active"
+                # when a transaction was already aborted/ended natively before we issue rollback.
+                if "no transaction is active" not in str(e):
+                    raise
             self._in_transaction = False
 
     async def close(self) -> None:
@@ -223,9 +227,11 @@ class AsyncConnection:
         Never: Raises an error if already closed.
         """
         if not self._is_closed:
-            await self._execute_in_thread(self._conn.close)
-            self._executor.shutdown(wait=False)
-            self._is_closed = True
+            try:
+                await self._execute_in_thread(self._conn.close)
+            finally:
+                self._executor.shutdown(wait=False)
+                self._is_closed = True
 
     async def begin(self) -> None:
         """
@@ -236,7 +242,7 @@ class AsyncConnection:
         Never: Starts a transaction if one is already active.
         """
         if not self._in_transaction:
-            await self._execute_in_thread(self._conn.execute, "BEGIN TRANSACTION")
+            await self._execute_in_thread(self._conn.begin)
             self._in_transaction = True
 
 

@@ -9,7 +9,7 @@ from duckdb_engine import Dialect as DuckDBDialect
 from sqlalchemy.connectors.asyncio import (
     AsyncAdapt_dbapi_connection,
     AsyncAdapt_dbapi_cursor,
-    AsyncAdaptFallback_dbapi_connection,
+    await_fallback,
 )
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
@@ -31,6 +31,15 @@ class AsyncAdapt_duckdb_cursor(AsyncAdapt_dbapi_cursor):
             return self.await_(cursor.__aenter__())
         return self.await_(cursor)
 
+    @property
+    def connection(self):
+        """
+        Return the adapted connection.
+
+        This satisfies PGExecutionContext_psycopg2._log_notices expectations.
+        """
+        return self._adapt_connection
+
 
 class AsyncAdapt_duckdb_connection(AsyncAdapt_dbapi_connection):
     """
@@ -41,12 +50,34 @@ class AsyncAdapt_duckdb_connection(AsyncAdapt_dbapi_connection):
 
     _cursor_cls = AsyncAdapt_duckdb_cursor
 
+    @property
+    def notices(self):
+        """
+        Return notices from the underlying connection.
+        """
+        return getattr(self._connection, "notices", [])
+
+    @notices.setter
+    def notices(self, value):
+        """
+        Set notices.
+        """
+        self._connection.notices = value
+
     def begin(self):
         """Begin."""
         self.await_(self._connection.begin())
 
+    def rollback(self):
+        """Rollback."""
+        self.await_(self._connection.rollback())
 
-class AsyncAdaptFallback_duckdb_connection(AsyncAdaptFallback_dbapi_connection):
+    def commit(self):
+        """Commit."""
+        self.await_(self._connection.commit())
+
+
+class AsyncAdaptFallback_duckdb_connection(AsyncAdapt_duckdb_connection):
     """
     Fallback connection wrapper for DuckDB.
 
@@ -54,19 +85,22 @@ class AsyncAdaptFallback_duckdb_connection(AsyncAdaptFallback_dbapi_connection):
     """
 
     __slots__ = ()
-    _cursor_cls = AsyncAdapt_duckdb_cursor
+
+    await_ = staticmethod(await_fallback)  # type: ignore[assignment]
 
     def __init__(self, dbapi, connection_awaitable):
-        """Init."""
+        """
+        Initialize the fallback adapter.
+
+        Input: A dbapi instance and a coroutine to resolve a connection.
+        Output: None.
+        Never: Leaves the connection unresolved.
+        """
         self.dbapi = dbapi
         self._connection = self.await_(connection_awaitable)
         import asyncio
 
         self._execute_mutex = asyncio.Lock()
-
-    def begin(self):
-        """Begin."""
-        self.await_(self._connection.begin())
 
 
 class DuckDBAsyncDialect(DuckDBDialect):
@@ -82,27 +116,6 @@ class DuckDBAsyncDialect(DuckDBDialect):
     supports_statement_cache = True
     is_async = True
     paramstyle = "qmark"
-
-    # Provide a distinct execution context class that overrides _log_notices securely
-    # without monkey-patching process-wide SQLAlchemy state.
-    # mypy complains that DuckDBDialect.execution_ctx_cls is not a valid base class type,
-    # so we alias it to Any during type checking via a cast or type ignore.
-    class execution_ctx_cls(DuckDBDialect.execution_ctx_cls):  # type: ignore[valid-type, misc]
-        """
-        Custom execution context for DuckDB async dialect.
-
-        Overrides post_exec without globally patching PostgreSQL contexts.
-        """
-
-        def post_exec(self):
-            """
-            Post-execution hook.
-
-            Input: None.
-            Output: None.
-            Never: Pollutes other dialects' execution contexts.
-            """
-            pass
 
     @classmethod
     def import_dbapi(cls):
@@ -124,10 +137,20 @@ class DuckDBAsyncDialect(DuckDBDialect):
         Output: NullPool for memory databases, AsyncAdaptedQueuePool for others.
         Never: Shares a memory database across multiple unrelated connections.
         """
-        _ = cls  # Use cls to fix vulture check
         if url.database == ":memory:":
             return NullPool
         return AsyncAdaptedQueuePool
+
+    @classmethod
+    def get_async_dialect_cls(cls, url):
+        """
+        Get the async dialect class.
+
+        Input: Connection URL.
+        Output: This dialect class itself.
+        Never: Returns a synchronous dialect accidentally.
+        """
+        return cls
 
     def get_driver_connection(self, connection):
         """
@@ -152,42 +175,3 @@ class DuckDBAsyncDialect(DuckDBDialect):
             self.import_dbapi(),
             creator_fn(*cargs, **cparams),
         )
-
-    def do_rollback(self, dbapi_connection):
-        """
-        Rollback the current transaction.
-
-        Input: A DBAPI connection.
-        Output: None.
-        Never: Fails if there is no active transaction.
-        """
-        if hasattr(dbapi_connection, "rollback") and not hasattr(dbapi_connection, "await_"):
-            dbapi_connection.rollback()
-        else:
-            dbapi_connection.await_(dbapi_connection._connection.rollback())
-
-    def do_commit(self, dbapi_connection):
-        """
-        Commit the current transaction.
-
-        Input: A DBAPI connection.
-        Output: None.
-        Never: Fails if there is no active transaction.
-        """
-        if hasattr(dbapi_connection, "commit") and not hasattr(dbapi_connection, "await_"):
-            dbapi_connection.commit()
-        else:
-            dbapi_connection.await_(dbapi_connection._connection.commit())
-
-    def do_begin(self, dbapi_connection):
-        """
-        Begin a new transaction.
-
-        Input: A DBAPI connection.
-        Output: None.
-        Never: Starts a transaction if one is already active.
-        """
-        if hasattr(dbapi_connection, "begin") and not hasattr(dbapi_connection, "await_"):
-            dbapi_connection.begin()
-        else:
-            dbapi_connection.await_(dbapi_connection._connection.begin())
