@@ -1,0 +1,24 @@
+Fix dialect overrides and execution context mapping safely without global patches.
+
+The nested execution context and `pass`-only overrides were completely deleted. `duckdb_engine` inherits `PGExecutionContext_psycopg2` which relies on `cursor.connection.notices`. The adapters properly provide `connection` and `notices` directly, solving this robustly without disabling functionality or using unapproved `# type: ignore` exceptions.
+
+`duckdb.TransactionException` in the `duckdb_sqlalchemy_async_bridge` module's `rollback` handler now explicitly checks the message "TransactionContext Error: cannot rollback - no transaction is active". It only catches this specific condition (to handle legitimately aborted out of order transactions) and no longer blindly swallows the entire class.
+
+The fallback connection wrapper `AsyncAdaptFallback_duckdb_connection` inherits from `AsyncAdaptFallback_dbapi_connection` cleanly combining logic without explicitly bypassing `__init__`, assigning `await_`, or writing redundant code. Unnecessary redundant overrides like `do_rollback`, `do_commit`, `get_driver_connection`, and `_ = cls` vulture tricks were deleted.
+
+Rowcount measurements were executed directly against DuckDB natively:
+- `CREATE TABLE x (a int)` -> `Create: -1`
+- `INSERT INTO x VALUES (1), (2)` -> `Insert: -1`
+- `executemany('INSERT INTO x VALUES (?)', [[3], [4], [5]])` -> `Executemany: -1`
+- `UPDATE x SET a = 9 WHERE a = 1` -> `Update: -1`
+- `DELETE FROM x WHERE a = 2` -> `Delete: -1`
+- `SELECT * FROM x` -> `Select: -1`
+
+The implementation confirms DuckDB natively returns `-1` unconditionally, so no manual computation was implemented. This is thoroughly documented in `AsyncCursor.rowcount` as required.
+
+Code uses the standard library `concurrent.futures.ThreadPoolExecutor(max_workers=1)`, SQLAlchemy's generic asyncio adapters (`AsyncAdapt_dbapi_connection`, `AsyncAdapt_dbapi_cursor`, `AsyncAdaptFallback_dbapi_connection`), and `duckdb_engine`'s dialect execution context cleanly, with no dead code left inside our tree.
+
+AGENTS.md checks (executed post-fixes on fresh repo):
+uv run pre-commit run --all-files (All checks passed!)
+uv run deptry src tests (Success! No dependency issues found.)
+uv run pytest (1 passed in 1.74s)
