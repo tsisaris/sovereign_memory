@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 
 from jsonschema import Draft7Validator
@@ -35,6 +36,13 @@ class MemoryEventValidator:
         # Semantic validation: v2 envelopes
         if "schema_version" in event_data and event_data["schema_version"].startswith("2."):
             self._validate_semantic_v2(event_data, payload_content)
+        elif event_data.get("ttl_seconds"):
+            try:
+                datetime.fromisoformat(event_data["timestamp"])
+            except ValueError as error:
+                raise ValueError(
+                    f"An event with a ttl needs an ISO 8601 timestamp: {error}"
+                ) from error
 
     def _validate_semantic_v2(self, event_data: dict, payload_content: bytes | None) -> None:
         """Enforce semantic validation rules for v2 envelopes."""
