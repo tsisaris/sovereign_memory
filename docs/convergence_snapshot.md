@@ -16,6 +16,8 @@ Review blockers sent to the same provider sessions: Owner retrieval hardcodes ac
 
 The existing plan's architecture guide maps source owners and these gaps. Supplied prompt-learning research is reconciled there as a cooperating subsystem using existing record owners and versioned instruction artifacts. No learner installation, training, scheduler activation, direct learner access to live DuckDB, or duplicate logging system is included in this return.
 
+Combined runtime verification exposed a stale Letta wheel: its package lacked source-aware uv cache keys. Adding the same package-owned cache-key mechanism used by the other workspace packages makes ordinary declared setup rebuild it; the installed classes are now declarative and the existing 11-test suite passes (0.54s, isolated temporary directory). This fixes source/install freshness, not the ORM storage defects. A subsequent ordinary shared-file operation created Mem0 history through `DuckDBManager`, then attempted a Letta message insert through the async dialect. It failed because both use `messages`, but Mem0's table has no `text` column. The architecture reserves `letta` for Letta tables; that implementation and preservation of foreign-key deletion semantics remain with its existing worker. No live data was accessed or migrated.
+
 ## Source and setup
 
 The source is materialized from DATA parent0037a0c4d8f328ca5baee0e58300dadbfed0cf37 plus the preserved complete3af4 source delta and subsequent local runtime repairs. Original component branches, failed returns and full local binary exports remain preserved. Historical snapshot narrative is retained in docs/late_artifacts/convergence_snapshot_before_source_materialization_20261018.txt.

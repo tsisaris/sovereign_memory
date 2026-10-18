@@ -18,3 +18,11 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["letta_memory_model"]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "letta_memory_model/**/*" },
+    { file = "LICENSE" },
+    { file = "NOTICE" },
+]
