@@ -1,3 +1,5 @@
+"""The abstract graph database contract every Cognee graph adapter implements."""
+
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterable
 from typing import Any
@@ -50,6 +52,7 @@ def timestamp_overlaps(node: dict, start: int | None, end: int | None) -> bool:
 
 
 def empty_temporal_anchors() -> dict:
+    """Return a fresh, empty temporal-anchor record: empty id sets and no chunk timestamps."""
     return {
         "timestamp_ids": set(),
         "chunk_ids": set(),
@@ -837,22 +840,27 @@ class GraphDBInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def has_edges(self, edges: list[EdgeData]) -> list[EdgeData]:
+    async def has_edges(self, edges: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
         """
         Determine the existence of multiple edges in the graph.
 
         Parameters:
         -----------
 
-            - edges (List[EdgeData]): A list of EdgeData objects to check for existence in the
-              graph.
+            - edges (List[tuple[str, str, str]]): (source_id, target_id, relationship_name)
+              triples to check for existence in the graph.
+
+        Returns the subset of the given triples that exist.
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def get_edges(self, node_id: str) -> list[EdgeData]:
+    async def get_edges(self, node_id: str) -> list[tuple[NodeData, str, NodeData]]:
         """
         Retrieve all edges that are connected to the specified node.
+
+        Each edge comes back as (source node properties, relationship name, target node
+        properties).
 
         Parameters:
         -----------
@@ -876,7 +884,7 @@ class GraphDBInterface(ABC):
     @abstractmethod
     async def get_nodeset_subgraph(
         self, node_type: type[Any], node_name: list[str], node_name_filter_operator: str = "OR"
-    ) -> tuple[list[tuple[int, dict]], list[tuple[int, int, str, dict]]]:
+    ) -> tuple[list[Node], list[EdgeData]]:
         """
         Fetch a subgraph consisting of a specific set of nodes and their relationships.
 

@@ -27,7 +27,7 @@ from typing_extensions import LiteralString
 from graphiti_core.cross_encoder.client import CrossEncoderClient
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.decorators import handle_multiple_group_ids
-from graphiti_core.driver.driver import GraphDriver
+from graphiti_core.driver.driver import GraphDriver, GraphProvider
 from graphiti_core.driver.neo4j_driver import Neo4jDriver
 from graphiti_core.edges import (
     CommunityEdge,
@@ -512,6 +512,15 @@ class Graphiti:
         from graphiti_core.helpers import parse_db_date
 
         driver = driver or self.driver
+
+        if driver.provider == GraphProvider.DUCKDB:
+            # DuckDB never receives Cypher; use its typed saga lookup on the same driver.
+            existing = await driver.saga_node_ops.get_by_name(driver, saga_name, group_id)
+            if existing is not None:
+                return existing
+            saga = SagaNode(name=saga_name, group_id=group_id, created_at=created_at)
+            await saga.save(driver)
+            return saga
 
         records, _, _ = await driver.execute_query(
             """

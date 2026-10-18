@@ -1,3 +1,5 @@
+"""Cognee's SQLAlchemy relational adapter: async engine, sessions, schema and data operations."""
+
 import asyncio
 import gc
 import os
@@ -160,6 +162,10 @@ class SQLAlchemyAdapter:
         self.sessionmaker = async_sessionmaker(bind=self.engine, expire_on_commit=False)
 
     async def push_to_s3(self) -> None:
+        """Copy the temporary local database file to S3 when the S3 storage backend is active.
+
+        Takes nothing and returns nothing; it does nothing for local storage.
+        """
         if os.getenv("STORAGE_BACKEND", "").lower() == "s3" and hasattr(self, "temp_db_file"):
             from cognee.infrastructure.files.storage.S3FileStorage import S3FileStorage
 
@@ -167,6 +173,10 @@ class SQLAlchemyAdapter:
             s3_file_storage.s3.put(self.temp_db_file, self.db_path, recursive=True)
 
     async def pull_from_s3(self) -> None:
+        """Copy the S3 database file into the temporary local file, if one exists in S3.
+
+        Takes nothing and returns nothing; a missing remote file leaves the local copy absent.
+        """
         from cognee.infrastructure.files.storage.S3FileStorage import S3FileStorage
 
         s3_file_storage = S3FileStorage("")
@@ -269,7 +279,6 @@ class SQLAlchemyAdapter:
                     f'CREATE TABLE IF NOT EXISTS {schema_name}."{table_name}" ({", ".join(fields_query_parts)});'
                 )
             )
-            await connection.close()
 
     async def delete_table(self, table_name: str, schema_name: str | None = "public"):
         """
@@ -587,25 +596,22 @@ class SQLAlchemyAdapter:
 
             A dictionary of data results keyed by their unique identifiers.
         """
+        query = f'SELECT * FROM "{table_name}"'
+        parameters: dict[str, object] = {}
+        if filters:
+            conditions = []
+            for key, value in filters.items():
+                if isinstance(value, list):
+                    names = [f"{key}{i}" for i in range(len(value))]
+                    conditions.append(f"{key} IN ({', '.join(f':{name}' for name in names)})")
+                    parameters.update(zip(names, value, strict=True))
+                else:
+                    conditions.append(f"{key} = :{key}")
+                    parameters[key] = value
+            query += f" WHERE {' AND '.join(conditions)}"
         async with self.engine.begin() as connection:
-            query = f'SELECT * FROM "{table_name}"'
-            if filters:
-                filter_conditions = " AND ".join(
-                    [
-                        f"{key} IN ({', '.join([f':{key}{i}' for i in range(len(value))])})"
-                        if isinstance(value, list)
-                        else f"{key} = :{key}"
-                        for key, value in filters.items()
-                    ]
-                )
-                query += f" WHERE {filter_conditions};"
-                query = text(query)
-                results = await connection.execute(query, filters)
-            else:
-                query += ";"
-                query = text(query)
-                results = await connection.execute(query)
-            return {result["data_id"]: result["status"] for result in results}
+            results = await connection.execute(text(f"{query};"), parameters)
+            return {row._mapping["data_id"]: row._mapping["status"] for row in results}
 
     async def get_all_data_from_table(self, table_name: str, schema: str = "public"):
         """
@@ -894,7 +900,9 @@ class SQLAlchemyAdapter:
                             schema[key]["primary_key"] = pk_columns[0]
                         for fk in fks:
                             for col, ref_col in zip(
-                                fk.get("constrained_columns", []), fk.get("referred_columns", [])
+                                fk.get("constrained_columns", []),
+                                fk.get("referred_columns", []),
+                                strict=True,
                             ):
                                 if col and ref_col:
                                     schema[key]["foreign_keys"].append(

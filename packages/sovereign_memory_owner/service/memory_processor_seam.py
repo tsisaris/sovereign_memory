@@ -99,10 +99,13 @@ class MemoryProcessor(Protocol):
     """The required contract for memory engines to process events safely.
 
     Besides ordinary captured events, a processor receives owner-authored
-    envelopes whose event_type is "system.expire": a fully valid v2 event whose
+    envelopes whose event_type is "system.expire" (a ttl elapsed) or
+    "system.forget" (the producer asked to forget): a fully valid v2 event whose
     causation_event_id names the captured event whose projection must be removed
-    and whose stored payload is JSON naming the operation. The processor removes
-    its projection in apply, atomically with the receipt, or fails truthfully.
+    and whose stored payload is JSON with "operation" ("expire" or "forget"),
+    "target_event_id" and "target_actor_agent_id". The processor removes its
+    projection in apply, atomically with the receipt, or fails truthfully. The
+    owner never sends a removed event for projection again.
 
     A processor may also define attach_reader(reader), called once at
     registration with an OwnerReader, for reads its prepare step needs. It must

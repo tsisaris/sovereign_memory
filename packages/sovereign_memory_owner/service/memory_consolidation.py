@@ -10,9 +10,11 @@ class MemoryConsolidator:
     """Handles background consolidation, validation, and rebuild passes."""
 
     def __init__(self, conn: AsyncConnection):
-        """Bind the owner's worker-owned database connection.
+        """Bind a worker-owned database connection of the consolidator's own.
 
-        Processing itself belongs to MemoryDispatcher, which is passed in where needed.
+        Its captures span several worker jobs, so it must never share the
+        dispatcher's connection. Processing itself belongs to MemoryDispatcher,
+        which is passed in where needed.
         """
         self.conn = conn
 

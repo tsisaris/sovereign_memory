@@ -1,7 +1,12 @@
+"""Shared Pydantic base of Letta's schemas: identity fields and ORM-aware dumping.
+
+Licensed under Apache-2.0 from the Letta archive (letta/schemas/letta_base.py).
+"""
+
 import uuid
 from datetime import datetime
 from logging import getLogger
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -13,7 +18,7 @@ logger = getLogger(__name__)
 
 
 class LettaBase(BaseModel):
-    """Base schema for Letta schemas (does not include model provider schemas, e.g. OpenAI)"""
+    """Base schema for Letta schemas (does not include model provider schemas, e.g. OpenAI)."""
 
     model_config = ConfigDict(
         # allows you to use the snake or camelcase names in your code (ie user_id or userId)
@@ -30,11 +35,11 @@ class LettaBase(BaseModel):
     #    raise NotImplementedError("All schemas must have an __id_prefix__ attribute!")
 
     @classmethod
-    def generate_id_field(cls, prefix: Optional[str] = None) -> "Field":
+    def generate_id_field(cls, prefix: Optional[str] = None) -> Any:
+        """Return an id field whose default is a fresh "<prefix>-<uuid>" id."""
         prefix = prefix or cls.__id_prefix__
 
         return Field(
-            ...,
             description=cls._id_description(prefix),
             pattern=cls._id_regex_pattern(prefix),
             examples=[cls._id_example(prefix)],
@@ -43,6 +48,7 @@ class LettaBase(BaseModel):
 
     @classmethod
     def generate_id(cls, prefix: Optional[str] = None) -> str:
+        """Return a fresh "<prefix>-<uuid>" id, using the class prefix by default."""
         prefix = prefix or cls.__id_prefix__
         return f"{prefix}-{uuid.uuid4()}"
 
@@ -51,7 +57,7 @@ class LettaBase(BaseModel):
 
     @classmethod
     def _id_regex_pattern(cls, prefix: str):
-        """generates the regex pattern for a given id"""
+        """Generate the regex pattern for a given id."""
         if cls.__name__ in ("JobBase", "Job", "Run", "RunBase"):
             prefix_pattern = "(job|run)"
         else:
@@ -68,19 +74,20 @@ class LettaBase(BaseModel):
 
     @classmethod
     def _id_example(cls, prefix: str):
-        """generates an example id for a given prefix"""
+        """Generate an example id for a given prefix."""
         return f"{prefix}-123e4567-e89b-12d3-a456-426614174000"
 
     @classmethod
     def _id_description(cls, prefix: str):
-        """generates a factory function for a given prefix"""
+        """Generate the description of an id field for a given prefix."""
         return f"The human-friendly ID of the {prefix.capitalize()}"
 
     @field_validator("id", check_fields=False, mode="before")
     @classmethod
     def allow_bare_uuids(cls, v, values):
-        """to ease the transition to stripe ids,
-        we allow bare uuids and convert them with a warning
+        """To ease the transition to prefixed ids, accept a bare UUID and prefix it.
+
+        Any other value is returned unchanged.
         """
         _ = values  # for SCA
         if isinstance(v, UUID):
@@ -91,6 +98,7 @@ class LettaBase(BaseModel):
         return v
 
     def model_dump(self, to_orm: bool = False, **kwargs):
+        """Dump the model; with to_orm, rename metadata to the ORM column metadata_."""
         data = super().model_dump(**kwargs)
         if to_orm and "metadata" in data:
             data["metadata_"] = data.pop("metadata")
@@ -98,6 +106,8 @@ class LettaBase(BaseModel):
 
 
 class OrmMetadataBase(LettaBase):
+    """A Letta schema with the audit fields every stored row carries."""
+
     # metadata fields
     created_by_id: Optional[str] = Field(
         default=None, description="The id of the user that made this object."

@@ -54,7 +54,7 @@ class ContextAssembler:
         return "\n".join(blocks)
 
     def calculate_decay_score(
-        self, base_score: float, time_diff_seconds: float, tau: float = 86400.0
+        self, base_score: float, time_diff_seconds: float, tau: float
     ) -> float:
         """
         Scale relevance by an exponential multiplier within the configured bounds.
@@ -62,7 +62,8 @@ class ContextAssembler:
         Args:
             base_score: The original relevance score.
             time_diff_seconds: Time elapsed since memory was recorded or last accessed.
-            tau: Time constant for decay scaling (default 1 day).
+            tau: Time constant for decay scaling, in seconds. The published method
+                discloses no value, so the caller supplies it from its own configuration.
 
         Returns:
             The original score multiplied by the bounded decay factor.

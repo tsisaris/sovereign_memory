@@ -1,9 +1,11 @@
-"""Module docstring."""
+"""Mapped table letta.block: one core-memory block of an organization.
 
-# Licensed under Apache-2.0 from Letta archive
+Licensed under Apache-2.0 from the Letta archive (letta/orm/block.py).
+"""
+
 from typing import ClassVar, Optional
 
-from sqlalchemy import JSON, BigInteger, Integer, String
+from sqlalchemy import JSON, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from letta_memory_model.orm.base import Base, CommonSqlalchemyMetaMixins
@@ -14,7 +16,12 @@ from letta_memory_model.schemas.block import Human, Persona
 
 
 class Block(SqlalchemyBase, Base, CommonSqlalchemyMetaMixins, OrganizationMixin):
-    """Class docstring."""
+    """A stored block: label, value, character limit and edit permissions.
+
+    version counts changes. The store changes a block only with a
+    compare-and-set on version, because this dialect cannot report updated row
+    counts and the ORM's own version check would otherwise pass silently.
+    """
 
     __tablename__ = "block"
     __pydantic_model__ = PydanticBlock
@@ -26,9 +33,9 @@ class Block(SqlalchemyBase, Base, CommonSqlalchemyMetaMixins, OrganizationMixin)
     is_template: Mapped[bool] = mapped_column(default=False)
     preserve_on_migration: Mapped[Optional[bool]] = mapped_column(default=False)
     value: Mapped[str] = mapped_column(String)
-    limit: Mapped[BigInteger] = mapped_column(Integer, default=100000)
+    limit: Mapped[int] = mapped_column(Integer, default=100000)
     metadata_: Mapped[Optional[dict]] = mapped_column(
-        JSON, default={}, doc="arbitrary information related to the block."
+        JSON, default=dict, doc="arbitrary information related to the block."
     )
 
     read_only: Mapped[bool] = mapped_column(default=False)
@@ -38,17 +45,18 @@ class Block(SqlalchemyBase, Base, CommonSqlalchemyMetaMixins, OrganizationMixin)
 
     __mapper_args__: ClassVar[dict] = {"version_id_col": version}
 
-    def to_pydantic(self):
-        """Convert to Pydantic."""
+    def to_pydantic(self) -> PydanticBlock:
+        """Return the row as Human, Persona or Block by its label; raise if invalid."""
+        schema: type[PydanticBlock]
         match self.label:
             case "human" | "system/human":
-                Schema = Human
+                schema = Human
             case "persona" | "system/persona":
-                Schema = Persona
+                schema = Persona
             case _:
-                Schema = PydanticBlock
-        model_dict = {
-            k: v for k, v in self.__dict__.items() if k in self.__pydantic_model__.model_fields
-        }
+                schema = PydanticBlock
+        model_dict = {k: v for k, v in self.__dict__.items() if k in schema.model_fields}
         model_dict["metadata"] = self.metadata_
-        return Schema.model_validate(model_dict)
+        model_dict["created_by_id"] = self._created_by_id
+        model_dict["last_updated_by_id"] = self._last_updated_by_id
+        return schema.model_validate(model_dict)

@@ -22,6 +22,7 @@ from .operations import (
     DuckDBSagaNodeOps,
     DuckDBSearchOps,
 )
+from .search_interface import DuckDBSearchInterface
 
 SCHEMA_QUERIES = (
     "CREATE SCHEMA IF NOT EXISTS graphiti",
@@ -137,6 +138,7 @@ class DuckDBDriver(GraphDriver):
         self.conn = connect_native(db) if connection is None else connection
         self.setup_schema()
         self.graph_operations_interface = DuckDBGraphOperations()
+        self.search_interface = DuckDBSearchInterface()
         self._entity_node_ops = DuckDBEntityNodeOps()
         self._episode_node_ops = DuckDBEpisodeNodeOps()
         self._community_node_ops = DuckDBCommunityNodeOps()
@@ -229,32 +231,12 @@ class DuckDBDriver(GraphDriver):
 
     async def delete_all_indexes(self):
         """Drop only explicit Graphiti indexes in the current catalog."""
-        records, _, _ = await self.execute_query(
-            "SELECT index_name FROM duckdb_indexes() "
-            "WHERE database_name = current_database() AND schema_name = 'graphiti'"
-        )
-        async with self.transaction() as transaction:
-            for record in records:
-                name = record["index_name"].replace('"', '""')
-                await transaction.run(f'DROP INDEX graphiti."{name}"')
+        await self.graph_ops.delete_all_indexes(self)
 
     async def build_indices_and_constraints(self, delete_existing: bool = False):
         """Ensure native UUID keys and B-tree lookup indexes within the Graphiti schema."""
-        if delete_existing:
-            await self.delete_all_indexes()
         self.setup_schema()
-        async with self.transaction() as transaction:
-            await transaction.run(
-                "CREATE INDEX IF NOT EXISTS graph_node_label_idx ON graphiti.graph_node(label)"
-            )
-            await transaction.run(
-                "CREATE INDEX IF NOT EXISTS graph_edge_source_idx "
-                "ON graphiti.graph_edge(source_node_uuid)"
-            )
-            await transaction.run(
-                "CREATE INDEX IF NOT EXISTS graph_edge_target_idx "
-                "ON graphiti.graph_edge(target_node_uuid)"
-            )
+        await self.graph_ops.build_indices_and_constraints(self, delete_existing=delete_existing)
 
     def setup_schema(self):
         """Create only explicitly qualified Graphiti tables and generation metadata."""

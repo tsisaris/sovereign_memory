@@ -202,12 +202,7 @@ class Mem0Tier:
                 )
         entity_embeddings = await self._embed_entities(
             memory,
-            [a["text"] for a in decisions.get("memory", []) if a["event"] == "UPDATE"],
-            [
-                mapping[a["id"]]
-                for a in decisions.get("memory", [])
-                if a["event"] in ("UPDATE", "DELETE")
-            ],
+            [a["text"] for a in decisions.get("memory", []) if a["event"] in ("ADD", "UPDATE")],
         )
         return PreparedWork(
             "actions",
@@ -224,18 +219,15 @@ class Mem0Tier:
             entity_embeddings=entity_embeddings,
         )
 
-    async def _embed_entities(
-        self, memory: Memory, new_texts: List[str], changed_memory_ids: List[str]
-    ) -> Dict[Any, List[float]]:
-        """Embed, outside the transaction, every entity text apply's entity upkeep will need.
+    async def _embed_entities(self, memory: Memory, new_texts: List[str]) -> Dict[Any, List[float]]:
+        """Embed, outside the transaction, every entity text apply will link.
 
-        Covers the entities of each updated memory text and the entity records that
-        still link to a memory about to be updated or deleted. Reads go through the
-        owner's reader; embedding goes through the model, never the database worker.
+        Covers the entities of each added or updated memory text. Unlinking an
+        updated or deleted memory needs no embedding: an entity's text, and so its
+        vector, does not change. Embedding goes through the model, never the
+        database worker.
         """
-        needed = list(memory._entity_texts_to_embed(new_texts))
-        if changed_memory_ids:
-            needed += await self._read(lambda m: m._linked_entity_texts(changed_memory_ids))
+        needed = memory._entity_texts_to_embed(new_texts)
         return {
             key: await asyncio.to_thread(memory.embedding_model.embed, *key)
             for key in dict.fromkeys(needed)
@@ -244,7 +236,11 @@ class Mem0Tier:
     async def _prepare_expiry(
         self, event_id: str, envelope: Dict[str, Any], payload: Optional[bytes]
     ) -> PreparedWork:
-        """Read an owner-authored expiry event, name the memories to remove and prepare their entity upkeep."""
+        """Validate an owner-authored expiry event and prepare its removal.
+
+        apply re-reads the memories derived from the target event on the owner's
+        handle; removing them and unlinking their entities needs no model call.
+        """
         if payload is None:
             raise self.terminal_error("Expiry event has no payload bytes")
         body = json.loads(payload.decode("utf-8"))
@@ -257,9 +253,6 @@ class Mem0Tier:
             or not owner_of_target
         ):
             raise self.terminal_error("Expiry payload does not match its causation event")
-        memory = await self._read(lambda m: m)
-        ids = await self._read(lambda m: [r.id for r in self._derived(m, target, owner_of_target)])
-        entity_embeddings = await self._embed_entities(memory, [], ids)
         return PreparedWork(
             kind="expire",
             scope_id=owner_of_target,
@@ -274,7 +267,6 @@ class Mem0Tier:
             target_event_id=target,
             target_actor=owner_of_target,
             actor=envelope.get("actor_agent_id"),
-            entity_embeddings=entity_embeddings,
         )
 
     @staticmethod

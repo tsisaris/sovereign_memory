@@ -1095,6 +1095,13 @@ async def filter_existing_duplicate_of_edges(
         (source.uuid, target.uuid): (source, target) for source, target in duplicates_node_tuples
     }
 
+    if driver.provider == GraphProvider.DUCKDB:
+        # DuckDB never receives Cypher; its native search operations answer directly.
+        existing = await driver.search_ops.existing_duplicate_pairs(
+            driver, list(duplicate_nodes_map)
+        )
+        return [pair for key, pair in duplicate_nodes_map.items() if key not in existing]
+
     if driver.provider == GraphProvider.NEPTUNE:
         query: LiteralString = """
             UNWIND $duplicate_node_uuids AS duplicate_tuple

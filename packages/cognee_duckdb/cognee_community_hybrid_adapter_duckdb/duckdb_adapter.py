@@ -10,7 +10,11 @@ from typing import Any, List, Optional
 from uuid import UUID
 
 import duckdb
-from cognee.infrastructure.databases.graph.graph_db_interface import GraphDBInterface
+from cognee.infrastructure.databases.graph.graph_db_interface import EdgeData, GraphDBInterface
+from cognee.infrastructure.databases.graph.graph_topology import (
+    _component_sizes,
+    _select_nodeset_neighbor_ids,
+)
 from cognee.infrastructure.databases.vector.embeddings.EmbeddingEngine import (
     EmbeddingEngine,
 )
@@ -22,7 +26,7 @@ from cognee.infrastructure.databases.vector.vector_db_interface import VectorDBI
 from cognee.infrastructure.engine import DataPoint
 from cognee.shared.logging_utils import get_logger
 from duckdb_engine import Dialect
-from duckdb_sqlalchemy_async.native import connect_native
+from duckdb_sqlalchemy_async.native import connect_native, require_native_connection
 
 
 class CollectionNotFoundError(CogneeCollectionNotFoundError):
@@ -84,9 +88,30 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         graph_database_username: str | None = None,
         graph_database_password: str | None = None,
         graph_database_url: str | None = None,
+        connection: duckdb.DuckDBPyConnection | None = None,
         **kwargs,
     ) -> None:
-        """Initialize DuckDB adapter."""
+        """Open (or borrow) the DuckDB handle that holds Cognee's graph and vector tables.
+
+        Without ``connection`` the adapter owns its handle: it opens ``url`` (or memory)
+        natively, creates the ``database_name`` schema, selects it, runs each write
+        batch in its own transaction and closes the handle in ``close``.
+
+        With ``connection`` the adapter borrows a native handle the caller opened. It
+        checks the handle is native DuckDB storage and issues nothing else at
+        construction; afterwards it never sets the schema, opens another connection or
+        cursor, begins, commits, rolls back or closes: every statement runs on the
+        caller's handle, inside whatever transaction the caller holds, against tables
+        qualified with ``database_name``. Passing ``url`` or ``graph_database_url``
+        together with ``connection`` raises ValueError; a handle that is not a DuckDB
+        connection raises TypeError.
+        """
+        if connection is not None:
+            if url or graph_database_url:
+                raise ValueError("Pass either a DuckDB file location or a borrowed connection")
+            if not isinstance(connection, duckdb.DuckDBPyConnection):
+                raise TypeError("A borrowed connection must be a native DuckDB connection")
+            require_native_connection(connection)
         if url and graph_database_url and url != graph_database_url:
             raise ValueError("Conflicting DuckDB file locations")
         url = url or graph_database_url
@@ -103,17 +128,24 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         self.graph_database_username = graph_database_username
         self.graph_database_password = graph_database_password
         self.VECTOR_DB_LOCK = asyncio.Lock()
-        identifier = self._identifier(self.database_name)
+        self._schema = self._identifier(self.database_name)
+        self._node_table = f"{self._schema}.graph_node"
+        self._edge_table = f"{self._schema}.graph_edge"
+        self._metadata_table = f"{self._schema}.graph_metadata"
+        self.owns_connection = connection is None
 
-        # Create in-memory DuckDB connection
-        # If database_url is provided, use it; otherwise use in-memory
+        if connection is not None:
+            self.connection = connection
+            return
+
+        # Owned handle: the file at database_url, or a private in-memory database.
         if url:
             self.connection = connect_native(url)
         else:
-            self.connection = connect_native()  # In-memory database
+            self.connection = connect_native()
 
         try:
-            self.connection.execute(f"CREATE SCHEMA IF NOT EXISTS {identifier}")
+            self.connection.execute(f"CREATE SCHEMA IF NOT EXISTS {self._schema}")
             self.connection.execute("SET schema = ?", [self.database_name])
         except BaseException:
             self.connection.close()
@@ -124,12 +156,9 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         """Quote one identifier so names cannot select another schema or add SQL."""
         return Dialect().identifier_preparer.quote_identifier(name)
 
-    def _setup_extensions(self) -> None:
-        """Setup DuckDB extensions."""
-
-        self.connection.execute(
-            "LOAD vss;"
-        )  # TODO add index: CREATE INDEX my_hnsw_index ON my_vector_table USING HNSW (vec);
+    def _table(self, name: str) -> str:
+        """Return the quoted, schema-qualified name of one vector collection table."""
+        return f"{self._schema}.{self._identifier(name)}"
 
     async def _execute_query(self, query: str, params: list[Any] | None = None) -> Any:
         """Execute a query on the DuckDB connection with async lock."""
@@ -148,8 +177,20 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
                 return self.connection.execute(query).fetchone()
 
     async def _execute_transaction(self, queries: list[tuple[str, list[Any] | None]]) -> None:
-        """Execute multiple queries in a transaction with async lock."""
+        """Run a batch of write statements in order under the adapter lock.
+
+        An owned handle wraps the batch in its own transaction and rolls it back on a
+        DuckDB error. A borrowed handle runs the batch inside the caller's transaction
+        and leaves commit or rollback to the caller; errors propagate unchanged.
+        """
         async with self.VECTOR_DB_LOCK:
+            if not self.owns_connection:
+                for query, params in queries:
+                    if params:
+                        self.connection.execute(query, params)
+                    else:
+                        self.connection.execute(query)
+                return
             try:
                 self.connection.execute("BEGIN TRANSACTION")
                 for query, params in queries:
@@ -163,9 +204,9 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
                 raise
 
     async def close(self) -> None:
-        """Close the DuckDB connection safely."""
+        """Close an owned DuckDB handle; a borrowed handle is left open for its caller."""
         async with self.VECTOR_DB_LOCK:
-            if hasattr(self, "connection"):
+            if self.owns_connection and hasattr(self, "connection"):
                 self.connection.close()
 
     # VectorDBInterface methods
@@ -182,8 +223,9 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             # Check if table exists in DuckDB
             result = await self._execute_query_one(
                 "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = current_schema() AND table_name = $1",
-                [collection_name],
+                "WHERE table_catalog = current_database() AND table_schema = $1 "
+                "AND table_name = $2",
+                [self.database_name, collection_name],
             )
             return result is not None
         except duckdb.Error:
@@ -201,7 +243,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         if not isinstance(vector_dimension, int) or vector_dimension <= 0:
             raise ValueError("Vector dimension must be a positive integer")
         create_table_query = f"""
-        CREATE TABLE IF NOT EXISTS {self._identifier(collection_name)} (
+        CREATE TABLE IF NOT EXISTS {self._table(collection_name)} (
             id VARCHAR PRIMARY KEY,
             text TEXT,
             vector FLOAT[{vector_dimension}],
@@ -209,11 +251,12 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """
-        await self._execute_query(create_table_query)
+        await self._execute_transaction(
+            [(f"CREATE SCHEMA IF NOT EXISTS {self._schema}", None), (create_table_query, None)]
+        )
 
     async def create_data_points(self, collection_name: str, data_points: list[DataPoint]) -> None:
         """[VECTOR] Create data points in the collection."""
-        # TODO: Implement DuckDB data point creation
         if not await self.has_collection(collection_name):
             raise CollectionNotFoundError(f"Collection {collection_name} not found!")
 
@@ -223,7 +266,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
         # Create the data points (use INSERT OR REPLACE to handle duplicates)
         create_data_points_query = f"""
-        INSERT OR REPLACE INTO {self._identifier(collection_name)} (id, text, vector, payload) VALUES ($1, $2, $3, $4)
+        INSERT OR REPLACE INTO {self._table(collection_name)} (id, text, vector, payload) VALUES ($1, $2, $3, $4)
         """
         await self._execute_transaction(
             [
@@ -240,9 +283,54 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             ]
         )
 
+    async def upsert_raw_vectors(
+        self,
+        collection_name: str,
+        points: list[dict],
+        payload_schema: Any | None = None,
+    ) -> None:
+        """[VECTOR] Write caller-computed vectors without calling the embedding engine.
+
+        Each point is a dict with ``id``, ``vector`` (a non-empty list of floats, the
+        same length for every point) and an optional ``payload`` dict. When
+        ``payload_schema`` (a Pydantic model class) is given, each payload is validated
+        and normalised by it. A missing collection is created with the vectors'
+        dimension; existing ids are replaced. A missing id, a non-list or empty vector
+        or mixed lengths raise ValueError before anything is written. No points does
+        nothing. Embeddings are never computed here, so a caller can embed first and
+        then write inside its own transaction.
+        """
+        if not points:
+            return
+        rows = []
+        dimension = None
+        for point in points:
+            point_id = point.get("id")
+            vector = point.get("vector")
+            payload = point.get("payload") or {}
+            if point_id is None:
+                raise ValueError("Raw vector point is missing id")
+            if not isinstance(vector, list) or not vector:
+                raise ValueError("Raw vector point vector must be a non-empty list")
+            if dimension is None:
+                dimension = len(vector)
+            elif len(vector) != dimension:
+                raise ValueError(
+                    f"Raw vector size {len(vector)} does not match expected size {dimension}"
+                )
+            if payload_schema is not None:
+                payload = payload_schema.model_validate(payload).model_dump()
+            rows.append([str(point_id), None, vector, json.dumps(serialize_for_json(payload))])
+
+        await self.create_collection(collection_name, vector_dimension=dimension)
+        upsert_query = (
+            f"INSERT OR REPLACE INTO {self._table(collection_name)} "
+            "(id, text, vector, payload) VALUES ($1, $2, $3, $4)"
+        )
+        await self._execute_transaction([(upsert_query, row) for row in rows])
+
     async def create_vector_index(self, index_name: str, index_property_name: str) -> None:
         """[VECTOR] Create a vector index for a specific property."""
-        # TODO: Implement DuckDB vector index creation
         await self.create_collection(f"{index_name}_{index_property_name}")
 
     async def index_data_points(
@@ -276,7 +364,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
             for data_id in data_point_ids:
                 # Query DuckDB for the specific data point
-                query = f"SELECT payload FROM {self._identifier(collection_name)} WHERE id = $1"
+                query = f"SELECT payload FROM {self._table(collection_name)} WHERE id = $1"
                 result = await self._execute_query_one(query, [data_id])
 
                 if result:
@@ -337,7 +425,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             return []
 
         if limit is None:
-            search_query = f"""select count(*) from {self._identifier(collection_name)}"""
+            search_query = f"""select count(*) from {self._table(collection_name)}"""
             count = await self._execute_query_one(search_query)
             if count is None:
                 logger.warning("Count is None in DuckDBAdapter.search; returning [].")
@@ -393,7 +481,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
             search_query = f"""
             SELECT {", ".join(select_fields)}
-            FROM {self._identifier(collection_name)}
+            FROM {self._table(collection_name)}
             {where_clause}
             ORDER BY distance ASC
             LIMIT ${len(query_params)}
@@ -424,7 +512,6 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
                     id=parse_id(row[0]),
                     score=score,
                     payload=payload_data,
-                    vector=row[2] if with_vector else None,
                 )
                 results.append(result)
 
@@ -467,9 +554,9 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         return results
 
     async def delete_data_points(
-        self, collection_name: str, data_point_ids: list[str]
+        self, collection_name: str, data_point_ids: list[UUID]
     ) -> dict[str, int]:
-        """[VECTOR] Delete data points by their IDs."""
+        """[VECTOR] Delete data points by their ids (UUIDs or their text form) and count them."""
         try:
             if not await self.has_collection(collection_name):
                 logger.warning(
@@ -483,12 +570,14 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             # Create placeholders for the IN clause
             placeholders = ", ".join([f"${i + 1}" for i in range(len(data_point_ids))])
             delete_query = (
-                f"DELETE FROM {self._identifier(collection_name)} "
+                f"DELETE FROM {self._table(collection_name)} "
                 f"WHERE id IN ({placeholders}) RETURNING id"
             )
 
             # Execute the deletion
-            deleted_rows = await self._execute_query(delete_query, data_point_ids)
+            deleted_rows = await self._execute_query(
+                delete_query, [str(data_point_id) for data_point_id in data_point_ids]
+            )
             deleted_count = len(deleted_rows)
 
             logger.info(f"Deleted {deleted_count} data points from collection {collection_name}")
@@ -503,12 +592,13 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         try:
             q = (
                 "SELECT table_name FROM information_schema.columns "
-                "WHERE column_name = 'vector' AND table_schema = current_schema()"
+                "WHERE column_name = 'vector' AND table_catalog = current_database() "
+                "AND table_schema = $1"
             )
-            res = await self._execute_query(q)
+            res = await self._execute_query(q, [self.database_name])
             tables = [r[0] for r in res]
             for table in tables:
-                await self._execute_query(f"DROP TABLE IF EXISTS {self._identifier(table)}")
+                await self._execute_query(f"DROP TABLE IF EXISTS {self._table(table)}")
             logger.info("Pruned all DuckDB vector collections")
         except duckdb.Error as e:
             logger.error(f"Error during prune: {str(e)}")
@@ -525,9 +615,10 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         # Get all table names from the database
         tables_query = (
             "SELECT table_name FROM information_schema.columns "
-            "WHERE table_schema = current_schema() AND column_name = 'vector'"
+            "WHERE table_catalog = current_database() AND table_schema = $1 "
+            "AND column_name = 'vector'"
         )
-        tables_result = await self._execute_query(tables_query)
+        tables_result = await self._execute_query(tables_query, [self.database_name])
         for row in tables_result:
             table_name = row[0] if isinstance(row, list | tuple) else row
             collection_names.append(table_name)
@@ -540,8 +631,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
     async def initialize(self) -> None:
         """[GRAPH] Initialize the graph database schema."""
-        create_node_table = """
-        CREATE TABLE IF NOT EXISTS graph_node (
+        create_node_table = f"""
+        CREATE TABLE IF NOT EXISTS {self._node_table} (
             id VARCHAR PRIMARY KEY,
             name VARCHAR,
             type VARCHAR,
@@ -552,8 +643,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             source_run_refs VARCHAR[]
         )
         """
-        create_edge_table = """
-        CREATE TABLE IF NOT EXISTS graph_edge (
+        create_edge_table = f"""
+        CREATE TABLE IF NOT EXISTS {self._edge_table} (
             source_id VARCHAR,
             target_id VARCHAR,
             relationship_name VARCHAR,
@@ -565,14 +656,15 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             PRIMARY KEY (source_id, target_id, relationship_name)
         )
         """
-        create_metadata_table = """
-        CREATE TABLE IF NOT EXISTS graph_metadata (
+        create_metadata_table = f"""
+        CREATE TABLE IF NOT EXISTS {self._metadata_table} (
             key VARCHAR PRIMARY KEY,
             value VARCHAR
         )
         """
         await self._execute_transaction(
             [
+                (f"CREATE SCHEMA IF NOT EXISTS {self._schema}", None),
                 (create_node_table, None),
                 (create_edge_table, None),
                 (create_metadata_table, None),
@@ -620,7 +712,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             props_json = json.dumps(serialize_for_json(extra))
 
             existing = await self._execute_query_one(
-                "SELECT source_ref_keys, source_run_refs, properties FROM graph_node WHERE id = $1",
+                f"SELECT source_ref_keys, source_run_refs, properties FROM {self._node_table} WHERE id = $1",
                 [node_id],
             )
             existing_ref_keys = list(existing[0]) if existing and existing[0] else []
@@ -646,8 +738,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
                 pipeline_run_id,
             )
 
-            q = """
-            INSERT INTO graph_node (id, name, type, properties, source_ref_keys, source_dataset_ids, source_run_ids, source_run_refs)
+            q = f"""
+            INSERT INTO {self._node_table} (id, name, type, properties, source_ref_keys, source_dataset_ids, source_run_ids, source_run_refs)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
@@ -705,14 +797,14 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             return
         p1 = ", ".join([f"${i + 1}" for i in range(len(node_ids))])
         p2 = ", ".join([f"${i + 1 + len(node_ids)}" for i in range(len(node_ids))])
-        q_edges = f"DELETE FROM graph_edge WHERE source_id IN ({p1}) OR target_id IN ({p2})"
-        q_nodes = f"DELETE FROM graph_node WHERE id IN ({p1})"
+        q_edges = f"DELETE FROM {self._edge_table} WHERE source_id IN ({p1}) OR target_id IN ({p2})"
+        q_nodes = f"DELETE FROM {self._node_table} WHERE id IN ({p1})"
         await self._execute_transaction([(q_edges, node_ids + node_ids), (q_nodes, node_ids)])
 
     async def get_node(self, node_id: str) -> dict[str, Any] | None:
         """Documentation."""
         res = await self._execute_query_one(
-            "SELECT id, name, type, properties FROM graph_node WHERE id = $1", [node_id]
+            f"SELECT id, name, type, properties FROM {self._node_table} WHERE id = $1", [node_id]
         )
         return self._parse_node_row(res) if res else None
 
@@ -720,14 +812,14 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         """Documentation."""
         placeholders = ", ".join([f"${i + 1}" for i in range(len(node_ids))])
         res = await self._execute_query(
-            f"SELECT id, name, type, properties FROM graph_node WHERE id IN ({placeholders})",
+            f"SELECT id, name, type, properties FROM {self._node_table} WHERE id IN ({placeholders})",
             node_ids,
         )
         return [self._parse_node_row(row) for row in res]
 
     async def add_edges(
         self,
-        edges: list[tuple[str, str, str, dict[str, Any] | None]],
+        edges: list[EdgeData] | list[tuple[str, str, str, dict[str, Any] | None]],
         source_ref_key: str | None = None,
         pipeline_run_id: str | None = None,
     ) -> None:
@@ -741,7 +833,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             props_json = json.dumps(serialize_for_json(props))
 
             existing = await self._execute_query_one(
-                "SELECT source_ref_keys, source_run_refs, properties FROM graph_edge WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3",
+                f"SELECT source_ref_keys, source_run_refs, properties FROM {self._edge_table} WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3",
                 [src, tgt, rel],
             )
             existing_ref_keys = list(existing[0]) if existing and existing[0] else []
@@ -767,8 +859,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
                 pipeline_run_id,
             )
 
-            q = """
-            INSERT INTO graph_edge (source_id, target_id, relationship_name, properties, source_ref_keys, source_dataset_ids, source_run_ids, source_run_refs)
+            q = f"""
+            INSERT INTO {self._edge_table} (source_id, target_id, relationship_name, properties, source_ref_keys, source_dataset_ids, source_run_ids, source_run_refs)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (source_id, target_id, relationship_name) DO UPDATE SET
                 properties = EXCLUDED.properties,
@@ -813,61 +905,67 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
     async def delete_graph(self) -> None:
         """Delete the graph."""
         await self._execute_transaction(
-            [("DELETE FROM graph_edge", None), ("DELETE FROM graph_node", None)]
+            [(f"DELETE FROM {self._edge_table}", None), (f"DELETE FROM {self._node_table}", None)]
         )
+
+    def _parse_edge_row(self, row) -> tuple[str, str, str, dict[str, Any]]:
+        """Turn one (source, target, relationship, properties) row into an edge tuple."""
+        properties = json.loads(row[3]) if isinstance(row[3], str) else (row[3] if row[3] else {})
+        return row[0], row[1], row[2], properties
+
+    def _node_tuple(self, row) -> tuple[str, dict[str, Any]]:
+        """Turn one (id, name, type, properties) row into the (id, properties) node shape."""
+        return row[0], self._parse_node_row(row)
+
+    async def _induced_subgraph(
+        self, node_ids: list[str]
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Return the stored nodes among ``node_ids`` and every edge between two of them.
+
+        Ids with no stored node are left out; an empty id list returns two empty lists.
+        """
+        if not node_ids:
+            return [], []
+        nodes_raw = await self._execute_query(
+            f"SELECT id, name, type, properties FROM {self._node_table} WHERE list_contains($1, id)",
+            [node_ids],
+        )
+        edges_raw = await self._execute_query(
+            f"SELECT source_id, target_id, relationship_name, properties FROM {self._edge_table} "
+            "WHERE list_contains($1, source_id) AND list_contains($1, target_id)",
+            [node_ids],
+        )
+        return [self._node_tuple(r) for r in nodes_raw], [
+            self._parse_edge_row(r) for r in edges_raw
+        ]
 
     async def get_graph_data(
         self,
-    ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
-        """Get all graph data."""
-        nodes_raw = await self._execute_query("SELECT id, name, type, properties FROM graph_node")
-        edges_raw = await self._execute_query(
-            "SELECT source_id, target_id, relationship_name, properties FROM graph_edge"
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Return every node as (id, properties) and every edge as (source, target, name, props)."""
+        nodes_raw = await self._execute_query(
+            f"SELECT id, name, type, properties FROM {self._node_table}"
         )
-        nodes = [self._parse_node_row(r) for r in nodes_raw]
-        edges = [
-            (
-                r[0],
-                r[1],
-                r[2],
-                json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {}),
-            )
-            for r in edges_raw
+        edges_raw = await self._execute_query(
+            f"SELECT source_id, target_id, relationship_name, properties FROM {self._edge_table}"
+        )
+        return [self._node_tuple(r) for r in nodes_raw], [
+            self._parse_edge_row(r) for r in edges_raw
         ]
-        return nodes, edges
 
     async def get_id_filtered_graph_data(
         self, target_ids: list[str]
-    ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
-        """Documentation."""
-        if not target_ids:
-            return [], []
-        p1 = ", ".join([f"${i + 1}" for i in range(len(target_ids))])
-        p2 = ", ".join([f"${i + 1 + len(target_ids)}" for i in range(len(target_ids))])
-        nodes_raw = await self._execute_query(
-            f"SELECT id, name, type, properties FROM graph_node WHERE id IN ({p1})",
-            target_ids,
-        )
-        edges_raw = await self._execute_query(
-            f"SELECT source_id, target_id, relationship_name, properties FROM graph_edge WHERE source_id IN ({p1}) AND target_id IN ({p2})",
-            target_ids + target_ids,
-        )
-        nodes = [self._parse_node_row(r) for r in nodes_raw]
-        edges = [
-            (
-                r[0],
-                r[1],
-                r[2],
-                json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {}),
-            )
-            for r in edges_raw
-        ]
-        return nodes, edges
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Return the nodes with the given ids and the edges between them, as get_graph_data."""
+        return await self._induced_subgraph([str(target_id) for target_id in target_ids])
 
     async def get_filtered_graph_data(
         self, attribute_filters: list[dict[str, list[str | int]]]
-    ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
-        """Documentation."""
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Return nodes whose id, name or type match every filter, and the edges between them.
+
+        No filters returns the whole graph; any other attribute raises ValueError.
+        """
         if not attribute_filters:
             return await self.get_graph_data()
 
@@ -881,243 +979,219 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         if not filters:
             return await self.get_graph_data()
 
-        nodes_raw = await self._execute_query("SELECT id, name, type, properties FROM graph_node")
-        nodes = []
-        valid_node_ids = set()
-        for r in nodes_raw:
-            row_dict = {"id": r[0], "name": r[1], "type": r[2]}
-            if all(str(row_dict[attribute]) in values for attribute, values in filters):
-                nodes.append(self._parse_node_row(r))
-                valid_node_ids.add(r[0])
-
-        if not valid_node_ids:
-            return [], []
-
-        edges_raw = await self._execute_query(
-            "SELECT source_id, target_id, relationship_name, properties FROM graph_edge"
+        nodes_raw = await self._execute_query(
+            f"SELECT id, name, type, properties FROM {self._node_table}"
         )
-        edges = []
-        for r in edges_raw:
-            if r[0] in valid_node_ids and r[1] in valid_node_ids:
-                props = json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {})
-                edges.append((r[0], r[1], r[2], props))
-
-        return nodes, edges
+        matched_ids = [
+            r[0]
+            for r in nodes_raw
+            if all(
+                str({"id": r[0], "name": r[1], "type": r[2]}[attribute]) in values
+                for attribute, values in filters
+            )
+        ]
+        return await self._induced_subgraph(matched_ids)
 
     async def get_graph_metrics(self, include_optional: bool = False) -> dict[str, Any]:
-        """Documentation."""
-        nodes_raw = await self._execute_query("SELECT id FROM graph_node")
-        edges_raw = await self._execute_query("SELECT source_id, target_id FROM graph_edge")
-        node_count = len(nodes_raw)
-        edge_count = len(edges_raw)
+        """Return the graph metrics Cognee stores per pipeline run.
 
-        from collections import defaultdict
-
-        graph = defaultdict(list)
-        for e in edges_raw:
-            graph[e[0]].append(e[1])
-            graph[e[1]].append(e[0])
-
-        visited = set()
-        components = 0
-        for node in nodes_raw:
-            nid = node[0]
-            if nid not in visited:
-                components += 1
-                queue = [nid]
-                while queue:
-                    curr = queue.pop(0)
-                    if curr not in visited:
-                        visited.add(curr)
-                        queue.extend(graph[curr])
-
-        density = (edge_count / (node_count * (node_count - 1))) if node_count > 1 else 0.0
-        average_degree = (2 * edge_count / node_count) if node_count > 0 else 0.0
+        Keys match the other SQL adapters; the path-based metrics this adapter does
+        not compute are -1, and ``num_selfloops`` is -1 unless ``include_optional``.
+        """
+        nodes_raw = await self._execute_query(f"SELECT id FROM {self._node_table}")
+        edges_raw = await self._execute_query(
+            f"SELECT source_id, target_id FROM {self._edge_table}"
+        )
+        node_ids = [r[0] for r in nodes_raw]
+        edge_pairs = [(r[0], r[1]) for r in edges_raw]
+        num_nodes = len(node_ids)
+        num_edges = len(edge_pairs)
+        component_sizes = _component_sizes(node_ids, edge_pairs)
 
         return {
-            "node_count": node_count,
-            "edge_count": edge_count,
-            "density": density,
-            "number_of_connected_components": components,
-            "average_degree": average_degree,
+            "num_nodes": num_nodes,
+            "num_edges": num_edges,
+            "mean_degree": (2 * num_edges) / num_nodes if num_nodes else None,
+            "edge_density": num_edges / (num_nodes * (num_nodes - 1)) if num_nodes > 1 else 0,
+            "num_connected_components": len(component_sizes),
+            "sizes_of_connected_components": component_sizes,
+            "num_selfloops": sum(source == target for source, target in edge_pairs)
+            if include_optional
+            else -1,
+            "diameter": -1,
+            "avg_shortest_path_length": -1,
+            "avg_clustering": -1,
         }
 
     async def get_graph_counts(self) -> tuple[int, int]:
         """Get graph counts."""
-        node_res = await self._execute_query_one("SELECT COUNT(*) FROM graph_node")
-        edge_res = await self._execute_query_one("SELECT COUNT(*) FROM graph_edge")
+        node_res = await self._execute_query_one(f"SELECT COUNT(*) FROM {self._node_table}")
+        edge_res = await self._execute_query_one(f"SELECT COUNT(*) FROM {self._edge_table}")
         return node_res[0] if node_res else 0, edge_res[0] if edge_res else 0
 
     async def has_edge(self, source_id: str, target_id: str, relationship_name: str) -> bool:
         """Documentation."""
         res = await self._execute_query_one(
-            "SELECT 1 FROM graph_edge WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3",
+            f"SELECT 1 FROM {self._edge_table} WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3",
             [source_id, target_id, relationship_name],
         )
         return res is not None
 
     async def has_edges(self, edges: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
-        """Documentation."""
+        """Return the given (source, target, relationship) triples that are stored."""
         result = []
         for src, tgt, rel in edges:
-            if await self.has_edge(src, tgt, rel):
-                result.append((src, tgt, rel))
+            identity = (str(src), str(tgt), str(rel))
+            if await self.has_edge(*identity):
+                result.append(identity)
         return result
 
-    async def get_edges(self, node_id: str) -> list[tuple[dict[str, Any], str, dict[str, Any]]]:
-        """Get all edges."""
-        q = """
+    async def _incident_edge_rows(self, node_id: str) -> list[Any]:
+        """Read every edge touching ``node_id`` with both endpoint nodes, in one query."""
+        q = f"""
         SELECT
             s.id, s.name, s.type, s.properties,
-            e.relationship_name,
+            e.relationship_name, e.properties,
             t.id, t.name, t.type, t.properties
-        FROM graph_edge e
-        JOIN graph_node s ON e.source_id = s.id
-        JOIN graph_node t ON e.target_id = t.id
+        FROM {self._edge_table} e
+        JOIN {self._node_table} s ON e.source_id = s.id
+        JOIN {self._node_table} t ON e.target_id = t.id
         WHERE e.source_id = $1 OR e.target_id = $1
         """
-        res = await self._execute_query(q, [node_id])
-        out = []
-        for r in res:
-            source_dict = self._parse_node_row((r[0], r[1], r[2], r[3]))
-            rel_name = r[4]
-            target_dict = self._parse_node_row((r[5], r[6], r[7], r[8]))
-            out.append((source_dict, rel_name, target_dict))
-        return out
+        return await self._execute_query(q, [node_id])
+
+    async def get_edges(self, node_id: str) -> list[tuple[dict[str, Any], str, dict[str, Any]]]:
+        """Return every edge touching the node as (source node, relationship name, target node)."""
+        return [
+            (
+                self._parse_node_row((r[0], r[1], r[2], r[3])),
+                r[4],
+                self._parse_node_row((r[6], r[7], r[8], r[9])),
+            )
+            for r in await self._incident_edge_rows(str(node_id))
+        ]
 
     async def get_neighbors(self, node_id: str) -> list[dict[str, Any]]:
         """Get neighbors."""
-        q = """
+        q = f"""
         SELECT DISTINCT n.id, n.name, n.type, n.properties
-        FROM graph_node n
-        JOIN graph_edge e ON n.id = e.target_id OR n.id = e.source_id
+        FROM {self._node_table} n
+        JOIN {self._edge_table} e ON n.id = e.target_id OR n.id = e.source_id
         WHERE (e.source_id = $1 OR e.target_id = $1) AND n.id != $1
         """
         res = await self._execute_query(q, [node_id])
         return [self._parse_node_row(r) for r in res]
 
     async def get_neighborhood(
-        self, node_id: str, k: int = 1, property_keys: list[str] | None = None
-    ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
-        """Get neighborhood."""
-        q = f"""
-        WITH RECURSIVE
-        paths(id, depth) AS (
-            SELECT $1::VARCHAR, 0
-            UNION ALL
-            SELECT
-                CASE WHEN e.source_id = p.id THEN e.target_id ELSE e.source_id END,
-                p.depth + 1
-            FROM paths p
-            JOIN graph_edge e ON p.id = e.source_id OR p.id = e.target_id
-            WHERE p.depth < $2
-        )
-        SELECT DISTINCT id FROM paths
+        self,
+        node_ids: list[str],
+        depth: int = 1,
+        edge_types: list[str] | None = None,
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Walk incident edges breadth-first from the seed nodes and return the induced subgraph.
+
+        ``depth`` is the number of hops; ``edge_types`` limits which relationships are
+        walked, not which edges between reached nodes are returned. Negative depth
+        raises ValueError and no seeds returns two empty lists.
         """
-        res = await self._execute_query(q, [node_id, k])
-        neighbor_ids = [r[0] for r in res]
-        if not neighbor_ids:
+        if depth < 0:
+            raise ValueError("depth must be non-negative")
+        if not node_ids:
             return [], []
 
-        placeholders = ", ".join([f"${i + 1}" for i in range(len(neighbor_ids))])
-        placeholders2 = ", ".join(
-            [f"${i + 1 + len(neighbor_ids)}" for i in range(len(neighbor_ids))]
+        reached = {str(node_id) for node_id in node_ids}
+        frontier = set(reached)
+        hop = (
+            f"SELECT source_id, target_id FROM {self._edge_table} "
+            "WHERE (list_contains($1, source_id) OR list_contains($1, target_id))"
         )
-        q_nodes = f"SELECT id, name, type, properties FROM graph_node WHERE id IN ({placeholders})"
-        q_edges = f"SELECT source_id, target_id, relationship_name, properties FROM graph_edge WHERE source_id IN ({placeholders}) AND target_id IN ({placeholders2})"
+        if edge_types:
+            hop += " AND list_contains($2, relationship_name)"
+        for _ in range(depth):
+            if not frontier:
+                break
+            params: list[Any] = [sorted(frontier)]
+            if edge_types:
+                params.append([str(edge_type) for edge_type in edge_types])
+            next_frontier = set()
+            for source_id, target_id in await self._execute_query(hop, params):
+                for endpoint in (source_id, target_id):
+                    if endpoint not in reached:
+                        reached.add(endpoint)
+                        next_frontier.add(endpoint)
+            frontier = next_frontier
 
-        nodes_raw = await self._execute_query(q_nodes, neighbor_ids)
-        edges_raw = await self._execute_query(q_edges, neighbor_ids + neighbor_ids)
-
-        nodes = [self._parse_node_row(r) for r in nodes_raw]
-        edges = [
-            (
-                r[0],
-                r[1],
-                r[2],
-                json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {}),
-            )
-            for r in edges_raw
-        ]
-        return nodes, edges
+        return await self._induced_subgraph(sorted(reached))
 
     async def get_nodeset_subgraph(
         self,
         node_type: type[Any],
         node_name: list[str],
         node_name_filter_operator: str = "OR",
-    ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
-        """Documentation."""
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Return the named nodes of ``node_type``, their qualifying neighbours, and edges between.
+
+        With "OR" a neighbour of any named node qualifies; with "AND" only a neighbour
+        of every named node does. Any other operator raises ValueError.
+        """
+        if node_name_filter_operator not in {"OR", "AND"}:
+            raise ValueError("node_name_filter_operator must be 'OR' or 'AND'")
         if not node_name:
             return [], []
 
-        placeholders = ", ".join([f"${i + 1}" for i in range(len(node_name))])
-
-        q_ids = f"SELECT id FROM graph_node WHERE name IN ({placeholders})"
-        ids_raw = await self._execute_query(q_ids, node_name)
-        ids = [r[0] for r in ids_raw]
-
-        if not ids:
+        primary_rows = await self._execute_query(
+            f"SELECT id FROM {self._node_table} WHERE type = $1 AND list_contains($2, name)",
+            [node_type.__name__, [str(name) for name in node_name]],
+        )
+        primary_ids = {r[0] for r in primary_rows}
+        if not primary_ids:
             return [], []
 
-        p1 = ", ".join([f"${i + 1}" for i in range(len(ids))])
-        p2 = ", ".join([f"${i + 1 + len(ids)}" for i in range(len(ids))])
-        q_edges = f"SELECT source_id, target_id FROM graph_edge WHERE source_id IN ({p1}) OR target_id IN ({p2})"
-        edges_raw = await self._execute_query(q_edges, ids + ids)
-
-        connected_ids = set(ids)
-        for r in edges_raw:
-            connected_ids.add(r[0])
-            connected_ids.add(r[1])
-
-        # Support AND semantics
-        if node_name_filter_operator == "AND":
-            # For AND, we only include edges that connect nodes BOTH of which are in the original requested name set
-            # The 'ids' list contains exactly the nodes we matched by name.
-            filtered_edges = []
-            for r in edges_raw:
-                if r[0] in ids and r[1] in ids:
-                    filtered_edges.append(r)
-
-            connected_ids = set()
-            for r in filtered_edges:
-                connected_ids.add(r[0])
-                connected_ids.add(r[1])
-
-        return await self.get_id_filtered_graph_data(list(connected_ids))
+        incident = await self._execute_query(
+            f"SELECT source_id, target_id FROM {self._edge_table} "
+            "WHERE list_contains($1, source_id) OR list_contains($1, target_id)",
+            [sorted(primary_ids)],
+        )
+        neighbor_ids = _select_nodeset_neighbor_ids(
+            primary_ids, [(r[0], r[1]) for r in incident], node_name_filter_operator
+        )
+        return await self._induced_subgraph(sorted(primary_ids | neighbor_ids))
 
     async def get_connections(
         self, node_id: str | UUID
-    ) -> list[tuple[str, str, str, dict[str, Any]]]:
-        """Documentation."""
-        q = "SELECT source_id, target_id, relationship_name, properties FROM graph_edge WHERE source_id = $1 OR target_id = $1"
-        res = await self._execute_query(q, [str(node_id)])
-        return [
-            (
-                r[0],
-                r[1],
-                r[2],
-                json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {}),
+    ) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
+        """Return every edge touching the node as (source node, edge, target node).
+
+        The edge dictionary holds ``relationship_name`` and the stored edge properties.
+        """
+        connections = []
+        for r in await self._incident_edge_rows(str(node_id)):
+            edge_properties = json.loads(r[5]) if isinstance(r[5], str) else (r[5] if r[5] else {})
+            connections.append(
+                (
+                    self._parse_node_row((r[0], r[1], r[2], r[3])),
+                    {"relationship_name": r[4], **edge_properties},
+                    self._parse_node_row((r[6], r[7], r[8], r[9])),
+                )
             )
-            for r in res
-        ]
+        return connections
 
     async def is_empty(self) -> bool:
         """Check if the graph is empty."""
         """Check if graph is empty."""
-        res = await self._execute_query_one("SELECT 1 FROM graph_node LIMIT 1")
+        res = await self._execute_query_one(f"SELECT 1 FROM {self._node_table} LIMIT 1")
         return res is None
 
     async def get_top_degree_node_ids(self, top_k: int) -> list[str]:
         """Get top degree node ids."""
-        q = """
+        q = f"""
         SELECT id FROM (
             SELECT source_id AS id, COUNT(*) AS degree
-            FROM graph_edge
+            FROM {self._edge_table}
             GROUP BY source_id
             UNION ALL
             SELECT target_id AS id, COUNT(*) AS degree
-            FROM graph_edge
+            FROM {self._edge_table}
             GROUP BY target_id
         ) combined
         GROUP BY id
@@ -1132,13 +1206,13 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         if not entity_ids:
             return {}
         placeholders = ", ".join([f"${i + 1}" for i in range(len(entity_ids))])
-        q = f"SELECT e.source_id, n.name FROM graph_edge e JOIN graph_node n ON e.target_id = n.id WHERE e.source_id IN ({placeholders}) AND e.relationship_name = 'is_a'"
+        q = f"SELECT e.source_id, n.name FROM {self._edge_table} e JOIN {self._node_table} n ON e.target_id = n.id WHERE e.source_id IN ({placeholders}) AND e.relationship_name = 'is_a'"
         res = await self._execute_query(q, entity_ids)
         return {r[0]: r[1] for r in res}
 
     async def get_triplets_batch(self, offset: int, limit: int) -> list[dict[str, Any]]:
         """Documentation."""
-        q = "SELECT e.source_id, e.relationship_name, e.target_id FROM graph_edge e LIMIT $1 OFFSET $2"
+        q = f"SELECT e.source_id, e.relationship_name, e.target_id FROM {self._edge_table} e LIMIT $1 OFFSET $2"
         res = await self._execute_query(q, [limit, offset])
         return [{"source_id": r[0], "relationship_name": r[1], "target_id": r[2]} for r in res]
 
@@ -1146,7 +1220,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         """Documentation."""
         queries = []
         for edge in edges:
-            q = "DELETE FROM graph_edge WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3"
+            q = f"DELETE FROM {self._edge_table} WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3"
             queries.append((q, [edge.source_id, edge.target_id, edge.relationship_name]))
         await self._execute_transaction(queries)
 
@@ -1161,11 +1235,11 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
         tags_to_remove = set(tags)
         if node_ids is None:
-            q = "SELECT id, properties FROM graph_node"
+            q = f"SELECT id, properties FROM {self._node_table}"
             res = await self._execute_query(q)
         else:
             p1 = ", ".join([f"${i + 1}" for i in range(len(node_ids))])
-            q = f"SELECT id, properties FROM graph_node WHERE id IN ({p1})"
+            q = f"SELECT id, properties FROM {self._node_table} WHERE id IN ({p1})"
             res = await self._execute_query(q, node_ids)
 
         queries = []
@@ -1180,7 +1254,10 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
                     props["belongs_to_set"] = remaining
                     props_json = json.dumps(serialize_for_json(props))
                     queries.append(
-                        ("UPDATE graph_node SET properties = $1 WHERE id = $2", [props_json, r[0]])
+                        (
+                            f"UPDATE {self._node_table} SET properties = $1 WHERE id = $2",
+                            [props_json, r[0]],
+                        )
                     )
 
         if queries:
@@ -1202,7 +1279,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
         for node_id in sorted({str(node_id) for node_id in node_ids}):
             existing = await self._execute_query_one(
-                "SELECT source_ref_keys, source_run_refs FROM graph_node WHERE id = $1",
+                f"SELECT source_ref_keys, source_run_refs FROM {self._node_table} WHERE id = $1",
                 [node_id],
             )
             if existing is None:
@@ -1212,7 +1289,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             p = provenance_after_attach(
                 existing_ref_keys, existing_run_refs, source_ref_keys, pipeline_run_id
             )
-            q = "UPDATE graph_node SET source_ref_keys = $1, source_dataset_ids = $2, source_run_ids = $3, source_run_refs = $4 WHERE id = $5"
+            q = f"UPDATE {self._node_table} SET source_ref_keys = $1, source_dataset_ids = $2, source_run_ids = $3, source_run_refs = $4 WHERE id = $5"
             queries.append(
                 (
                     q,
@@ -1245,7 +1322,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             {(str(e.source_id), str(e.target_id), str(e.relationship_name)) for e in edges}
         ):
             existing = await self._execute_query_one(
-                "SELECT source_ref_keys, source_run_refs FROM graph_edge WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3",
+                f"SELECT source_ref_keys, source_run_refs FROM {self._edge_table} WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3",
                 [edge[0], edge[1], edge[2]],
             )
             if existing is None:
@@ -1255,7 +1332,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             p = provenance_after_attach(
                 existing_ref_keys, existing_run_refs, source_ref_keys, pipeline_run_id
             )
-            q = "UPDATE graph_edge SET source_ref_keys = $1, source_dataset_ids = $2, source_run_ids = $3, source_run_refs = $4 WHERE source_id = $5 AND target_id = $6 AND relationship_name = $7"
+            q = f"UPDATE {self._edge_table} SET source_ref_keys = $1, source_dataset_ids = $2, source_run_ids = $3, source_run_refs = $4 WHERE source_id = $5 AND target_id = $6 AND relationship_name = $7"
             queries.append(
                 (
                     q,
@@ -1285,7 +1362,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
         for node_id in sorted({str(node_id) for node_id in node_ids}):
             existing = await self._execute_query_one(
-                "SELECT source_ref_keys, source_run_refs FROM graph_node WHERE id = $1",
+                f"SELECT source_ref_keys, source_run_refs FROM {self._node_table} WHERE id = $1",
                 [node_id],
             )
             if existing is None:
@@ -1293,7 +1370,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             existing_ref_keys = list(existing[0]) if existing[0] else []
             existing_run_refs = list(existing[1]) if existing[1] else []
             p = provenance_after_remove(existing_ref_keys, existing_run_refs, source_ref_keys)
-            q = "UPDATE graph_node SET source_ref_keys = $1, source_dataset_ids = $2, source_run_ids = $3, source_run_refs = $4 WHERE id = $5"
+            q = f"UPDATE {self._node_table} SET source_ref_keys = $1, source_dataset_ids = $2, source_run_ids = $3, source_run_refs = $4 WHERE id = $5"
             queries.append(
                 (
                     q,
@@ -1321,7 +1398,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             {(str(e.source_id), str(e.target_id), str(e.relationship_name)) for e in edges}
         ):
             existing = await self._execute_query_one(
-                "SELECT source_ref_keys, source_run_refs FROM graph_edge WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3",
+                f"SELECT source_ref_keys, source_run_refs FROM {self._edge_table} WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3",
                 [edge[0], edge[1], edge[2]],
             )
             if existing is None:
@@ -1329,7 +1406,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             existing_ref_keys = list(existing[0]) if existing[0] else []
             existing_run_refs = list(existing[1]) if existing[1] else []
             p = provenance_after_remove(existing_ref_keys, existing_run_refs, source_ref_keys)
-            q = "UPDATE graph_edge SET source_ref_keys = $1, source_dataset_ids = $2, source_run_ids = $3, source_run_refs = $4 WHERE source_id = $5 AND target_id = $6 AND relationship_name = $7"
+            q = f"UPDATE {self._edge_table} SET source_ref_keys = $1, source_dataset_ids = $2, source_run_ids = $3, source_run_refs = $4 WHERE source_id = $5 AND target_id = $6 AND relationship_name = $7"
             queries.append(
                 (
                     q,
@@ -1349,7 +1426,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
     async def get_node_source_refs(self, node_id: str) -> list[str]:
         """Documentation."""
         existing = await self._execute_query_one(
-            "SELECT source_ref_keys FROM graph_node WHERE id = $1", [node_id]
+            f"SELECT source_ref_keys FROM {self._node_table} WHERE id = $1", [node_id]
         )
         return list(existing[0]) if existing and existing[0] else []
 
@@ -1358,7 +1435,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
     ) -> list[str]:
         """Documentation."""
         existing = await self._execute_query_one(
-            "SELECT source_ref_keys FROM graph_edge WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3",
+            f"SELECT source_ref_keys FROM {self._edge_table} WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3",
             [source_id, target_id, relationship_name],
         )
         return list(existing[0]) if existing and existing[0] else []
@@ -1369,7 +1446,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             NodeDeleteData,
         )
 
-        q = "SELECT id, name, type, properties, source_ref_keys, source_dataset_ids, source_run_ids, source_run_refs FROM graph_node WHERE id = $1"
+        q = f"SELECT id, name, type, properties, source_ref_keys, source_dataset_ids, source_run_ids, source_run_refs FROM {self._node_table} WHERE id = $1"
         res = {}
         for nid in node_ids:
             row = await self._execute_query_one(q, [nid])
@@ -1401,7 +1478,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             EdgeIdentity,
         )
 
-        q = "SELECT source_id, target_id, relationship_name, properties, source_ref_keys, source_dataset_ids, source_run_ids, source_run_refs FROM graph_edge WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3"
+        q = f"SELECT source_id, target_id, relationship_name, properties, source_ref_keys, source_dataset_ids, source_run_ids, source_run_refs FROM {self._edge_table} WHERE source_id = $1 AND target_id = $2 AND relationship_name = $3"
         res = {}
         for e in edges:
             row = await self._execute_query_one(q, [e.source_id, e.target_id, e.relationship_name])
@@ -1426,7 +1503,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             get_dataset_id_from_source_ref_key,
         )
 
-        q = "SELECT id, source_ref_keys FROM graph_node WHERE list_contains(source_dataset_ids, $1)"
+        q = f"SELECT id, source_ref_keys FROM {self._node_table} WHERE list_contains(source_dataset_ids, $1)"
         res = await self._execute_query(q, [dataset_id])
         out = {}
         for r in res:
@@ -1446,7 +1523,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             get_dataset_id_from_source_ref_key,
         )
 
-        q = "SELECT source_id, target_id, relationship_name, source_ref_keys FROM graph_edge WHERE list_contains(source_dataset_ids, $1)"
+        q = f"SELECT source_id, target_id, relationship_name, source_ref_keys FROM {self._edge_table} WHERE list_contains(source_dataset_ids, $1)"
         res = await self._execute_query(q, [dataset_id])
         out = {}
         for r in res:
@@ -1468,7 +1545,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             get_source_ref_key_from_source_run_ref,
         )
 
-        q = "SELECT id, source_run_refs FROM graph_node WHERE list_contains(source_run_ids, $1)"
+        q = f"SELECT id, source_run_refs FROM {self._node_table} WHERE list_contains(source_run_ids, $1)"
         res = await self._execute_query(q, [pipeline_run_id])
         out = {}
         for r in res:
@@ -1491,7 +1568,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             get_source_ref_key_from_source_run_ref,
         )
 
-        q = "SELECT source_id, target_id, relationship_name, source_run_refs FROM graph_edge WHERE list_contains(source_run_ids, $1)"
+        q = f"SELECT source_id, target_id, relationship_name, source_run_refs FROM {self._edge_table} WHERE list_contains(source_run_ids, $1)"
         res = await self._execute_query(q, [pipeline_run_id])
         out = {}
         for r in res:
@@ -1506,7 +1583,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
     async def find_nodes_by_source_ref(self, source_ref_key: str) -> list[str]:
         """Documentation."""
-        q = "SELECT id FROM graph_node WHERE list_contains(source_ref_keys, $1)"
+        q = f"SELECT id FROM {self._node_table} WHERE list_contains(source_ref_keys, $1)"
         res = await self._execute_query(q, [source_ref_key])
         return [r[0] for r in res]
 
@@ -1514,14 +1591,14 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         """Documentation."""
         from cognee.infrastructure.databases.provenance.delete_data import EdgeIdentity
 
-        q = "SELECT source_id, target_id, relationship_name FROM graph_edge WHERE list_contains(source_ref_keys, $1)"
+        q = f"SELECT source_id, target_id, relationship_name FROM {self._edge_table} WHERE list_contains(source_ref_keys, $1)"
         res = await self._execute_query(q, [source_ref_key])
         return [EdgeIdentity(r[0], r[1], r[2]) for r in res]
 
     async def get_graph_metadata(self) -> dict[str, str]:
         """Documentation."""
         await self.initialize()
-        q = "SELECT key, value FROM graph_metadata"
+        q = f"SELECT key, value FROM {self._metadata_table}"
         res = await self._execute_query(q)
         return {r[0]: r[1] for r in res}
 
@@ -1532,8 +1609,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         await self.initialize()
         queries = []
         for k, v in metadata.items():
-            q = """
-            INSERT INTO graph_metadata (key, value) VALUES ($1, $2)
+            q = f"""
+            INSERT INTO {self._metadata_table} (key, value) VALUES ($1, $2)
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
             """
             queries.append((q, [str(k), str(v)]))

@@ -11,6 +11,12 @@ from service.memory_owner_schema import MemoryEventValidator
 TIERS = ("episodic", "temporal", "relational", "personalization")
 SYSTEM_EVENT_PREFIX = "system."
 SYSTEM_ACTOR = "owner-system"
+# Owner-authored removal operations and the event type each is captured as.
+REMOVAL_EVENT_TYPES = {"expire": "system.expire", "forget": "system.forget"}
+# The word each operation's source_revision uses; expiry keeps its original spelling
+# so an expiry captured before forget existed replays without an envelope conflict.
+REMOVAL_REVISION_WORDS = {"expire": "expiry", "forget": "forget"}
+REMOVAL_OUTCOMES = {"expire": "expired", "forget": "forgotten"}
 
 
 def parse_instant(text: str) -> datetime:
@@ -95,6 +101,20 @@ class OwnerCore:
             await self.conn.run(
                 self.conn.native.execute,
                 """
+                CREATE TABLE IF NOT EXISTS memory_removals (
+                    target_event_id VARCHAR PRIMARY KEY,
+                    removal_event_id VARCHAR NOT NULL,
+                    operation VARCHAR NOT NULL,
+                    requested_by VARCHAR NOT NULL,
+                    requested_at VARCHAR NOT NULL,
+                    FOREIGN KEY (target_event_id) REFERENCES memory_events(event_id),
+                    FOREIGN KEY (removal_event_id) REFERENCES memory_events(event_id)
+                );
+                """,
+            )
+            await self.conn.run(
+                self.conn.native.execute,
+                """
                 CREATE TABLE IF NOT EXISTS memory_payloads (
                     event_id VARCHAR PRIMARY KEY,
                     payload_sha256 VARCHAR NOT NULL,
@@ -121,6 +141,87 @@ class OwnerCore:
                 "INSERT INTO memory_payloads (event_id, payload_sha256, payload) VALUES (?, ?, ?)",
                 (event_id, hashlib.sha256(payload).hexdigest(), payload),
             )
+
+    @staticmethod
+    async def _record_removal(
+        cursor, removal_event_id: str, requested_at: str, removal: tuple[str, str, str]
+    ) -> None:
+        """Record that removal_event_id removes its target, inside the caller's transaction.
+
+        A target already removed by this same event is left as it is. Raises
+        ValueError when another removal event already removed the target; it
+        never replaces an existing removal.
+        """
+        target_event_id, operation, requested_by = removal
+        await cursor.execute(
+            "SELECT removal_event_id FROM memory_removals WHERE target_event_id = ?",
+            (target_event_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            await cursor.execute(
+                "INSERT INTO memory_removals "
+                "(target_event_id, removal_event_id, operation, requested_by, requested_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (target_event_id, removal_event_id, operation, requested_by, requested_at),
+            )
+        elif row[0] != removal_event_id:
+            raise ValueError(f"Event {target_event_id} was already removed by {row[0]}")
+
+    async def removal_of(self, event_id: str) -> str | None:
+        """Return the id of the removal event that removed event_id, or None. Reads only."""
+        cursor = await self.conn.cursor()
+        await cursor.execute(
+            "SELECT removal_event_id FROM memory_removals WHERE target_event_id = ?", (event_id,)
+        )
+        row = await cursor.fetchone()
+        return None if row is None else row[0]
+
+    async def live_producers(self, event_ids: list[str]) -> dict[str, str | None]:
+        """Map each captured, not removed and not expired event among event_ids to its producer.
+
+        Events that are unknown, removed (expired or forgotten through the
+        owner) or legacy events whose ttl has elapsed are left out. Reads only.
+        """
+        if not event_ids:
+            return {}
+        cursor = await self.conn.cursor()
+        await cursor.execute(
+            """
+            SELECT e.event_id, e.actor_agent_id
+            FROM memory_events e LEFT JOIN memory_removals r ON r.target_event_id = e.event_id
+            WHERE e.event_id IN (SELECT unnest(?)) AND r.target_event_id IS NULL
+            """,
+            (list(dict.fromkeys(event_ids)),),
+        )
+        rows = dict(await cursor.fetchall())
+        for expired_id, _, _ in await self.expired_events():
+            rows.pop(expired_id, None)
+        return rows
+
+    async def receipts(self, event_id: str) -> dict[str, dict]:
+        """Return tier -> durable receipt for one event (empty for an unknown event). Reads only."""
+        cursor = await self.conn.cursor()
+        await cursor.execute(
+            "SELECT tier, processor_id, processor_version, projection_version, status, "
+            "attempt_id, attempted_at, completed_at, error_ref "
+            "FROM memory_receipts WHERE event_id = ? ORDER BY tier",
+            (event_id,),
+        )
+        keys = (
+            "processor_id",
+            "processor_version",
+            "projection_version",
+            "status",
+            "attempt_id",
+            "attempted_at",
+            "completed_at",
+            "error_ref",
+        )
+        return {
+            row[0]: {"event_id": event_id, **dict(zip(keys, row[1:], strict=True))}
+            for row in await cursor.fetchall()
+        }
 
     async def load_event(self, event_id: str) -> tuple[dict, bytes | None]:
         """Return the stored envelope and its stored payload bytes, verified.
@@ -186,17 +287,19 @@ class OwnerCore:
 
         expires_at is the ISO instant the event's own timestamp plus its
         ttl_seconds reaches; only events with a positive ttl are listed. Only
-        legacy envelopes carry a ttl; version 2 has no expiry field. Reads only.
+        legacy envelopes carry a ttl; version 2 has no expiry field. An event
+        already removed by another operation (forgotten) is not listed. Reads only.
         """
         cursor = await self.conn.cursor()
         await cursor.execute(
             """
-            SELECT event_id, created_at, json_extract(raw_event, '$.ttl_seconds')::BIGINT
-            FROM memory_events
-            WHERE schema_version = '1.0.0'
-              AND json_extract(raw_event, '$.ttl_seconds') IS NOT NULL
-              AND json_extract(raw_event, '$.ttl_seconds')::BIGINT > 0
-            ORDER BY rowid
+            SELECT e.event_id, e.created_at, json_extract(e.raw_event, '$.ttl_seconds')::BIGINT
+            FROM memory_events e LEFT JOIN memory_removals r ON r.target_event_id = e.event_id
+            WHERE e.schema_version = '1.0.0'
+              AND json_extract(e.raw_event, '$.ttl_seconds') IS NOT NULL
+              AND json_extract(e.raw_event, '$.ttl_seconds')::BIGINT > 0
+              AND (r.operation IS NULL OR r.operation = 'expire')
+            ORDER BY e.rowid
             """
         )
         now = datetime.now(timezone.utc)
@@ -216,35 +319,75 @@ class OwnerCore:
         interface. It is deterministic: asking again returns the same event
         without changing it. Its receipts start pending.
         """
+        return await self.ingest_system_removal(
+            target_event_id,
+            "expire",
+            requested_by=SYSTEM_ACTOR,
+            requested_at=expires_at,
+            details={"ttl_seconds": ttl, "reason": "ttl_seconds elapsed"},
+        )
+
+    async def ingest_system_removal(
+        self,
+        target_event_id: str,
+        operation: str,
+        *,
+        requested_by: str,
+        requested_at: str,
+        details: dict,
+    ) -> str:
+        """Capture an owner-authored removal ("expire" or "forget") of one captured event; return its id.
+
+        In the same transaction as the removal event it records the target in
+        memory_removals, so retrieval withholds the target at once, before any
+        tier has removed its projection. The tiers then remove their
+        projections through the ordinary processor interface. requested_by is
+        the authenticated principal (or the owner itself) and is provenance
+        only; the caller must already have authorized the request. It is
+        deterministic per target and operation: asking again returns the same
+        event without capturing anything. Raises ValueError for an unknown
+        operation, an unknown target, an owner-authored target, or a target
+        already removed by another operation.
+        """
+        if operation not in REMOVAL_EVENT_TYPES:
+            raise ValueError(f"Unknown removal operation '{operation}'")
+        event_id = f"{SYSTEM_EVENT_PREFIX}{operation}:{target_event_id}"
+        existing = await self.removal_of(target_event_id)
+        if existing == event_id:
+            # Already recorded: a repeated request changes nothing, whenever it is asked.
+            return event_id
+        if existing is not None:
+            raise ValueError(f"Event {target_event_id} was already removed by {existing}")
         target, _ = await self.load_event(target_event_id)
+        target_type = str(target.get("event_type", target.get("content_type", "")))
+        if target_type.startswith(SYSTEM_EVENT_PREFIX):
+            raise ValueError("Owner-authored events are provenance and cannot be removed")
         payload = json.dumps(
             {
-                "operation": "expire",
+                **details,
+                "operation": operation,
                 "target_event_id": target_event_id,
                 "target_actor_agent_id": target.get("actor_agent_id", target.get("agent_id")),
-                "ttl_seconds": ttl,
-                "reason": "ttl_seconds elapsed",
             },
             sort_keys=True,
         ).encode("utf-8")
-        event_id = f"{SYSTEM_EVENT_PREFIX}expire:{target_event_id}"
         envelope = {
             "schema_version": "2.0.0",
             "event_id": event_id,
             "actor_agent_id": SYSTEM_ACTOR,
-            "event_type": f"{SYSTEM_EVENT_PREFIX}expire",
-            "created_at": expires_at,
+            "event_type": REMOVAL_EVENT_TYPES[operation],
+            "created_at": requested_at,
             "source_artifact_id": target.get("source_artifact_id"),
             "work_id": None,
             "parent_event_id": None,
             "causation_event_id": target_event_id,
-            "source_revision": f"owner-expiry-of-{target_event_id}",
+            "source_revision": f"owner-{REMOVAL_REVISION_WORDS[operation]}-of-{target_event_id}",
             "recipe_version": None,
             "model_occupant_id": None,
             "program_version": None,
             "payload_ref": "inline",
             "payload_sha256": hashlib.sha256(payload).hexdigest(),
-            "outcome": "expired",
+            "outcome": REMOVAL_OUTCOMES[operation],
             "exactness": "derived",
             "tier_receipts": {
                 tier: {
@@ -261,7 +404,12 @@ class OwnerCore:
                 for tier in TIERS
             },
         }
-        await self.ingest_event(envelope, payload, trusted_system=True)
+        await self.ingest_event(
+            envelope,
+            payload,
+            trusted_system=True,
+            removal=(target_event_id, operation, requested_by),
+        )
         return event_id
 
     async def ingest_event(
@@ -270,6 +418,7 @@ class OwnerCore:
         payload_content: bytes | None = None,
         *,
         trusted_system: bool = False,
+        removal: tuple[str, str, str] | None = None,
     ) -> dict:
         """
         Ingest a memory event, validate it, and write it, its payload bytes and its initial receipts durably.
@@ -280,11 +429,16 @@ class OwnerCore:
         bytes were never stored backfills them once they verify against the
         stored hash. Event types starting with "system." are accepted only from
         the owner's own code (trusted_system=True), never from a client.
+        removal, given only by the owner's removal capture, is (target event,
+        operation, requested_by): the target's removal row is written in the
+        same transaction, so the removal is visible exactly when it is durable.
         Returns the event dictionary on success.
         Raises ValueError if validation fails.
         """
         # Durable receipt output must not alter a caller's retryable input envelope.
         event_data = event_data.copy()
+        if removal is not None and not trusted_system:
+            raise ValueError("Only the owner's own removal capture may record a removal")
         # Validate syntax and semantics
         self.validator.validate_event(event_data, payload_content)
         if (
@@ -396,6 +550,8 @@ class OwnerCore:
                         )
                     event_data = existing_event
                     await self._store_payload_if_missing(cursor, event_id, stored_payload)
+                    if removal is not None:
+                        await self._record_removal(cursor, event_id, created_at, removal)
 
                 # Return durable current receipts, not incoming state
                 await cursor.execute(
@@ -456,6 +612,9 @@ class OwnerCore:
                     """,
                     r,
                 )
+
+            if removal is not None:
+                await self._record_removal(cursor, event_id, created_at, removal)
 
             # Reconstruct the return dictionary from the actual durably written pending receipts
             result_receipts = {}

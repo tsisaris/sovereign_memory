@@ -1,4 +1,8 @@
-"""Persist Mem0 history and messages in DuckDB with explicit connection ownership."""
+"""Persist Mem0 history and messages in DuckDB with explicit connection ownership.
+
+On its own file the manager commits its own writes; on a borrowed handle it only
+joins the caller's transaction and never commits, rolls back or closes it.
+"""
 
 import logging
 import threading
@@ -13,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 class DuckDBManager:
-    """DuckDB implementation of the Mem0 history and message storage."""
+    """DuckDB implementation of the Mem0 history and message storage.
+
+    Its tables are history and messages in the handle's current schema. It
+    never opens SQLite and never reads or alters another schema's tables.
+    """
 
     def __init__(
         self, db_path: str = ":memory:", connection: Optional[duckdb.DuckDBPyConnection] = None
@@ -41,18 +49,40 @@ class DuckDBManager:
         self._create_messages_table()
         self._run_migrations()
 
+    def _begin_owned(self) -> bool:
+        """Open a transaction on a handle this manager owns and that has none; say whether it did.
+
+        A borrowed handle is never given BEGIN, COMMIT or ROLLBACK, and an owned
+        handle already inside a transaction stays in it (DuckDB refuses a nested BEGIN).
+        """
+        if not self._owns_connection:
+            return False
+        try:
+            self.connection.execute("BEGIN TRANSACTION")
+        except duckdb.TransactionException:
+            return False
+        return True
+
     def _run_migrations(self) -> None:
-        """Migrate legacy schema to current schema if needed."""
+        """Migrate this schema's legacy history table to the current columns if needed.
+
+        Only the history table of the handle's current database and schema is
+        inspected; a table of the same name in another schema is never touched.
+        """
         with self._lock:
             try:
                 tables_df = self.connection.execute(
-                    "SELECT table_name FROM information_schema.tables WHERE table_name = 'history'"
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_name = 'history' AND table_catalog = current_database() "
+                    "AND table_schema = current_schema()"
                 ).fetchall()
                 if not tables_df:
                     return
 
                 cols_df = self.connection.execute(
-                    "SELECT column_name FROM information_schema.columns WHERE table_name = 'history'"
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'history' AND table_catalog = current_database() "
+                    "AND table_schema = current_schema()"
                 ).fetchall()
                 old_cols = {row[0] for row in cols_df}
 
@@ -72,9 +102,7 @@ class DuckDBManager:
                 if old_cols == expected_cols:
                     return
 
-                owns_transaction = self._owns_connection
-                if owns_transaction:
-                    self.connection.execute("BEGIN TRANSACTION")
+                owns_transaction = self._begin_owned()
 
                 try:
                     self.connection.execute("ALTER TABLE history RENAME TO history_old")
@@ -116,6 +144,7 @@ class DuckDBManager:
                 raise
 
     def _create_history_table(self) -> None:
+        """Create the history table when it is absent; raises when creation fails."""
         with self._lock:
             try:
                 self.connection.execute(
@@ -139,6 +168,7 @@ class DuckDBManager:
                 raise
 
     def _create_messages_table(self) -> None:
+        """Create the session messages table when it is absent; raises when creation fails."""
         with self._lock:
             try:
                 self.connection.execute(
@@ -204,9 +234,7 @@ class DuckDBManager:
             return
         with self._lock:
             try:
-                owns_transaction = self._owns_connection
-                if owns_transaction:
-                    self.connection.execute("BEGIN TRANSACTION")
+                owns_transaction = self._begin_owned()
 
                 try:
                     rows = []
@@ -290,10 +318,11 @@ class DuckDBManager:
         return result
 
     def save_messages(self, messages: List[Dict[str, Any]], session_scope: str) -> None:
-        """Store messages and retain the latest ten within the supplied session."""
+        """Store messages and retain the latest ten within the supplied session, as one write."""
         if not messages:
             return
         with self._lock:
+            owns_transaction = self._begin_owned()
             try:
                 now_str = datetime.now(timezone.utc).isoformat()
                 for message in messages:
@@ -321,7 +350,11 @@ class DuckDBManager:
                     """,
                     (session_scope, session_scope),
                 )
+                if owns_transaction:
+                    self.connection.execute("COMMIT")
             except Exception as e:
+                if owns_transaction:
+                    self.connection.execute("ROLLBACK")
                 logger.error(f"Failed to save messages: {e}")
                 raise
 

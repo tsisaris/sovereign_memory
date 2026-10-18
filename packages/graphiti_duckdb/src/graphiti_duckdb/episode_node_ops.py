@@ -118,7 +118,7 @@ class DuckDBEpisodeNodeOps(EpisodeNodeOperations):
     async def retrieve_episodes(
         self, executor, reference_time, last_n=3, group_ids=None, source=None, saga=None
     ):
-        """Return the latest eligible episodes using actual time, group, source and saga filters."""
+        """Return the latest eligible episodes, oldest first, with time, group, source and saga filters."""
         query = (
             "SELECT properties FROM graphiti.graph_node WHERE label = 'Episodic' "
             "AND CAST(json_extract_string(properties, 'valid_at') AS TIMESTAMPTZ) <= ?"
@@ -140,12 +140,14 @@ class DuckDBEpisodeNodeOps(EpisodeNodeOperations):
             query += " AND json_extract_string(properties, 'source') = ?"
             parameters.append(source.value if isinstance(source, EpisodeType) else source)
         query += (
-            " ORDER BY CAST(json_extract_string(properties, 'valid_at') AS TIMESTAMPTZ) DESC "
-            "LIMIT ?"
+            " ORDER BY CAST(json_extract_string(properties, 'valid_at') AS TIMESTAMPTZ) DESC, "
+            "CAST(json_extract_string(properties, 'created_at') AS TIMESTAMPTZ) DESC LIMIT ?"
         )
         parameters.append(last_n)
         records, _, _ = await executor.execute_query(query, parameters=parameters)
-        return [EpisodicNode.model_validate_json(record["properties"]) for record in records]
+        # The maintained contract selects the newest episodes but returns them oldest first.
+        newest = [EpisodicNode.model_validate_json(record["properties"]) for record in records]
+        return list(reversed(newest))
 
     async def remove_episode_and_singletons(self, executor, episode_uuid, tx=None):
         """Atomically apply maintained creation-provenance and singleton removal rules."""
