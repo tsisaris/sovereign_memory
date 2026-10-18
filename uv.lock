@@ -20,7 +20,6 @@ resolution-markers = [
 members = [
     "duckdb-sqlalchemy-async",
     "sovereign-memory",
-    "sovereign-memory-service",
 ]
 
 [[package]]
@@ -4972,13 +4971,11 @@ wheels = [
 [[package]]
 name = "sovereign-memory"
 version = "0.1.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "alembic" },
     { name = "duckdb" },
     { name = "duckdb-engine" },
-    { name = "duckdb-sqlalchemy-async" },
-    { name = "jsonschema" },
     { name = "sqlalchemy" },
 ]
 
@@ -5007,8 +5004,6 @@ requires-dist = [
     { name = "alembic", specifier = "==1.13.3" },
     { name = "duckdb", specifier = "==1.5.6" },
     { name = "duckdb-engine", specifier = "==0.17.0" },
-    { name = "duckdb-sqlalchemy-async", editable = "packages/duckdb_sqlalchemy_async" },
-    { name = "jsonschema", specifier = ">=4.25.1" },
     { name = "sqlalchemy", specifier = "==2.0.39" },
 ]
 
@@ -5030,21 +5025,6 @@ dev = [
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-asyncio", specifier = "==1.4.0" },
     { name = "ruff", specifier = "==0.16.2" },
-]
-
-[[package]]
-name = "sovereign-memory-service"
-version = "0.1.0"
-source = { editable = "service" }
-dependencies = [
-    { name = "duckdb-sqlalchemy-async" },
-    { name = "jsonschema" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "duckdb-sqlalchemy-async", editable = "packages/duckdb_sqlalchemy_async" },
-    { name = "jsonschema", specifier = ">=4.25.1" },
 ]
 
 [[package]]
