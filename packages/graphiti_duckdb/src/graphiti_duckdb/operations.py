@@ -1,4 +1,5 @@
 """Collect DuckDB operation objects; remaining unsupported families need full integration."""
+
 from datetime import datetime
 
 from graphiti_core.driver.operations.community_edge_ops import CommunityEdgeOperations
@@ -9,7 +10,6 @@ from graphiti_core.driver.operations.next_episode_edge_ops import NextEpisodeEdg
 from graphiti_core.driver.operations.saga_node_ops import SagaNodeOperations
 from graphiti_core.driver.operations.search_ops import SearchOperations
 from graphiti_core.nodes import CommunityNode, SagaNode
-
 
 from .entity_edge_ops import DuckDBEntityEdgeOps as DuckDBEntityEdgeOps
 from .entity_node_ops import DuckDBEntityNodeOps as DuckDBEntityNodeOps

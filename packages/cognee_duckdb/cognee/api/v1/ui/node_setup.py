@@ -1,3 +1,5 @@
+"""Module docstring."""
+
 import os
 import platform
 import subprocess
@@ -43,7 +45,7 @@ def check_nvm_installed() -> bool:
                 capture_output=True,
                 text=True,
                 timeout=10,
-                shell=True,
+                shell=False,
                 check=False,
             )
         else:
@@ -293,7 +295,7 @@ def check_node_npm() -> tuple[bool, str]:  # (is_available, error_message)
                 capture_output=True,
                 text=True,
                 timeout=10,
-                shell=True,
+                shell=False,
                 check=False,
             )
         else:
