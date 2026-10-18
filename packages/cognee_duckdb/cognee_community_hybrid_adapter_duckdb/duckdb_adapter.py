@@ -10,7 +10,11 @@ from typing import Any, List, Optional
 from uuid import UUID
 
 import duckdb
-from cognee.infrastructure.databases.graph.graph_db_interface import GraphDBInterface
+from cognee.infrastructure.databases.graph.graph_db_interface import EdgeData, GraphDBInterface
+from cognee.infrastructure.databases.graph.graph_topology import (
+    _component_sizes,
+    _select_nodeset_neighbor_ids,
+)
 from cognee.infrastructure.databases.vector.embeddings.EmbeddingEngine import (
     EmbeddingEngine,
 )
@@ -424,7 +428,6 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
                     id=parse_id(row[0]),
                     score=score,
                     payload=payload_data,
-                    vector=row[2] if with_vector else None,
                 )
                 results.append(result)
 
@@ -467,9 +470,9 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         return results
 
     async def delete_data_points(
-        self, collection_name: str, data_point_ids: list[str]
+        self, collection_name: str, data_point_ids: list[UUID]
     ) -> dict[str, int]:
-        """[VECTOR] Delete data points by their IDs."""
+        """[VECTOR] Delete data points by their ids (UUIDs or their text form) and count them."""
         try:
             if not await self.has_collection(collection_name):
                 logger.warning(
@@ -488,7 +491,9 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             )
 
             # Execute the deletion
-            deleted_rows = await self._execute_query(delete_query, data_point_ids)
+            deleted_rows = await self._execute_query(
+                delete_query, [str(data_point_id) for data_point_id in data_point_ids]
+            )
             deleted_count = len(deleted_rows)
 
             logger.info(f"Deleted {deleted_count} data points from collection {collection_name}")
@@ -727,7 +732,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
     async def add_edges(
         self,
-        edges: list[tuple[str, str, str, dict[str, Any] | None]],
+        edges: list[EdgeData] | list[tuple[str, str, str, dict[str, Any] | None]],
         source_ref_key: str | None = None,
         pipeline_run_id: str | None = None,
     ) -> None:
@@ -816,58 +821,62 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             [("DELETE FROM graph_edge", None), ("DELETE FROM graph_node", None)]
         )
 
+    def _parse_edge_row(self, row) -> tuple[str, str, str, dict[str, Any]]:
+        """Turn one (source, target, relationship, properties) row into an edge tuple."""
+        properties = json.loads(row[3]) if isinstance(row[3], str) else (row[3] if row[3] else {})
+        return row[0], row[1], row[2], properties
+
+    def _node_tuple(self, row) -> tuple[str, dict[str, Any]]:
+        """Turn one (id, name, type, properties) row into the (id, properties) node shape."""
+        return row[0], self._parse_node_row(row)
+
+    async def _induced_subgraph(
+        self, node_ids: list[str]
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Return the stored nodes among ``node_ids`` and every edge between two of them.
+
+        Ids with no stored node are left out; an empty id list returns two empty lists.
+        """
+        if not node_ids:
+            return [], []
+        nodes_raw = await self._execute_query(
+            "SELECT id, name, type, properties FROM graph_node WHERE list_contains($1, id)",
+            [node_ids],
+        )
+        edges_raw = await self._execute_query(
+            "SELECT source_id, target_id, relationship_name, properties FROM graph_edge "
+            "WHERE list_contains($1, source_id) AND list_contains($1, target_id)",
+            [node_ids],
+        )
+        return [self._node_tuple(r) for r in nodes_raw], [
+            self._parse_edge_row(r) for r in edges_raw
+        ]
+
     async def get_graph_data(
         self,
-    ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
-        """Get all graph data."""
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Return every node as (id, properties) and every edge as (source, target, name, props)."""
         nodes_raw = await self._execute_query("SELECT id, name, type, properties FROM graph_node")
         edges_raw = await self._execute_query(
             "SELECT source_id, target_id, relationship_name, properties FROM graph_edge"
         )
-        nodes = [self._parse_node_row(r) for r in nodes_raw]
-        edges = [
-            (
-                r[0],
-                r[1],
-                r[2],
-                json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {}),
-            )
-            for r in edges_raw
+        return [self._node_tuple(r) for r in nodes_raw], [
+            self._parse_edge_row(r) for r in edges_raw
         ]
-        return nodes, edges
 
     async def get_id_filtered_graph_data(
         self, target_ids: list[str]
-    ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
-        """Documentation."""
-        if not target_ids:
-            return [], []
-        p1 = ", ".join([f"${i + 1}" for i in range(len(target_ids))])
-        p2 = ", ".join([f"${i + 1 + len(target_ids)}" for i in range(len(target_ids))])
-        nodes_raw = await self._execute_query(
-            f"SELECT id, name, type, properties FROM graph_node WHERE id IN ({p1})",
-            target_ids,
-        )
-        edges_raw = await self._execute_query(
-            f"SELECT source_id, target_id, relationship_name, properties FROM graph_edge WHERE source_id IN ({p1}) AND target_id IN ({p2})",
-            target_ids + target_ids,
-        )
-        nodes = [self._parse_node_row(r) for r in nodes_raw]
-        edges = [
-            (
-                r[0],
-                r[1],
-                r[2],
-                json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {}),
-            )
-            for r in edges_raw
-        ]
-        return nodes, edges
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Return the nodes with the given ids and the edges between them, as get_graph_data."""
+        return await self._induced_subgraph([str(target_id) for target_id in target_ids])
 
     async def get_filtered_graph_data(
         self, attribute_filters: list[dict[str, list[str | int]]]
-    ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
-        """Documentation."""
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Return nodes whose id, name or type match every filter, and the edges between them.
+
+        No filters returns the whole graph; any other attribute raises ValueError.
+        """
         if not attribute_filters:
             return await self.get_graph_data()
 
@@ -882,64 +891,43 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             return await self.get_graph_data()
 
         nodes_raw = await self._execute_query("SELECT id, name, type, properties FROM graph_node")
-        nodes = []
-        valid_node_ids = set()
-        for r in nodes_raw:
-            row_dict = {"id": r[0], "name": r[1], "type": r[2]}
-            if all(str(row_dict[attribute]) in values for attribute, values in filters):
-                nodes.append(self._parse_node_row(r))
-                valid_node_ids.add(r[0])
-
-        if not valid_node_ids:
-            return [], []
-
-        edges_raw = await self._execute_query(
-            "SELECT source_id, target_id, relationship_name, properties FROM graph_edge"
-        )
-        edges = []
-        for r in edges_raw:
-            if r[0] in valid_node_ids and r[1] in valid_node_ids:
-                props = json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {})
-                edges.append((r[0], r[1], r[2], props))
-
-        return nodes, edges
+        matched_ids = [
+            r[0]
+            for r in nodes_raw
+            if all(
+                str({"id": r[0], "name": r[1], "type": r[2]}[attribute]) in values
+                for attribute, values in filters
+            )
+        ]
+        return await self._induced_subgraph(matched_ids)
 
     async def get_graph_metrics(self, include_optional: bool = False) -> dict[str, Any]:
-        """Documentation."""
+        """Return the graph metrics Cognee stores per pipeline run.
+
+        Keys match the other SQL adapters; the path-based metrics this adapter does
+        not compute are -1, and ``num_selfloops`` is -1 unless ``include_optional``.
+        """
         nodes_raw = await self._execute_query("SELECT id FROM graph_node")
         edges_raw = await self._execute_query("SELECT source_id, target_id FROM graph_edge")
-        node_count = len(nodes_raw)
-        edge_count = len(edges_raw)
-
-        from collections import defaultdict
-
-        graph = defaultdict(list)
-        for e in edges_raw:
-            graph[e[0]].append(e[1])
-            graph[e[1]].append(e[0])
-
-        visited = set()
-        components = 0
-        for node in nodes_raw:
-            nid = node[0]
-            if nid not in visited:
-                components += 1
-                queue = [nid]
-                while queue:
-                    curr = queue.pop(0)
-                    if curr not in visited:
-                        visited.add(curr)
-                        queue.extend(graph[curr])
-
-        density = (edge_count / (node_count * (node_count - 1))) if node_count > 1 else 0.0
-        average_degree = (2 * edge_count / node_count) if node_count > 0 else 0.0
+        node_ids = [r[0] for r in nodes_raw]
+        edge_pairs = [(r[0], r[1]) for r in edges_raw]
+        num_nodes = len(node_ids)
+        num_edges = len(edge_pairs)
+        component_sizes = _component_sizes(node_ids, edge_pairs)
 
         return {
-            "node_count": node_count,
-            "edge_count": edge_count,
-            "density": density,
-            "number_of_connected_components": components,
-            "average_degree": average_degree,
+            "num_nodes": num_nodes,
+            "num_edges": num_edges,
+            "mean_degree": (2 * num_edges) / num_nodes if num_nodes else None,
+            "edge_density": num_edges / (num_nodes * (num_nodes - 1)) if num_nodes > 1 else 0,
+            "num_connected_components": len(component_sizes),
+            "sizes_of_connected_components": component_sizes,
+            "num_selfloops": sum(source == target for source, target in edge_pairs)
+            if include_optional
+            else -1,
+            "diameter": -1,
+            "avg_shortest_path_length": -1,
+            "avg_clustering": -1,
         }
 
     async def get_graph_counts(self) -> tuple[int, int]:
@@ -957,33 +945,38 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         return res is not None
 
     async def has_edges(self, edges: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
-        """Documentation."""
+        """Return the given (source, target, relationship) triples that are stored."""
         result = []
         for src, tgt, rel in edges:
-            if await self.has_edge(src, tgt, rel):
-                result.append((src, tgt, rel))
+            identity = (str(src), str(tgt), str(rel))
+            if await self.has_edge(*identity):
+                result.append(identity)
         return result
 
-    async def get_edges(self, node_id: str) -> list[tuple[dict[str, Any], str, dict[str, Any]]]:
-        """Get all edges."""
+    async def _incident_edge_rows(self, node_id: str) -> list[Any]:
+        """Read every edge touching ``node_id`` with both endpoint nodes, in one query."""
         q = """
         SELECT
             s.id, s.name, s.type, s.properties,
-            e.relationship_name,
+            e.relationship_name, e.properties,
             t.id, t.name, t.type, t.properties
         FROM graph_edge e
         JOIN graph_node s ON e.source_id = s.id
         JOIN graph_node t ON e.target_id = t.id
         WHERE e.source_id = $1 OR e.target_id = $1
         """
-        res = await self._execute_query(q, [node_id])
-        out = []
-        for r in res:
-            source_dict = self._parse_node_row((r[0], r[1], r[2], r[3]))
-            rel_name = r[4]
-            target_dict = self._parse_node_row((r[5], r[6], r[7], r[8]))
-            out.append((source_dict, rel_name, target_dict))
-        return out
+        return await self._execute_query(q, [node_id])
+
+    async def get_edges(self, node_id: str) -> list[tuple[dict[str, Any], str, dict[str, Any]]]:
+        """Return every edge touching the node as (source node, relationship name, target node)."""
+        return [
+            (
+                self._parse_node_row((r[0], r[1], r[2], r[3])),
+                r[4],
+                self._parse_node_row((r[6], r[7], r[8], r[9])),
+            )
+            for r in await self._incident_edge_rows(str(node_id))
+        ]
 
     async def get_neighbors(self, node_id: str) -> list[dict[str, Any]]:
         """Get neighbors."""
@@ -997,110 +990,98 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         return [self._parse_node_row(r) for r in res]
 
     async def get_neighborhood(
-        self, node_id: str, k: int = 1, property_keys: list[str] | None = None
-    ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
-        """Get neighborhood."""
-        q = f"""
-        WITH RECURSIVE
-        paths(id, depth) AS (
-            SELECT $1::VARCHAR, 0
-            UNION ALL
-            SELECT
-                CASE WHEN e.source_id = p.id THEN e.target_id ELSE e.source_id END,
-                p.depth + 1
-            FROM paths p
-            JOIN graph_edge e ON p.id = e.source_id OR p.id = e.target_id
-            WHERE p.depth < $2
-        )
-        SELECT DISTINCT id FROM paths
+        self,
+        node_ids: list[str],
+        depth: int = 1,
+        edge_types: list[str] | None = None,
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Walk incident edges breadth-first from the seed nodes and return the induced subgraph.
+
+        ``depth`` is the number of hops; ``edge_types`` limits which relationships are
+        walked, not which edges between reached nodes are returned. Negative depth
+        raises ValueError and no seeds returns two empty lists.
         """
-        res = await self._execute_query(q, [node_id, k])
-        neighbor_ids = [r[0] for r in res]
-        if not neighbor_ids:
+        if depth < 0:
+            raise ValueError("depth must be non-negative")
+        if not node_ids:
             return [], []
 
-        placeholders = ", ".join([f"${i + 1}" for i in range(len(neighbor_ids))])
-        placeholders2 = ", ".join(
-            [f"${i + 1 + len(neighbor_ids)}" for i in range(len(neighbor_ids))]
+        reached = {str(node_id) for node_id in node_ids}
+        frontier = set(reached)
+        hop = (
+            "SELECT source_id, target_id FROM graph_edge "
+            "WHERE (list_contains($1, source_id) OR list_contains($1, target_id))"
         )
-        q_nodes = f"SELECT id, name, type, properties FROM graph_node WHERE id IN ({placeholders})"
-        q_edges = f"SELECT source_id, target_id, relationship_name, properties FROM graph_edge WHERE source_id IN ({placeholders}) AND target_id IN ({placeholders2})"
+        if edge_types:
+            hop += " AND list_contains($2, relationship_name)"
+        for _ in range(depth):
+            if not frontier:
+                break
+            params: list[Any] = [sorted(frontier)]
+            if edge_types:
+                params.append([str(edge_type) for edge_type in edge_types])
+            next_frontier = set()
+            for source_id, target_id in await self._execute_query(hop, params):
+                for endpoint in (source_id, target_id):
+                    if endpoint not in reached:
+                        reached.add(endpoint)
+                        next_frontier.add(endpoint)
+            frontier = next_frontier
 
-        nodes_raw = await self._execute_query(q_nodes, neighbor_ids)
-        edges_raw = await self._execute_query(q_edges, neighbor_ids + neighbor_ids)
-
-        nodes = [self._parse_node_row(r) for r in nodes_raw]
-        edges = [
-            (
-                r[0],
-                r[1],
-                r[2],
-                json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {}),
-            )
-            for r in edges_raw
-        ]
-        return nodes, edges
+        return await self._induced_subgraph(sorted(reached))
 
     async def get_nodeset_subgraph(
         self,
         node_type: type[Any],
         node_name: list[str],
         node_name_filter_operator: str = "OR",
-    ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
-        """Documentation."""
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str, str, dict[str, Any]]]]:
+        """Return the named nodes of ``node_type``, their qualifying neighbours, and edges between.
+
+        With "OR" a neighbour of any named node qualifies; with "AND" only a neighbour
+        of every named node does. Any other operator raises ValueError.
+        """
+        if node_name_filter_operator not in {"OR", "AND"}:
+            raise ValueError("node_name_filter_operator must be 'OR' or 'AND'")
         if not node_name:
             return [], []
 
-        placeholders = ", ".join([f"${i + 1}" for i in range(len(node_name))])
-
-        q_ids = f"SELECT id FROM graph_node WHERE name IN ({placeholders})"
-        ids_raw = await self._execute_query(q_ids, node_name)
-        ids = [r[0] for r in ids_raw]
-
-        if not ids:
+        primary_rows = await self._execute_query(
+            "SELECT id FROM graph_node WHERE type = $1 AND list_contains($2, name)",
+            [node_type.__name__, [str(name) for name in node_name]],
+        )
+        primary_ids = {r[0] for r in primary_rows}
+        if not primary_ids:
             return [], []
 
-        p1 = ", ".join([f"${i + 1}" for i in range(len(ids))])
-        p2 = ", ".join([f"${i + 1 + len(ids)}" for i in range(len(ids))])
-        q_edges = f"SELECT source_id, target_id FROM graph_edge WHERE source_id IN ({p1}) OR target_id IN ({p2})"
-        edges_raw = await self._execute_query(q_edges, ids + ids)
-
-        connected_ids = set(ids)
-        for r in edges_raw:
-            connected_ids.add(r[0])
-            connected_ids.add(r[1])
-
-        # Support AND semantics
-        if node_name_filter_operator == "AND":
-            # For AND, we only include edges that connect nodes BOTH of which are in the original requested name set
-            # The 'ids' list contains exactly the nodes we matched by name.
-            filtered_edges = []
-            for r in edges_raw:
-                if r[0] in ids and r[1] in ids:
-                    filtered_edges.append(r)
-
-            connected_ids = set()
-            for r in filtered_edges:
-                connected_ids.add(r[0])
-                connected_ids.add(r[1])
-
-        return await self.get_id_filtered_graph_data(list(connected_ids))
+        incident = await self._execute_query(
+            "SELECT source_id, target_id FROM graph_edge "
+            "WHERE list_contains($1, source_id) OR list_contains($1, target_id)",
+            [sorted(primary_ids)],
+        )
+        neighbor_ids = _select_nodeset_neighbor_ids(
+            primary_ids, [(r[0], r[1]) for r in incident], node_name_filter_operator
+        )
+        return await self._induced_subgraph(sorted(primary_ids | neighbor_ids))
 
     async def get_connections(
         self, node_id: str | UUID
-    ) -> list[tuple[str, str, str, dict[str, Any]]]:
-        """Documentation."""
-        q = "SELECT source_id, target_id, relationship_name, properties FROM graph_edge WHERE source_id = $1 OR target_id = $1"
-        res = await self._execute_query(q, [str(node_id)])
-        return [
-            (
-                r[0],
-                r[1],
-                r[2],
-                json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {}),
+    ) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
+        """Return every edge touching the node as (source node, edge, target node).
+
+        The edge dictionary holds ``relationship_name`` and the stored edge properties.
+        """
+        connections = []
+        for r in await self._incident_edge_rows(str(node_id)):
+            edge_properties = json.loads(r[5]) if isinstance(r[5], str) else (r[5] if r[5] else {})
+            connections.append(
+                (
+                    self._parse_node_row((r[0], r[1], r[2], r[3])),
+                    {"relationship_name": r[4], **edge_properties},
+                    self._parse_node_row((r[6], r[7], r[8], r[9])),
+                )
             )
-            for r in res
-        ]
+        return connections
 
     async def is_empty(self) -> bool:
         """Check if the graph is empty."""

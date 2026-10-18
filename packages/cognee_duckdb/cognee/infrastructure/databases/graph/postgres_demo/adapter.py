@@ -13,7 +13,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 from sqlalchemy import NullPool, text
@@ -27,6 +27,10 @@ from cognee.infrastructure.databases.graph.bounded_neighborhood import (
 from cognee.infrastructure.databases.graph.graph_db_interface import (
     GraphDBInterface,
     temporal_anchors_from_rows,
+)
+from cognee.infrastructure.databases.graph.graph_topology import (
+    _component_sizes,
+    _select_nodeset_neighbor_ids,
 )
 from cognee.infrastructure.databases.provenance import (
     EdgeDeleteData,
@@ -132,54 +136,6 @@ def _decode_properties(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else json.loads(value)
 
 
-def _component_sizes(node_ids: list[str], edge_pairs: list[tuple[str, str]]) -> list[int]:
-    """Return the sizes of undirected connected components, largest first."""
-    neighbors: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
-    for source_id, target_id in edge_pairs:
-        neighbors.setdefault(source_id, set()).add(target_id)
-        neighbors.setdefault(target_id, set()).add(source_id)
-
-    unseen = set(node_ids)
-    sizes = []
-    while unseen:
-        pending = [unseen.pop()]
-        size = 0
-        while pending:
-            node_id = pending.pop()
-            size += 1
-            new_neighbors = neighbors.get(node_id, set()) & unseen
-            unseen.difference_update(new_neighbors)
-            pending.extend(new_neighbors)
-        sizes.append(size)
-
-    return sorted(sizes, reverse=True)
-
-
-def _select_nodeset_neighbor_ids(
-    primary_ids: set[str], edge_pairs: list[tuple[str, str]], operator: str
-) -> set[str]:
-    """Select neighbors connected to any or every primary node."""
-    if operator not in {"OR", "AND"}:
-        raise ValueError("node_name_filter_operator must be 'OR' or 'AND'")
-    if not primary_ids:
-        return set()
-
-    connected_primaries: dict[str, set[str]] = {}
-    for source_id, target_id in edge_pairs:
-        if source_id in primary_ids:
-            connected_primaries.setdefault(target_id, set()).add(source_id)
-        if target_id in primary_ids:
-            connected_primaries.setdefault(source_id, set()).add(target_id)
-
-    if operator == "OR":
-        return set(connected_primaries)
-    return {
-        node_id
-        for node_id, connections in connected_primaries.items()
-        if connections >= primary_ids
-    }
-
-
 _DEFAULT_POOL_ARGS = {
     "pool_size": 2,
     "max_overflow": 20,  # 22-connection ceiling, PER DATASET
@@ -221,7 +177,7 @@ class PostgresDemoAdapter(GraphDBInterface):
     # narrow single-property move the incremental path requires.
     supports_incremental_chunk_updates = True
 
-    _ALLOWED_FILTER_ATTRS = {"id", "name", "type"}
+    _ALLOWED_FILTER_ATTRS: ClassVar[frozenset[str]] = frozenset({"id", "name", "type"})
 
     def __init__(self, connection_string: str, schema: str = "") -> None:
         """Create engine and sessionmaker from a Postgres connection string.
@@ -1347,6 +1303,7 @@ class PostgresDemoAdapter(GraphDBInterface):
         source_ref_keys: list[str],
         pipeline_run_id: str | None = None,
     ) -> None:
+        """Add source refs (and the run that added them) to the given nodes, in one commit."""
         if not source_ref_keys:
             return
         keys_to_add = list(source_ref_keys)
@@ -1366,6 +1323,7 @@ class PostgresDemoAdapter(GraphDBInterface):
         source_ref_keys: list[str],
         pipeline_run_id: str | None = None,
     ) -> None:
+        """Add source refs (and the run that added them) to the given edges, in one commit."""
         if not source_ref_keys:
             return
         keys_to_add = list(source_ref_keys)
@@ -1384,6 +1342,7 @@ class PostgresDemoAdapter(GraphDBInterface):
         node_ids: list[str],
         source_ref_keys: list[str],
     ) -> None:
+        """Remove the given source refs from the given nodes, in one commit; nothing is deleted."""
         if not source_ref_keys:
             return
         keys_to_remove = list(source_ref_keys)
@@ -1400,6 +1359,7 @@ class PostgresDemoAdapter(GraphDBInterface):
         edges: list[EdgeIdentity],
         source_ref_keys: list[str],
     ) -> None:
+        """Remove the given source refs from the given edges, in one commit; nothing is deleted."""
         if not source_ref_keys:
             return
         keys_to_remove = list(source_ref_keys)
@@ -1434,6 +1394,7 @@ class PostgresDemoAdapter(GraphDBInterface):
             await session.commit()
 
     async def get_node_delete_data(self, node_ids: list[str]) -> dict[str, NodeDeleteData]:
+        """Return, per stored node id, the properties and provenance a delete plan needs."""
         if not node_ids:
             return {}
         async with self.sessionmaker() as session:
@@ -1468,6 +1429,7 @@ class PostgresDemoAdapter(GraphDBInterface):
     async def get_edge_delete_data(
         self, edges: list[EdgeIdentity]
     ) -> dict[EdgeIdentity, EdgeDeleteData]:
+        """Return, per stored edge identity, the properties and provenance a delete plan needs."""
         if not edges:
             return {}
         statement = text("""
@@ -1518,6 +1480,7 @@ class PostgresDemoAdapter(GraphDBInterface):
         return out
 
     async def find_nodes_by_source_ref(self, source_ref_key: str) -> list[str]:
+        """Return the ids of nodes that carry the given source ref."""
         async with self.sessionmaker() as session:
             result = await session.execute(
                 text("SELECT id FROM graph_node WHERE :source_ref = ANY(source_ref_keys)"),
@@ -1526,6 +1489,7 @@ class PostgresDemoAdapter(GraphDBInterface):
             return [row["id"] for row in result.mappings().all()]
 
     async def find_edges_by_source_ref(self, source_ref_key: str) -> list[EdgeIdentity]:
+        """Return the identities of edges that carry the given source ref."""
         async with self.sessionmaker() as session:
             result = await session.execute(
                 text("""
@@ -1545,6 +1509,7 @@ class PostgresDemoAdapter(GraphDBInterface):
             ]
 
     async def find_node_source_refs_by_dataset(self, dataset_id: str) -> dict[str, list[str]]:
+        """Return, per node owned by the dataset, the source refs of that dataset it carries."""
         dataset_id = str(dataset_id)
         async with self.sessionmaker() as session:
             result = await session.execute(
@@ -1569,6 +1534,7 @@ class PostgresDemoAdapter(GraphDBInterface):
     async def find_edge_source_refs_by_dataset(
         self, dataset_id: str
     ) -> dict[EdgeIdentity, list[str]]:
+        """Return, per edge owned by the dataset, the source refs of that dataset it carries."""
         dataset_id = str(dataset_id)
         async with self.sessionmaker() as session:
             result = await session.execute(
@@ -1598,6 +1564,7 @@ class PostgresDemoAdapter(GraphDBInterface):
     async def find_node_source_refs_by_pipeline_run(
         self, pipeline_run_id: str
     ) -> dict[str, list[str]]:
+        """Return, per node the pipeline run contributed to, the source refs that run added."""
         pipeline_run_id = str(pipeline_run_id)
         async with self.sessionmaker() as session:
             result = await session.execute(
@@ -1622,6 +1589,7 @@ class PostgresDemoAdapter(GraphDBInterface):
     async def find_edge_source_refs_by_pipeline_run(
         self, pipeline_run_id: str
     ) -> dict[EdgeIdentity, list[str]]:
+        """Return, per edge the pipeline run contributed to, the source refs that run added."""
         pipeline_run_id = str(pipeline_run_id)
         async with self.sessionmaker() as session:
             result = await session.execute(

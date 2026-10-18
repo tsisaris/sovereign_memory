@@ -50,6 +50,30 @@ class DuckDBRelationalAdapter(SQLAlchemyAdapter):
             )
             return [schema[0] for schema in result.fetchall()]
 
+    async def get_table_names(self) -> list[str]:
+        """Return every base table of the current DuckDB catalog, ordered by schema and name.
+
+        Tables in ``main`` come back unqualified and tables in other schemas as
+        ``schema.table``, the same keys ``extract_schema`` uses. System schemas,
+        views and tables of other attached catalogs are never listed.
+        """
+        async with self.engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT table_schema, table_name FROM information_schema.tables
+                    WHERE table_catalog = current_database()
+                      AND table_type = 'BASE TABLE'
+                      AND table_schema NOT IN ('information_schema', 'pg_catalog')
+                    ORDER BY table_schema, table_name;
+                    """
+                )
+            )
+            return [
+                table_name if schema_name == "main" else f"{schema_name}.{table_name}"
+                for schema_name, table_name in result.fetchall()
+            ]
+
     async def delete_database(self):
         """Reset verified Cognee relational tables while preserving the shared database file."""
         async with self.engine.begin() as connection:
