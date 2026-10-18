@@ -5,7 +5,9 @@ asks the tier's registered processor to prepare outside any write transaction,
 then runs the processor's apply and the receipt update as ONE job on the
 owner's worker, inside one native transaction. The projection and its receipt
 therefore commit or roll back together, per tier. A tier with no registered
-processor is left pending; the dispatcher never invents a result.
+processor is left pending; the dispatcher never invents a result. An event the
+owner has already removed (expired or forgotten) is never projected again: its
+owed receipts end as terminal failures naming the removal.
 """
 
 import asyncio
@@ -28,8 +30,14 @@ SUCCESS_STATUSES = frozenset({"processed", "processed_no_new_fact"})
 REPORTABLE_STATUSES = SUCCESS_STATUSES | frozenset(
     {"retryable_failure", "terminal_failure", "unknown"}
 )
-ERROR_REF_LIMIT = 500
 logger = logging.getLogger(__name__)
+
+
+class RemovedEventError(TerminalProcessingError):
+    """The event was expired or forgotten before this tier projected it; it never will be.
+
+    It carries the removal event's id as its message.
+    """
 
 
 def _now() -> str:
@@ -131,6 +139,9 @@ class MemoryDispatcher:
             if attempt_id is None:
                 return await self._status(event_id, tier)
             try:
+                removal = await self.core.removal_of(event_id)
+                if removal is not None:
+                    raise RemovedEventError(removal)
                 event, payload = await self.core.load_event(event_id)
                 prepared = await processor.prepare(event, payload)
             except TerminalProcessingError as error:
@@ -212,13 +223,21 @@ class MemoryDispatcher:
         raises, reports a failure or unknown status, reports an unreportable
         status, ends the transaction itself, or the receipt's attempt is no
         longer current, the projection is rolled back; a reported failure is then
-        recorded in a fresh transaction.
+        recorded in a fresh transaction. An event removed while it was prepared
+        is refused before apply runs.
         """
         handle: duckdb.DuckDBPyConnection = self.conn.native
         handle.begin()
         ended = False
         try:
             started = handle.execute("SELECT current_transaction_id()").fetchone()[0]
+            removed = handle.execute(
+                "SELECT removal_event_id FROM memory_removals WHERE target_event_id = ?",
+                (event_id,),
+            ).fetchone()
+            if removed is not None:
+                # Removed while this tier prepared it: never write the projection.
+                raise RemovedEventError(removed[0])
             result = processor.apply(handle, prepared)
             if handle.execute("SELECT current_transaction_id()").fetchone()[0] != started:
                 ended = True
@@ -273,7 +292,7 @@ class MemoryDispatcher:
         self, event_id: str, tier: str, attempt_id: str, status: str, error: BaseException
     ) -> str:
         """Record a failed attempt on the receipt in its own transaction and return the status."""
-        reference = f"{type(error).__name__}: {error}"[:ERROR_REF_LIMIT]
+        reference = f"{type(error).__name__}: {error}"
 
         def job() -> str:
             """Write the failure receipt on the worker."""
@@ -282,7 +301,7 @@ class MemoryDispatcher:
             try:
                 handle.execute(
                     "UPDATE memory_receipts SET status = ?, completed_at = ?, error_ref = ? "
-                    "WHERE event_id = ? AND tier = ? AND attempt_id = ?",
+                    "WHERE event_id = ? AND tier = ? AND attempt_id = ? AND status = 'processing'",
                     (status, _now(), reference, event_id, tier, attempt_id),
                 )
                 handle.commit()

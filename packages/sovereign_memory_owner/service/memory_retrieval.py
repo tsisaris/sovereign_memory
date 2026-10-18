@@ -4,8 +4,10 @@ Each tier answers through its own registered retriever. A tier with no
 retriever reports "unavailable" and a tier whose retriever raises reports
 "failed" with the reason; neither is ever shown as an empty success. Every hit
 is checked against the owner's durable events: it must name a captured event
-whose producer the principal's resolved visibility permits and that has not expired, or it is
-withheld and counted.
+whose producer the principal's resolved visibility permits and that has been
+neither removed (expired or forgotten through the owner) nor let expire, or it
+is withheld and counted. Removal is recorded when it is captured, so a removed
+source is withheld even while a tier has not yet deleted its projection.
 """
 
 import logging
@@ -55,7 +57,6 @@ class MemoryRetrievalService:
         scope = RetrievalScope(
             agent_id=principal.agent_id, scope=principal.scope, visibility=visibility
         )
-        expired = {event_id for event_id, _, _ in await self.core.expired_events()}
         answers: dict[str, dict[str, Any]] = {}
         for tier in TIERS:
             retriever = self.retrievers.get(tier)
@@ -69,7 +70,7 @@ class MemoryRetrievalService:
             try:
                 prepared = await retriever.prepare_query(scope, query, limit)
                 hits = await self.conn.run(retriever.retrieve, self.conn.native, scope, prepared)
-                answers[tier] = await self._filter(tier, hits, scope, expired)
+                answers[tier] = await self._filter(tier, hits, scope)
             except Exception as error:
                 logger.exception("Retrieval for tier %s failed", tier)
                 answers[tier] = {
@@ -80,28 +81,21 @@ class MemoryRetrievalService:
         return answers
 
     async def _filter(
-        self, tier: str, hits: list[dict[str, Any]], scope: RetrievalScope, expired: set[str]
+        self, tier: str, hits: list[dict[str, Any]], scope: RetrievalScope
     ) -> dict[str, Any]:
-        """Keep hits derived from the principal's own live events and count the rest.
+        """Keep hits derived from live events the scope's visibility permits and count the rest.
 
         Raises ValueError when a hit is not a dict naming its event_id: an
         engine that cannot attribute a hit cannot be trusted with it.
         """
-        kept, withheld = [], 0
         for hit in hits:
             if not isinstance(hit, dict) or not isinstance(hit.get("event_id"), str):
                 raise ValueError(f"{tier} returned a hit without an event_id")
-            if hit["event_id"] in expired or not await self._owned(hit["event_id"], scope):
-                withheld += 1
-            else:
-                kept.append(hit)
-        return {"status": "ok", "hits": kept, "withheld": withheld}
-
-    async def _owned(self, event_id: str, scope: RetrievalScope) -> bool:
-        """Say whether the stored event exists and the scope's visibility permits its producer."""
-        cursor = await self.conn.cursor()
-        await cursor.execute(
-            "SELECT actor_agent_id FROM memory_events WHERE event_id = ?", (event_id,)
-        )
-        row = await cursor.fetchone()
-        return row is not None and scope.visibility.permits(row[0], scope.agent_id)
+        producers = await self.core.live_producers([hit["event_id"] for hit in hits])
+        kept = [
+            hit
+            for hit in hits
+            if hit["event_id"] in producers
+            and scope.visibility.permits(producers[hit["event_id"]], scope.agent_id)
+        ]
+        return {"status": "ok", "hits": kept, "withheld": len(hits) - len(kept)}

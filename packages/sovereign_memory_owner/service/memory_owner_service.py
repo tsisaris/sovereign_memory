@@ -1,20 +1,35 @@
-"""Owner Service for sovereign memory operating over a Unix socket."""
+"""Owner Service for sovereign memory operating over a Unix socket.
+
+One framed JSON request per connection, with "op" one of: "capture" (store an
+event and its pending receipts, then process it in the background),
+"retrieve" (scoped retrieval across the tiers), "forget" (durably remove an
+event the principal produced, then remove its projections) and "status" (an
+event's durable receipts and whether every tier finished). The principal comes
+from the transport, never from the request body.
+"""
 
 import asyncio
 import json
 import logging
 import socket
 import struct
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import AsyncIterator
 
+import duckdb
+from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import AsyncConnection
 from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import connect as duckdb_connect
 
-from service.memory_dispatcher import MemoryDispatcher, ProcessorRegistry
-from service.memory_owner_core import OwnerCore
+from service.memory_consolidation import MemoryConsolidator
+from service.memory_dispatcher import SUCCESS_STATUSES, MemoryDispatcher, ProcessorRegistry
+from service.memory_owner_core import SYSTEM_EVENT_PREFIX, OwnerCore
 from service.memory_processor_seam import AuthenticatedPrincipal, MemoryRetriever, VisibilityPolicy
 from service.memory_retrieval import MemoryRetrievalService
 
 logger = logging.getLogger(__name__)
+OPERATIONS = ("capture", "retrieve", "forget", "status")
 
 
 class OwnerService:
@@ -28,6 +43,9 @@ class OwnerService:
         registry: ProcessorRegistry | None = None,
         retrievers: dict[str, MemoryRetriever] | None = None,
         policy: VisibilityPolicy | None = None,
+        *,
+        max_request_bytes: int,
+        drain_timeout_seconds: float,
     ):
         """Initialize the service with socket and db paths.
 
@@ -35,6 +53,9 @@ class OwnerService:
         the engines that answer retrieval; both may be empty, in which case
         receipts stay pending and retrieval reports every tier unavailable. policy
         decides each principal's visibility; the default is restricted (own events only).
+        max_request_bytes bounds one framed request and drain_timeout_seconds how
+        long stop waits for open clients; both come from the deployment that
+        starts the service, which reads them from its own declared configuration.
         """
         self.socket_path = Path(socket_path)
         self.db_path = Path(db_path)
@@ -43,6 +64,8 @@ class OwnerService:
         self.registry = registry or ProcessorRegistry()
         self.retrievers = retrievers or {}
         self.policy = policy
+        self.max_request_bytes = max_request_bytes
+        self.drain_timeout_seconds = drain_timeout_seconds
 
     async def start(self) -> None:
         """Initialize database connection and start UNIX socket server."""
@@ -96,7 +119,7 @@ class OwnerService:
 
         # Drain active clients with a bounded timeout
         if hasattr(self, "active_tasks") and self.active_tasks:
-            _, pending = await asyncio.wait(self.active_tasks, timeout=5.0)
+            _, pending = await asyncio.wait(self.active_tasks, timeout=self.drain_timeout_seconds)
             for t in pending:
                 t.cancel()
             if pending:
@@ -121,19 +144,21 @@ class OwnerService:
     async def handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """Handle incoming UNIX socket connections concurrently using independent db connections.
+        """Answer one framed request on one connection and close it.
 
-        Reads 4 bytes big-endian framing length to receive entire payload securely.
+        Reads a 4-byte big-endian length, then that many bytes of JSON. Every
+        refusal or failure is sent back as an error reply; none is reported as success.
         """
-        conn = None
         try:
             length_bytes = await reader.readexactly(4)
             if not length_bytes:
                 return
 
             payload_len = int.from_bytes(length_bytes, byteorder="big")
-            if payload_len > 10 * 1024 * 1024:  # 10MB limit
-                self._send_error(writer, "Payload Too Large", f"Exceeds 10MB bounds")
+            if payload_len > self.max_request_bytes:
+                self._send_error(
+                    writer, "Payload Too Large", f"Exceeds {self.max_request_bytes} bytes"
+                )
                 return
 
             data = await reader.readexactly(payload_len)
@@ -155,95 +180,208 @@ class OwnerService:
                 self._send_error(writer, "Malformed Hex Payload", str(e))
                 return
 
-            if operation not in ("capture", "retrieve"):
+            if operation not in OPERATIONS:
                 self._send_error(writer, "Unsupported operation", str(operation))
                 return
             if operation == "capture" and not event_data:
                 self._send_error(writer, "Missing 'event' in payload", "")
                 return
 
-            # 1. Enforce transport-layer authentication rather than trusting JSON actor claims
-            if self.authenticator:
-                try:
-                    principal = await self.authenticator.authenticate_stream(reader, writer)
-                except (RuntimeError, ValueError, ConnectionError) as e:
-                    self._send_error(
-                        writer,
-                        "Authentication Error",
-                        f"Failed to authenticate connection via explicit authenticator: {e}",
-                    )
-                    return
-            else:
-                # Attempt to extract OS peer credentials if supported (Linux / Unix sockets natively)
-                peercred = writer.get_extra_info("peercred")
-                transport_socket = writer.get_extra_info("socket")
-                if (
-                    peercred is None
-                    and transport_socket is not None
-                    and hasattr(socket, "SO_PEERCRED")
-                ):
-                    peercred = struct.unpack(
-                        "3i",
-                        transport_socket.getsockopt(
-                            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
-                        ),
-                    )
-                if not peercred:
-                    self._send_error(
-                        writer,
-                        "Configuration Error",
-                        "No authenticator registered and OS peercred unavailable",
-                    )
-                    return
-                # Extract pid, uid, gid. Use uid as fallback actor boundary.
-                # In a real environment, uid might map to a user agent, but without an explicit auth module,
-                # uid is the only OS-guaranteed boundary available natively.
-                _, uid, _ = peercred
-                principal = AuthenticatedPrincipal(f"os-uid-{uid}", "restricted")
-
-            if operation == "retrieve":
-                query, limit = payload.get("query"), payload.get("limit")
-                if not isinstance(query, str) or not isinstance(limit, int) or limit < 1:
-                    self._send_error(
-                        writer, "Invalid retrieval request", "query and limit required"
-                    )
-                    return
-                try:
-                    answers = await self.retrieval.retrieve(principal, query, limit)
-                except PermissionError as refusal:
-                    self._send_error(writer, "Visibility Refused", str(refusal))
-                    return
-                writer.write(json.dumps({"status": "success", "tiers": answers}).encode("utf-8"))
-                await writer.drain()
+            principal = await self._authenticate(reader, writer)
+            if principal is None:
                 return
 
-            # Bind the authenticated principal to the event explicitly
-            actor_field = (
-                "agent_id" if event_data.get("schema_version") == "1.0.0" else "actor_agent_id"
-            )
-            event_data[actor_field] = principal.agent_id
-
             try:
-                # Instantiate per-request independent connection per the concurrency rule
-                conn = await duckdb_connect(str(self.db_path))
-                core = OwnerCore(conn)
-                result_event = await core.ingest_event(event_data, payload_content)
-
-                response = {"status": "success", "event": result_event}
-                writer.write(json.dumps(response).encode("utf-8"))
-                await writer.drain()
-                # The reply above reports the durable receipts as captured; processing follows.
-                self._spawn_processing(self.dispatcher.process_event(result_event["event_id"]))
+                if operation == "capture":
+                    response = await self._capture(principal, event_data, payload_content)
+                elif operation == "retrieve":
+                    response = await self._retrieve(principal, payload)
+                elif operation == "forget":
+                    response = await self._forget(principal, payload)
+                else:
+                    response = await self._status(principal, payload)
+            except PermissionError as refusal:
+                self._send_error(writer, "Visibility Refused", str(refusal))
+                return
             except ValueError as ve:
                 self._send_error(writer, "Validation Error", str(ve))
-            except (RuntimeError, TimeoutError, ConnectionError) as e:
-                self._send_error(writer, "Internal Error", str(e))
+                return
+            except (RuntimeError, TimeoutError, ConnectionError, duckdb.Error) as e:
+                logger.exception("Operation %s failed", operation)
+                self._send_error(writer, "Internal Error", f"{type(e).__name__}: {e}")
+                return
+            writer.write(json.dumps(response).encode("utf-8"))
+            await writer.drain()
 
         finally:
-            if conn:
-                await conn.close()
             writer.close()
             await writer.wait_closed()
+
+    @asynccontextmanager
+    async def _transaction_connection(self) -> AsyncIterator[AsyncConnection]:
+        """Yield a connection of its own for one multi-step transaction, closed afterwards.
+
+        The lifetime connection runs engine work as single-job transactions;
+        a transaction spanning several jobs on it could interleave with that
+        work, so every capture (the client's or the owner's own) uses this.
+        """
+        conn = await duckdb_connect(str(self.db_path))
+        try:
+            yield conn
+        finally:
+            await conn.close()
+
+    async def process_owed(self) -> dict[tuple[str, str], str]:
+        """Retry every receipt still owed to a registered engine and return each pair's status.
+
+        The deployment's scheduler calls this; the service runs no timer of its own.
+        """
+        return await self.dispatcher.process_pending()
+
+    async def enforce_expiry(self) -> dict[str, dict[str, str]]:
+        """Expire every legacy event whose ttl has elapsed through the registered engines.
+
+        Returns expiry event id -> tier -> receipt status. Called by the
+        deployment's scheduler; tiers without a processor stay pending.
+        """
+        async with self._transaction_connection() as conn:
+            return await MemoryConsolidator(conn).enforce_scope_and_expiry(self.dispatcher)
+
+    async def _authenticate(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> AuthenticatedPrincipal | None:
+        """Return the transport-authenticated principal, or send an error and return None.
+
+        Only the registered authenticator or the operating system's peer
+        credentials name a principal; nothing in the request body does.
+        """
+        if self.authenticator:
+            try:
+                return await self.authenticator.authenticate_stream(reader, writer)
+            except (RuntimeError, ValueError, ConnectionError) as e:
+                self._send_error(
+                    writer,
+                    "Authentication Error",
+                    f"Failed to authenticate connection via explicit authenticator: {e}",
+                )
+                return None
+        # Attempt to extract OS peer credentials if supported (Linux / Unix sockets natively)
+        peercred = writer.get_extra_info("peercred")
+        transport_socket = writer.get_extra_info("socket")
+        if peercred is None and transport_socket is not None and hasattr(socket, "SO_PEERCRED"):
+            peercred = struct.unpack(
+                "3i",
+                transport_socket.getsockopt(
+                    socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+                ),
+            )
+        if not peercred:
+            self._send_error(
+                writer,
+                "Configuration Error",
+                "No authenticator registered and OS peercred unavailable",
+            )
+            return None
+        # Without an explicit authenticator the uid is the only OS-guaranteed boundary.
+        _, uid, _ = peercred
+        return AuthenticatedPrincipal(f"os-uid-{uid}", "restricted")
+
+    async def _capture(
+        self, principal: AuthenticatedPrincipal, event_data: dict, payload_content: bytes | None
+    ) -> dict:
+        """Capture one event as the authenticated principal and start its processing.
+
+        The principal replaces whatever actor the request claimed. Capture uses
+        its own connection, so it never waits behind engine work. Two identical
+        captures racing each other end with the same durable event: the loser of
+        the insert reads the winner's row. Raises ValueError for an invalid or
+        conflicting event.
+        """
+        actor_field = (
+            "agent_id" if event_data.get("schema_version") == "1.0.0" else "actor_agent_id"
+        )
+        event_data[actor_field] = principal.agent_id
+        async with self._transaction_connection() as conn:
+            core = OwnerCore(conn)
+            try:
+                result_event = await core.ingest_event(event_data, payload_content)
+            except (duckdb.ConstraintException, duckdb.TransactionException):
+                # Another request inserted the same event first; take the idempotent path.
+                result_event = await core.ingest_event(event_data, payload_content)
+        # The reply reports the durable receipts as captured; processing follows.
+        self._spawn_processing(self.dispatcher.process_event(result_event["event_id"]))
+        return {"status": "success", "event": result_event}
+
+    async def _retrieve(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Answer a scoped retrieval; raises ValueError for a malformed query or limit."""
+        query, limit = request.get("query"), request.get("limit")
+        if not isinstance(query, str) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("Invalid retrieval request: query and limit required")
+        answers = await self.retrieval.retrieve(principal, query, limit)
+        return {"status": "success", "tiers": answers}
+
+    async def _forget(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Forget one captured event the principal produced, through every registered engine.
+
+        The removal is durable and withheld from retrieval when this returns;
+        "complete" is true only once every tier's receipt reports a processed
+        removal. Raises PermissionError when the principal did not produce the
+        event (only its producer may forget it until a permission owner
+        supplies broader grants) and ValueError for an unknown target.
+        """
+        target_id = request.get("event_id")
+        if not isinstance(target_id, str) or not target_id:
+            raise ValueError("forget needs the event_id to forget")
+        async with self._transaction_connection() as conn:
+            core = OwnerCore(conn)
+            target, _ = await core.load_event(target_id)
+            if target.get("actor_agent_id", target.get("agent_id")) != principal.agent_id:
+                raise PermissionError("Only the producer of an event may forget it")
+            removal_id = await core.ingest_system_removal(
+                target_id,
+                "forget",
+                requested_by=principal.agent_id,
+                requested_at=datetime.now(timezone.utc).isoformat(),
+                details={"requested_by": principal.agent_id, "reason": "forgotten by its producer"},
+            )
+            status = await self._status_of(core, removal_id)
+        self._spawn_processing(self.dispatcher.process_event(removal_id))
+        return status
+
+    async def _status(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Report the receipts of an event the principal may see.
+
+        For an owner-authored removal the principal must be allowed to see the
+        removed event. Raises PermissionError otherwise, and ValueError for an
+        unknown event.
+        """
+        event_id = request.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            raise ValueError("status needs an event_id")
+        core = OwnerCore(self.lifetime_conn)
+        event, _ = await core.load_event(event_id)
+        subject = event
+        if str(event.get("event_type", "")).startswith(SYSTEM_EVENT_PREFIX):
+            subject, _ = await core.load_event(event["causation_event_id"])
+        visibility = await self.retrieval.policy.resolve(principal)
+        if not visibility.permits(
+            subject.get("actor_agent_id", subject.get("agent_id")), principal.agent_id
+        ):
+            raise PermissionError("The event is not visible to this principal")
+        return await self._status_of(core, event_id)
+
+    @staticmethod
+    async def _status_of(core: OwnerCore, event_id: str) -> dict:
+        """Return an event's durable receipts, its removal and whether every tier processed it."""
+        receipts = await core.receipts(event_id)
+        return {
+            "status": "success",
+            "event_id": event_id,
+            "removed_by": await core.removal_of(event_id),
+            "receipts": receipts,
+            "complete": bool(receipts)
+            and all(r["status"] in SUCCESS_STATUSES for r in receipts.values()),
+        }
 
     def _send_error(self, writer: asyncio.StreamWriter, message: str, details: str) -> None:
         """Send an error response."""
