@@ -90,7 +90,18 @@ class MemoryConsolidator:
         try:
             # Look for expired TTLs or specific correction events.
             # Mark them inactive rather than deleting to retain provenance.
-            await self.conn.run(self.conn.native.execute, "SELECT 1;")
+            await self.conn.run(
+                self.conn.native.execute,
+                """
+                UPDATE memory_receipts
+                SET status = 'processed_no_new_fact'
+                WHERE event_id IN (
+                    SELECT event_id FROM memory_events
+                    WHERE json_extract(raw_event, '$.ttl_seconds') IS NOT NULL
+                    AND json_extract(raw_event, '$.ttl_seconds')::BIGINT > 0
+                )
+                """,
+            )
             await self.conn.commit()
         except Exception:
             await self.conn.rollback()

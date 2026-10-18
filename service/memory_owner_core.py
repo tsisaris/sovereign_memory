@@ -72,18 +72,25 @@ class OwnerCore:
         self.validator.validate_event(event_data, payload_content)
         import hashlib
 
-        # Actual v2 hash validation strictly required.
-        if payload_content is not None:
+        # Resolve/verify all supported refs BEFORE acceptance
+        schema_version = event_data.get("schema_version", "1.0.0")
+        is_v2 = schema_version.startswith("2.")
+
+        if is_v2:
+            payload_ref = event_data.get("payload_ref", "")
+            if payload_ref != "inline":
+                raise ValueError(
+                    f"Unsupported payload_ref '{payload_ref}'. Only 'inline' is supported in this implementation."
+                )
+
+            if payload_content is None:
+                raise ValueError("Missing inline payload content bytes to verify against SHA256")
+
             actual_hash = hashlib.sha256(payload_content).hexdigest()
             if event_data.get("payload_sha256", "") != actual_hash:
                 raise ValueError(
                     f"Payload hash mismatch: expected {event_data.get('payload_sha256')}, got {actual_hash}"
                 )
-        elif (
-            event_data.get("schema_version", "").startswith("2.")
-            and event_data.get("payload_ref", "") == "inline"
-        ):
-            raise ValueError("Missing inline payload content bytes to verify against SHA256")
 
         event_id = event_data["event_id"]
         schema_version = event_data.get("schema_version", "1.0.0")
@@ -133,16 +140,29 @@ class OwnerCore:
             await cursor.execute("SELECT 1 FROM memory_events WHERE event_id = ?", (event_id,))
             existing = await cursor.fetchone()
             if existing:
-                # Enforce hash conflict verification on retry identical
+                # Enforce exact identity binding conflict on retry identical
                 await cursor.execute(
-                    "SELECT payload_sha256 FROM memory_events WHERE event_id = ?", (event_id,)
+                    "SELECT actor_agent_id, payload_sha256, raw_event FROM memory_events WHERE event_id = ?",
+                    (event_id,),
                 )
-                existing_hash = await cursor.fetchone()
-                if existing_hash and existing_hash[0] != payload_sha256:
-                    await self.conn.rollback()
-                    raise ValueError(
-                        f"Conflict: Event {event_id} already exists with different payload hash {existing_hash[0]}"
-                    )
+                existing_meta = await cursor.fetchone()
+                if existing_meta:
+                    existing_actor, existing_hash, existing_raw_json = existing_meta
+
+                    if existing_actor != actor_agent_id:
+                        await self.conn.rollback()
+                        raise ValueError(
+                            f"Conflict: Event {event_id} already exists with different principal/actor {existing_actor}"
+                        )
+
+                    if existing_hash != payload_sha256:
+                        await self.conn.rollback()
+                        raise ValueError(
+                            f"Conflict: Event {event_id} already exists with different payload hash {existing_hash}"
+                        )
+
+                    # Compare full immutable canonical envelope optionally (simplest safe bound is restoring the original identical envelope)
+                    event_data = json.loads(existing_raw_json)
 
                 # Return durable current receipts, not incoming state
                 await cursor.execute(
