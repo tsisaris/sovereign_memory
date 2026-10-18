@@ -60,23 +60,13 @@ class MemoryConsolidator:
             raise
 
     async def schedule_fts_rebuild(self) -> None:
-        """Schedule and perform Full Text Search index rebuild atomically.
-
-        Revalidates current authorized rows AND current text predicate so
-        removed hit text cannot survive an edit.
-        """
+        """Replace the full-text index from current event rows in one transaction."""
         await self.conn.begin()
         try:
-            # Drop/rebuild FTS index based on current authoritative text rows.
-            # Real execution depends on DDL resolution for FTS.
             await self.conn.run(
                 self.conn.native.execute,
                 """
-                -- Drop the existing FTS index if it exists
-                DROP TABLE IF EXISTS memory_events_fts;
-                -- Recreate FTS index matching current legal scope rules
-                -- This ensures deleted/corrected/expired text does not survive an edit
-                PRAGMA create_fts_index('memory_events', 'event_id', 'raw_event');
+                PRAGMA create_fts_index('memory_events', 'event_id', 'raw_event', overwrite=1);
                 """,
             )
             await self.conn.commit()
