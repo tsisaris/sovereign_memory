@@ -1,3 +1,5 @@
+"""Module docstring."""
+
 import platform
 import subprocess
 from pathlib import Path
@@ -22,7 +24,7 @@ def run_npm_command(cmd: list[str], cwd: Path, timeout: int = 300) -> subprocess
             capture_output=True,
             text=True,
             timeout=timeout,
-            shell=True,
+            shell=False,
             check=False,
         )
     else:

@@ -1,3 +1,5 @@
+"""Module docstring."""
+
 import os
 import platform
 import shutil
@@ -849,7 +851,7 @@ def _start_ui(
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                shell=True,
+                shell=False,
             )
         else:
             # On Unix-like systems, use bash with nvm sourced if available
