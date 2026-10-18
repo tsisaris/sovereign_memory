@@ -4,8 +4,11 @@
 from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from letta_memory_model.orm.base import Base
+from letta_memory_model.orm.sqlalchemy_base import SqlalchemyBase
 
-class BlocksAgents:
+
+class BlocksAgents(SqlalchemyBase, Base):
     """Class docstring."""
 
     __tablename__ = "blocks_agents"

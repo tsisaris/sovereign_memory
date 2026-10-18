@@ -6,11 +6,14 @@ from typing import TYPE_CHECKING
 from sqlalchemy import ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from letta_memory_model.orm.base import Base
+from letta_memory_model.orm.sqlalchemy_base import SqlalchemyBase
+
 if TYPE_CHECKING:
     from letta_memory_model.orm.passage import ArchivalPassage
 
 
-class PassageTag:
+class PassageTag(SqlalchemyBase, Base):
     """Class docstring."""
 
     __tablename__ = "passage_tags"

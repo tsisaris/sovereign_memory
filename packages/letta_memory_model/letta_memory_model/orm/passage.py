@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING, List, Optional
 from sqlalchemy import JSON, Column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from letta_memory_model.orm.base import Base, CommonSqlalchemyMetaMixins
 from letta_memory_model.orm.custom_columns import CommonVector
+from letta_memory_model.orm.mixins import ArchiveMixin, OrganizationMixin, SourceMixin
+from letta_memory_model.orm.sqlalchemy_base import SqlalchemyBase
 from letta_memory_model.schemas.passage import Passage as PydanticPassage
 
 if TYPE_CHECKING:
@@ -28,14 +31,18 @@ class BasePassage:
     embedding = Column(CommonVector, nullable=True)
 
 
-class SourcePassage:
+class SourcePassage(
+    BasePassage, Base, SourceMixin, OrganizationMixin, CommonSqlalchemyMetaMixins, SqlalchemyBase
+):
     """Class docstring."""
 
     __tablename__ = "source_passages"
     file_name: Mapped[str] = mapped_column()
 
 
-class ArchivalPassage:
+class ArchivalPassage(
+    BasePassage, Base, ArchiveMixin, OrganizationMixin, CommonSqlalchemyMetaMixins, SqlalchemyBase
+):
     """Class docstring."""
 
     __tablename__ = "archival_passages"

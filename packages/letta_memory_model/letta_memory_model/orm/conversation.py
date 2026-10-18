@@ -8,10 +8,13 @@ from typing import Optional
 from sqlalchemy import JSON, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from letta_memory_model.orm.base import Base, CommonSqlalchemyMetaMixins
+from letta_memory_model.orm.mixins import OrganizationMixin
+from letta_memory_model.orm.sqlalchemy_base import SqlalchemyBase
 from letta_memory_model.schemas.conversation import Conversation as PydanticConversation
 
 
-class Conversation:
+class Conversation(SqlalchemyBase, Base, OrganizationMixin, CommonSqlalchemyMetaMixins):
     """Class docstring."""
 
     __tablename__ = "conversations"

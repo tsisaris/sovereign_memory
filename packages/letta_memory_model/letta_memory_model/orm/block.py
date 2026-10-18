@@ -6,11 +6,14 @@ from typing import ClassVar, Optional
 from sqlalchemy import JSON, BigInteger, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from letta_memory_model.orm.base import Base, CommonSqlalchemyMetaMixins
+from letta_memory_model.orm.mixins import OrganizationMixin
+from letta_memory_model.orm.sqlalchemy_base import SqlalchemyBase
 from letta_memory_model.schemas.block import Block as PydanticBlock
 from letta_memory_model.schemas.block import Human, Persona
 
 
-class Block:
+class Block(SqlalchemyBase, Base, CommonSqlalchemyMetaMixins, OrganizationMixin):
     """Class docstring."""
 
     __tablename__ = "block"
