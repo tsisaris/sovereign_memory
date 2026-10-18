@@ -6,10 +6,13 @@ from typing import List, Optional
 from sqlalchemy import JSON, BigInteger, FetchedValue, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
+from letta_memory_model.orm.base import Base, CommonSqlalchemyMetaMixins
+from letta_memory_model.orm.mixins import AgentMixin, OrganizationMixin
+from letta_memory_model.orm.sqlalchemy_base import SqlalchemyBase
 from letta_memory_model.schemas.message import Message as PydanticMessage
 
 
-class Message:
+class Message(SqlalchemyBase, Base, OrganizationMixin, AgentMixin, CommonSqlalchemyMetaMixins):
     """Class docstring."""
 
     __tablename__ = "messages"
