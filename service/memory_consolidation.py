@@ -42,7 +42,7 @@ class MemoryConsolidator:
                 """
                 UPDATE memory_receipts
                 SET status = ?, processor_id = ?, processor_version = ?, projection_version = ?, error_ref = ?
-                WHERE event_id = ?
+                WHERE event_id = ? AND tier = ?
                 """,
                 (
                     result.status,
@@ -51,6 +51,7 @@ class MemoryConsolidator:
                     result.projection_version,
                     result.error_ref,
                     event_envelope["event_id"],
+                    processor.tier_name,
                 ),
             )
             await self.conn.commit()
@@ -71,9 +72,11 @@ class MemoryConsolidator:
             await self.conn.run(
                 self.conn.native.execute,
                 """
-                -- Placeholder query demonstrating exact requirement
-                -- PRAGMA create_fts_index(...)
-                SELECT 1;
+                -- Drop the existing FTS index if it exists
+                DROP TABLE IF EXISTS memory_events_fts;
+                -- Recreate FTS index matching current legal scope rules
+                -- This ensures deleted/corrected/expired text does not survive an edit
+                PRAGMA create_fts_index('memory_events', 'event_id', 'raw_event');
                 """,
             )
             await self.conn.commit()
@@ -93,13 +96,10 @@ class MemoryConsolidator:
             await self.conn.run(
                 self.conn.native.execute,
                 """
-                UPDATE memory_receipts
-                SET status = 'processed_no_new_fact'
-                WHERE event_id IN (
-                    SELECT event_id FROM memory_events
-                    WHERE json_extract(raw_event, '$.ttl_seconds') IS NOT NULL
-                    AND json_extract(raw_event, '$.ttl_seconds')::BIGINT > 0
-                )
+                SELECT event_id FROM memory_events
+                WHERE json_extract(raw_event, '$.ttl_seconds') IS NOT NULL
+                AND json_extract(raw_event, '$.ttl_seconds')::BIGINT > 0
+                AND CAST(created_at AS TIMESTAMP) + INTERVAL (json_extract(raw_event, '$.ttl_seconds')::BIGINT) SECONDS < CURRENT_TIMESTAMP
                 """,
             )
             await self.conn.commit()

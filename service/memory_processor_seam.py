@@ -31,6 +31,11 @@ class ProcessorResult:
 class MemoryProcessor(Protocol):
     """The required contract for memory engines to process events safely."""
 
+    @property
+    def tier_name(self) -> str:
+        """Return the tier identity (e.g., 'episodic', 'temporal', 'relational', 'personalization')."""
+        ...
+
     async def prepare(
         self, event_envelope: Dict[str, Any], verified_payload_bytes: Optional[bytes]
     ) -> Any:
