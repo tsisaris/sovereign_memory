@@ -11,8 +11,6 @@ Graphiti's model pipeline.
 """
 
 import asyncio
-import hashlib
-import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,8 +21,18 @@ import duckdb
 from graphiti_core.nodes import EpisodeType, EpisodicNode
 from graphiti_duckdb.duckdb_driver import DuckDBDriver
 
-from service.memory_owner_core import REMOVAL_EVENT_TYPES, parse_instant
+from service.memory_owner_core import parse_instant
 from service.memory_processor_seam import ProcessorResult, RetrievalScope, TerminalProcessingError
+from service.memory_tier_support import (
+    KIND_JSON,
+    KIND_MESSAGES,
+    actor_of,
+    event_instant,
+    event_text,
+    group_of,
+    is_removal,
+    removal_target,
+)
 
 TIER_NAME = "temporal"
 PROCESSOR_ID = "graphiti-duckdb-episodes"
@@ -46,16 +54,6 @@ PROVENANCE_FIELDS = (
 def episode_uuid(event_id: str) -> str:
     """Return the deterministic Graphiti episode uuid of a captured event; pure."""
     return str(uuid.uuid5(EPISODE_NAMESPACE, event_id))
-
-
-def group_of(actor: str) -> str:
-    """Return the Graphiti group id holding one actor's episodes; pure.
-
-    Graphiti accepts only letters, digits, dashes and underscores in a group
-    id, so the actor is hashed rather than copied; the actor itself is kept in
-    each episode's metadata.
-    """
-    return "actor-" + hashlib.sha256(actor.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -119,21 +117,17 @@ class GraphitiEpisodeTier:
         """
         event_id = event_envelope["event_id"]
         event_type = event_envelope.get("event_type", event_envelope.get("content_type"))
-        if event_type in REMOVAL_EVENT_TYPES.values():
-            return PreparedEpisode(
-                None, self._removal_target(event_envelope, verified_payload_bytes)
-            )
-        actor = event_envelope.get("actor_agent_id", event_envelope.get("agent_id"))
-        if not isinstance(actor, str) or not actor:
-            raise TerminalProcessingError("Event has no producing actor")
-        if event_envelope.get("schema_version") == "1.0.0":
-            text, source = event_envelope["content"], EpisodeType.text
-            created = event_envelope["timestamp"]
-        else:
-            text, source = self._text_of(verified_payload_bytes)
-            created = event_envelope["created_at"]
+        if is_removal(event_envelope):
+            target, _ = removal_target(event_envelope, verified_payload_bytes)
+            return PreparedEpisode(None, target)
+        actor = actor_of(event_envelope)
+        text, kind, _ = event_text(event_envelope, verified_payload_bytes)
+        source = {
+            KIND_MESSAGES: EpisodeType.message,
+            KIND_JSON: EpisodeType.json,
+        }.get(kind, EpisodeType.text)
         try:
-            valid_at = parse_instant(created)
+            valid_at = parse_instant(event_instant(event_envelope))
         except ValueError as error:
             raise TerminalProcessingError(f"Event time is not ISO 8601: {error}") from error
         metadata = {key: event_envelope.get(key) for key in PROVENANCE_FIELDS}
@@ -151,58 +145,6 @@ class GraphitiEpisodeTier:
             episode_metadata=metadata,
         )
         return PreparedEpisode(episode)
-
-    @staticmethod
-    def _text_of(payload: bytes | None) -> tuple[str, EpisodeType]:
-        """Return the episode text and Graphiti source type of a version 2 payload.
-
-        A JSON object carrying a list of {"role", "content"} messages becomes a
-        message episode written as "role: content" lines, other JSON a json
-        episode, and other UTF-8 a text episode. Raises TerminalProcessingError
-        for missing or non-UTF-8 bytes.
-        """
-        if payload is None:
-            raise TerminalProcessingError("Event has no stored payload bytes")
-        try:
-            text = payload.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise TerminalProcessingError(f"Payload is not UTF-8 text: {error}") from error
-        try:
-            body = json.loads(text)
-        except json.JSONDecodeError:
-            return text, EpisodeType.text
-        messages = body.get("messages") if isinstance(body, dict) else None
-        if (
-            isinstance(messages, list)
-            and messages
-            and all(
-                isinstance(m, dict)
-                and isinstance(m.get("role"), str)
-                and isinstance(m.get("content"), str)
-                for m in messages
-            )
-        ):
-            return "\n".join(f"{m['role']}: {m['content']}" for m in messages), EpisodeType.message
-        return text, EpisodeType.json
-
-    @staticmethod
-    def _removal_target(envelope: dict[str, Any], payload: bytes | None) -> str:
-        """Return the event an owner-authored removal names; raise TerminalProcessingError if it disagrees."""
-        try:
-            body = json.loads((payload or b"").decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise TerminalProcessingError(f"Removal payload is not JSON: {error}") from error
-        target = body.get("target_event_id") if isinstance(body, dict) else None
-        expected = (
-            REMOVAL_EVENT_TYPES.get(body.get("operation")) if isinstance(body, dict) else None
-        )
-        if (
-            not isinstance(target, str)
-            or target != envelope.get("causation_event_id")
-            or expected != envelope.get("event_type")
-        ):
-            raise TerminalProcessingError("Removal payload does not match its causation event")
-        return target
 
     def apply(
         self, native_tx_handle: duckdb.DuckDBPyConnection, prepared_work: PreparedEpisode
