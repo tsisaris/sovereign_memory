@@ -863,7 +863,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
         return nodes, edges
 
-async def get_graph_metrics(self, include_optional: bool = False) -> dict[str, Any]:
+    async def get_graph_metrics(self, include_optional: bool = False) -> dict[str, Any]:
         """Documentation."""
         nodes_raw = await self._execute_query("SELECT id FROM graph_node")
         edges_raw = await self._execute_query("SELECT source_id, target_id FROM graph_edge")
@@ -871,6 +871,7 @@ async def get_graph_metrics(self, include_optional: bool = False) -> dict[str, A
         edge_count = len(edges_raw)
 
         from collections import defaultdict
+
         graph = defaultdict(list)
         for e in edges_raw:
             graph[e[0]].append(e[1])
@@ -1108,7 +1109,9 @@ async def get_graph_metrics(self, include_optional: bool = False) -> dict[str, A
             queries.append((q, [edge.source_id, edge.target_id, edge.relationship_name]))
         await self._execute_transaction(queries)
 
-async def remove_belongs_to_set_tags(self, tags: list[str], node_ids: list[str] | None = None) -> None:
+    async def remove_belongs_to_set_tags(
+        self, tags: list[str], node_ids: list[str] | None = None
+    ) -> None:
         """Remove tags from belongs_to_set property array."""
         if not tags:
             return
@@ -1135,7 +1138,9 @@ async def remove_belongs_to_set_tags(self, tags: list[str], node_ids: list[str] 
                 if len(remaining) != len(belongs_to):
                     props["belongs_to_set"] = remaining
                     props_json = json.dumps(serialize_for_json(props))
-                    queries.append(("UPDATE graph_node SET properties = $1 WHERE id = $2", [props_json, r[0]]))
+                    queries.append(
+                        ("UPDATE graph_node SET properties = $1 WHERE id = $2", [props_json, r[0]])
+                    )
 
         if queries:
             await self._execute_transaction(queries)
