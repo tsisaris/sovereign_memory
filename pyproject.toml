@@ -29,6 +29,12 @@ sovereign-memory = "sovereign_memory.runtime:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/sovereign_memory"]
 
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "src/sovereign_memory/**/*" },
+]
+
 [tool.uv.sources]
 cognee = { workspace = true }
 mem0_duckdb = { workspace = true }

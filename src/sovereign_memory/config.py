@@ -10,6 +10,7 @@ environment variable names the file points to; it never opens the database,
 calls a model or touches the network.
 """
 
+import math
 import os
 import tomllib
 from dataclasses import dataclass
@@ -78,13 +79,19 @@ def _text(table: dict, where: str, key: str) -> str:
 
 
 def _positive(table: dict, where: str, key: str, integer: bool) -> float:
-    """Return a positive number (an integer when asked) or raise ConfigurationError."""
+    """Return a finite positive number (an integer when asked) or raise ConfigurationError."""
     value = table[key]
     kinds = int if integer else (int, float)
     if isinstance(value, bool) or not isinstance(value, kinds) or value <= 0:
         raise ConfigurationError(
             f"{where}.{key} must be a positive {'integer' if integer else 'number'}"
         )
+    try:
+        finite = math.isfinite(value)
+    except OverflowError as error:
+        raise ConfigurationError(f"{where}.{key} is too large for a runtime bound") from error
+    if not finite:
+        raise ConfigurationError(f"{where}.{key} must be finite")
     return value
 
 
@@ -117,6 +124,15 @@ def _personalization(table: Any) -> MemoryConfig:
         ("llm", "embedder", "vector_store", "enable_update_delete_branches"),
         ("custom_fact_extraction_prompt", "custom_update_memory_prompt", "custom_instructions"),
     )
+    for engine in ("llm", "embedder"):
+        engine_path = f"{where}.memory.{engine}"
+        settings = _take(memory[engine], engine_path, ("provider", "config"))
+        _text(settings, engine_path, "provider")
+        if not isinstance(settings["config"], dict):
+            raise ConfigurationError(f"{engine_path}.config must be a table")
+        if "model" not in settings["config"]:
+            raise ConfigurationError(f"{engine_path}.config is missing: model")
+        _text(settings["config"], f"{engine_path}.config", "model")
     try:
         config = MemoryConfig.model_validate(memory)
     except ValidationError as error:
