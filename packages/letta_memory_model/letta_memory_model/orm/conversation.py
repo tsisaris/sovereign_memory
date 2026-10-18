@@ -1,6 +1,8 @@
-"""Module docstring."""
+"""Mapped table letta.conversations: an agent's conversation threads.
 
-# Licensed under Apache-2.0 from Letta archive
+Licensed under Apache-2.0 from the Letta archive (letta/orm/conversation.py).
+"""
+
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -15,7 +17,7 @@ from letta_memory_model.schemas.conversation import Conversation as PydanticConv
 
 
 class Conversation(SqlalchemyBase, Base, OrganizationMixin, CommonSqlalchemyMetaMixins):
-    """Class docstring."""
+    """A conversation thread; deleting it clears conversation_id on its messages."""
 
     __tablename__ = "conversations"
     __pydantic_model__ = PydanticConversation

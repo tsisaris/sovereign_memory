@@ -1,3 +1,8 @@
+"""Pydantic core-memory schemas: an agent's in-context blocks and how they render.
+
+Licensed under Apache-2.0 from the Letta archive (letta/schemas/memory.py).
+"""
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -11,6 +16,7 @@ from typing import Dict, List, Optional, Union
 
 
 def get_logger(name):
+    """Return the standard library logger of the given name."""
     return logging.getLogger(name)
 
 
@@ -25,11 +31,9 @@ from letta_memory_model.constants import (
 )
 
 
-def trace_method(*args, **kwargs):
-    def decorator(func):
-        return func
-
-    return decorator
+def trace_method(func):
+    """Return func unchanged: this port carries no tracing, so the marker does nothing."""
+    return func
 
 
 from letta_memory_model.schemas.block import Block
@@ -39,6 +43,8 @@ from letta_memory_model.schemas.message import Message
 
 
 class ContextWindowOverview(BaseModel):
+    """A breakdown of what fills an agent's context window, counted in tokens."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
     """
     Overview of the context window, including the number of messages and tokens.
@@ -108,18 +114,20 @@ class ContextWindowOverview(BaseModel):
 
 
 class Memory(BaseModel, validate_assignment=True):
+    """The in-context (core) memory of an agent: its labelled blocks and how they render.
+
+    It takes the agent's blocks and file blocks; edits change the blocks it holds
+    and are validated on assignment. It never reads or writes storage.
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    """
-
-    Represents the in-context memory (i.e. Core memory) of the agent. This includes both the `Block` objects (labelled by sections), as well as tools to edit the blocks.
-
-    """
 
     agent_type: Optional[Union["AgentType", str]] = Field(
-        None, description="Agent type controlling prompt rendering."
+        default=None, description="Agent type controlling prompt rendering."
     )
     git_enabled: bool = Field(
-        False, description="Whether this agent uses git-backed memory with structured labels."
+        default=False,
+        description="Whether this agent uses git-backed memory with structured labels.",
     )
     blocks: List[Block] = Field(
         ..., description="Memory blocks contained in the agent's in-context memory"
@@ -838,11 +846,11 @@ class Memory(BaseModel, validate_assignment=True):
         )
 
     def list_block_labels(self) -> List[str]:
-        """Return a list of the block names held inside the memory object"""
+        """Return a list of the block names held inside the memory object."""
         return [block.label for block in self.blocks]
 
     def get_block(self, label: str) -> Block:
-        """Correct way to index into the memory.memory field, returns a Block"""
+        """Return the block with the given label; raise KeyError if there is none."""
         keys = []
         for block in self.blocks:
             if block.label == label:
@@ -853,11 +861,11 @@ class Memory(BaseModel, validate_assignment=True):
         )
 
     def get_blocks(self) -> List[Block]:
-        """Return a list of the blocks held inside the memory object"""
+        """Return a list of the blocks held inside the memory object."""
         return self.blocks
 
     def set_block(self, block: Block):
-        """Set a block in the memory object"""
+        """Replace the block with the same label, or append the block if none has it."""
         for i, b in enumerate(self.blocks):
             if b.label == block.label:
                 self.blocks[i] = block
@@ -865,7 +873,7 @@ class Memory(BaseModel, validate_assignment=True):
         self.blocks.append(block)
 
     def update_block_value(self, label: str, value: str):
-        """Update the value of a block"""
+        """Set the value of the labelled block; raise ValueError if it is absent or not text."""
         if not isinstance(value, str):
             raise ValueError("Provided value must be a string")
 
@@ -958,18 +966,24 @@ class ChatMemory(BasicBlockMemory):
 
 
 class UpdateMemory(BaseModel):
-    """Update the memory of the agent"""
+    """Update the memory of the agent."""
 
 
 class ArchivalMemorySummary(BaseModel):
+    """How many passages an agent's archival memory holds."""
+
     size: int = Field(..., description="Number of rows in archival memory")
 
 
 class RecallMemorySummary(BaseModel):
+    """How many messages an agent's recall memory holds."""
+
     size: int = Field(..., description="Number of rows in recall memory")
 
 
 class CreateArchivalMemory(BaseModel):
+    """A request to write one passage, with optional tags, to archival memory."""
+
     text: str = Field(..., description="Text to write to archival memory.")
     tags: Optional[List[str]] = Field(
         None, description="Optional list of tags to attach to the memory."
@@ -980,6 +994,8 @@ class CreateArchivalMemory(BaseModel):
 
 
 class ArchivalMemorySearchResult(BaseModel):
+    """One passage returned by an archival memory search."""
+
     id: str = Field(..., description="Unique identifier of the archival memory passage")
     timestamp: str = Field(
         ..., description="Timestamp of when the memory was created, formatted in agent's timezone"
@@ -991,6 +1007,8 @@ class ArchivalMemorySearchResult(BaseModel):
 
 
 class ArchivalMemorySearchResponse(BaseModel):
+    """The passages an archival memory search returned."""
+
     results: List[ArchivalMemorySearchResult] = Field(
         ..., description="List of search results matching the query"
     )
