@@ -1255,6 +1255,12 @@ async def get_relevant_nodes(
     if len(nodes) == 0:
         return []
 
+    if driver.provider == GraphProvider.DUCKDB:
+        # DuckDB never receives Cypher; its native search operations answer directly.
+        return await driver.search_ops.get_relevant_nodes(
+            driver, nodes, search_filter, min_score, limit
+        )
+
     group_id = nodes[0].group_id
     query_nodes = [
         {
@@ -1408,6 +1414,12 @@ async def get_relevant_edges(
 ) -> list[list[EntityEdge]]:
     if len(edges) == 0:
         return []
+
+    if driver.provider == GraphProvider.DUCKDB:
+        # DuckDB never receives Cypher; its native search operations answer directly.
+        return await driver.search_ops.get_relevant_edges(
+            driver, edges, search_filter, min_score, limit
+        )
 
     filter_queries, filter_params = edge_search_filter_query_constructor(
         search_filter, driver.provider
@@ -1593,6 +1605,12 @@ async def get_edge_invalidation_candidates(
 ) -> list[list[EntityEdge]]:
     if len(edges) == 0:
         return []
+
+    if driver.provider == GraphProvider.DUCKDB:
+        # DuckDB never receives Cypher; its native search operations answer directly.
+        return await driver.search_ops.get_edge_invalidation_candidates(
+            driver, edges, search_filter, min_score, limit
+        )
 
     filter_queries, filter_params = edge_search_filter_query_constructor(
         search_filter, driver.provider

@@ -1,12 +1,45 @@
 """Connect Graphiti's original entity API to the same native operation objects."""
 
 from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
-from graphiti_core.edges import EntityEdge, EpisodicEdge
-from graphiti_core.nodes import EntityNode, EpisodicNode
+from graphiti_core.edges import (
+    CommunityEdge,
+    EntityEdge,
+    EpisodicEdge,
+    HasEpisodeEdge,
+    NextEpisodeEdge,
+)
+from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode, SagaNode
+
+# Node and edge model families that own their storage through a dedicated operation object.
+_NODE_FAMILIES = (
+    (EpisodicNode, "episode_node_ops"),
+    (CommunityNode, "community_node_ops"),
+    (SagaNode, "saga_node_ops"),
+)
+_EDGE_FAMILIES = (
+    (EpisodicEdge, "episodic_edge_ops"),
+    (CommunityEdge, "community_edge_ops"),
+    (HasEpisodeEdge, "has_episode_edge_ops"),
+    (NextEpisodeEdge, "next_episode_edge_ops"),
+)
+
+
+def _family_ops(families, driver, model):
+    """Return the driver's operation object for a non-entity model class, else None."""
+    for family, attribute in families:
+        if isinstance(model, type) and issubclass(model, family):
+            return getattr(driver, attribute)
+    return None
 
 
 class DuckDBGraphOperations(GraphOperationsInterface):
-    """Delegate supported legacy entity methods without guessing other node families."""
+    """Route Graphiti's legacy model methods to the driver's native operation objects.
+
+    Every hook forwards to exactly one typed operation object so the public model API and
+    the ``graphiti.nodes``/``graphiti.edges`` namespaces share one implementation. A
+    model family without a native operation raises NotImplementedError rather than
+    pretending to succeed.
+    """
 
     async def node_save(self, node, driver):
         """Persist a real entity through the driver's shared entity operations."""
@@ -78,8 +111,9 @@ class DuckDBGraphOperations(GraphOperationsInterface):
 
     async def node_delete(self, node, driver):
         """Delete only the concrete entity family and its incident edges."""
-        if isinstance(node, EpisodicNode):
-            return await driver.episode_node_ops.delete(driver, node)
+        ops = _family_ops(_NODE_FAMILIES, driver, type(node))
+        if ops is not None:
+            return await ops.delete(driver, node)
         if not isinstance(node, EntityNode):
             raise NotImplementedError("This operation requires an EntityNode")
         await driver.entity_node_ops.delete(driver, node)
@@ -110,18 +144,18 @@ class DuckDBGraphOperations(GraphOperationsInterface):
 
     async def node_delete_by_group_id(self, _cls, driver, group_id, batch_size=100):
         """Delete only entity nodes in the requested group through native operations."""
-        if issubclass(_cls, EpisodicNode):
-            return await driver.episode_node_ops.delete_by_group_id(
-                driver, group_id, batch_size=batch_size
-            )
+        ops = _family_ops(_NODE_FAMILIES, driver, _cls)
+        if ops is not None:
+            return await ops.delete_by_group_id(driver, group_id, batch_size=batch_size)
         if not issubclass(_cls, EntityNode):
             raise NotImplementedError("This operation requires EntityNode models")
         await driver.entity_node_ops.delete_by_group_id(driver, group_id, batch_size=batch_size)
 
     async def node_delete_by_uuids(self, _cls, driver, uuids, group_id=None, batch_size=100):
         """Retain supplied UUID and group restrictions in the actual deletion."""
-        if issubclass(_cls, EpisodicNode):
-            return await driver.episode_node_ops.delete_by_uuids(
+        ops = _family_ops(_NODE_FAMILIES, driver, _cls)
+        if ops is not None:
+            return await ops.delete_by_uuids(
                 driver, uuids, group_id=group_id, batch_size=batch_size
             )
         if not issubclass(_cls, EntityNode):
@@ -181,8 +215,9 @@ class DuckDBGraphOperations(GraphOperationsInterface):
 
     async def edge_delete(self, edge, driver):
         """Delete only the supplied entity relationship."""
-        if isinstance(edge, EpisodicEdge):
-            return await driver.episodic_edge_ops.delete(driver, edge)
+        ops = _family_ops(_EDGE_FAMILIES, driver, type(edge))
+        if ops is not None:
+            return await ops.delete(driver, edge)
         if not isinstance(edge, EntityEdge):
             raise NotImplementedError("This operation requires an EntityEdge")
         await driver.entity_edge_ops.delete(driver, edge)
@@ -212,8 +247,9 @@ class DuckDBGraphOperations(GraphOperationsInterface):
 
     async def edge_delete_by_uuids(self, _cls, driver, uuids, group_id=None):
         """Retain UUID and optional group restrictions in entity-edge deletion."""
-        if issubclass(_cls, EpisodicEdge):
-            return await driver.episodic_edge_ops.delete_by_uuids(driver, uuids, group_id=group_id)
+        ops = _family_ops(_EDGE_FAMILIES, driver, _cls)
+        if ops is not None:
+            return await ops.delete_by_uuids(driver, uuids, group_id=group_id)
         if not issubclass(_cls, EntityEdge):
             raise NotImplementedError("This operation requires EntityEdge models")
         await driver.entity_edge_ops.delete_by_uuids(driver, uuids, group_id=group_id)
@@ -302,3 +338,221 @@ class DuckDBGraphOperations(GraphOperationsInterface):
         return await driver.episodic_edge_ops.get_by_group_ids(
             driver, group_ids, limit=limit, uuid_cursor=uuid_cursor
         )
+
+    async def community_node_save(self, node, driver):
+        """Persist a community through the driver's community operations."""
+        await driver.community_node_ops.save(driver, node)
+
+    async def community_node_delete(self, node, driver):
+        """Delete a community and its incident membership edges."""
+        await driver.community_node_ops.delete(driver, node)
+
+    async def community_node_save_bulk(self, _cls, driver, transaction, nodes, batch_size=100):
+        """Save communities on the caller's transaction, accepting model dictionaries."""
+        prepared = [CommunityNode.model_validate(node) for node in nodes]
+        await driver.community_node_ops.save_bulk(
+            driver, prepared, tx=transaction, batch_size=batch_size
+        )
+
+    async def community_node_delete_by_group_id(self, _cls, driver, group_id, batch_size=100):
+        """Delete communities of exactly one group."""
+        await driver.community_node_ops.delete_by_group_id(driver, group_id, batch_size=batch_size)
+
+    async def community_node_delete_by_uuids(
+        self, _cls, driver, uuids, group_id=None, batch_size=100
+    ):
+        """Delete listed communities, keeping an optional group restriction."""
+        await driver.community_node_ops.delete_by_uuids(
+            driver, uuids, group_id=group_id, batch_size=batch_size
+        )
+
+    async def community_node_get_by_uuid(self, _cls, driver, uuid):
+        """Return a stored community or raise NodeNotFoundError."""
+        return await driver.community_node_ops.get_by_uuid(driver, uuid)
+
+    async def community_node_get_by_uuids(self, _cls, driver, uuids):
+        """Return the stored communities among the listed UUIDs."""
+        return await driver.community_node_ops.get_by_uuids(driver, uuids)
+
+    async def community_node_get_by_group_ids(
+        self, _cls, driver, group_ids, limit=None, uuid_cursor=None
+    ):
+        """Return communities of the listed groups with UUID cursor paging."""
+        return await driver.community_node_ops.get_by_group_ids(
+            driver, group_ids, limit=limit, uuid_cursor=uuid_cursor
+        )
+
+    async def community_node_load_name_embedding(self, node, driver):
+        """Copy the stored name embedding onto the community model."""
+        await driver.community_node_ops.load_name_embedding(driver, node)
+
+    async def saga_node_save(self, node, driver):
+        """Persist a saga through the driver's saga operations."""
+        await driver.saga_node_ops.save(driver, node)
+
+    async def saga_node_delete(self, node, driver):
+        """Delete a saga and its HAS_EPISODE edges, keeping the episodes themselves."""
+        await driver.saga_node_ops.delete(driver, node)
+
+    async def saga_node_save_bulk(self, _cls, driver, transaction, nodes, batch_size=100):
+        """Save sagas on the caller's transaction, accepting model dictionaries."""
+        prepared = [SagaNode.model_validate(node) for node in nodes]
+        await driver.saga_node_ops.save_bulk(
+            driver, prepared, tx=transaction, batch_size=batch_size
+        )
+
+    async def saga_node_delete_by_group_id(self, _cls, driver, group_id, batch_size=100):
+        """Delete sagas of exactly one group."""
+        await driver.saga_node_ops.delete_by_group_id(driver, group_id, batch_size=batch_size)
+
+    async def saga_node_delete_by_uuids(self, _cls, driver, uuids, group_id=None, batch_size=100):
+        """Delete listed sagas, keeping an optional group restriction."""
+        await driver.saga_node_ops.delete_by_uuids(
+            driver, uuids, group_id=group_id, batch_size=batch_size
+        )
+
+    async def saga_node_get_by_uuid(self, _cls, driver, uuid):
+        """Return a stored saga or raise NodeNotFoundError."""
+        return await driver.saga_node_ops.get_by_uuid(driver, uuid)
+
+    async def saga_node_get_by_uuids(self, _cls, driver, uuids):
+        """Return the stored sagas among the listed UUIDs."""
+        return await driver.saga_node_ops.get_by_uuids(driver, uuids)
+
+    async def saga_node_get_by_group_ids(
+        self, _cls, driver, group_ids, limit=None, uuid_cursor=None
+    ):
+        """Return sagas of the listed groups with UUID cursor paging."""
+        return await driver.saga_node_ops.get_by_group_ids(
+            driver, group_ids, limit=limit, uuid_cursor=uuid_cursor
+        )
+
+    async def saga_get_previous_episode_uuid(self, driver, saga_uuid, current_episode_uuid):
+        """Return the saga's latest other episode UUID, or None when it has none."""
+        return await driver.saga_node_ops.get_previous_episode_uuid(
+            driver, saga_uuid, current_episode_uuid
+        )
+
+    async def saga_get_episode_contents(self, driver, saga_uuid, since=None, limit=200):
+        """Return (content, valid_at, created_at) for saga episodes created after ``since``."""
+        return await driver.saga_node_ops.get_episode_contents(
+            driver, saga_uuid, since=since, limit=limit
+        )
+
+    async def community_edge_save(self, edge, driver):
+        """Persist a HAS_MEMBER edge after checking both endpoints exist."""
+        await driver.community_edge_ops.save(driver, edge)
+
+    async def community_edge_delete(self, edge, driver):
+        """Delete one HAS_MEMBER edge."""
+        await driver.community_edge_ops.delete(driver, edge)
+
+    async def community_edge_delete_by_uuids(self, _cls, driver, uuids, group_id=None):
+        """Delete listed HAS_MEMBER edges, keeping an optional group restriction."""
+        await driver.community_edge_ops.delete_by_uuids(driver, uuids, group_id=group_id)
+
+    async def community_edge_get_by_uuid(self, _cls, driver, uuid):
+        """Return a stored HAS_MEMBER edge or raise EdgeNotFoundError."""
+        return await driver.community_edge_ops.get_by_uuid(driver, uuid)
+
+    async def community_edge_get_by_uuids(self, _cls, driver, uuids):
+        """Return the stored HAS_MEMBER edges among the listed UUIDs."""
+        return await driver.community_edge_ops.get_by_uuids(driver, uuids)
+
+    async def community_edge_get_by_group_ids(
+        self, _cls, driver, group_ids, limit=None, uuid_cursor=None
+    ):
+        """Return HAS_MEMBER edges of the listed groups with UUID cursor paging."""
+        return await driver.community_edge_ops.get_by_group_ids(
+            driver, group_ids, limit=limit, uuid_cursor=uuid_cursor
+        )
+
+    async def has_episode_edge_save(self, edge, driver):
+        """Persist a HAS_EPISODE edge after checking saga and episode exist."""
+        await driver.has_episode_edge_ops.save(driver, edge)
+
+    async def has_episode_edge_delete(self, edge, driver):
+        """Delete one HAS_EPISODE edge."""
+        await driver.has_episode_edge_ops.delete(driver, edge)
+
+    async def has_episode_edge_save_bulk(self, _cls, driver, transaction, edges, batch_size=100):
+        """Save HAS_EPISODE edges on the caller's transaction, accepting dictionaries."""
+        prepared = [HasEpisodeEdge.model_validate(edge) for edge in edges]
+        await driver.has_episode_edge_ops.save_bulk(
+            driver, prepared, tx=transaction, batch_size=batch_size
+        )
+
+    async def has_episode_edge_delete_by_uuids(self, _cls, driver, uuids, group_id=None):
+        """Delete listed HAS_EPISODE edges, keeping an optional group restriction."""
+        await driver.has_episode_edge_ops.delete_by_uuids(driver, uuids, group_id=group_id)
+
+    async def has_episode_edge_get_by_uuid(self, _cls, driver, uuid):
+        """Return a stored HAS_EPISODE edge or raise EdgeNotFoundError."""
+        return await driver.has_episode_edge_ops.get_by_uuid(driver, uuid)
+
+    async def has_episode_edge_get_by_uuids(self, _cls, driver, uuids):
+        """Return the stored HAS_EPISODE edges among the listed UUIDs."""
+        return await driver.has_episode_edge_ops.get_by_uuids(driver, uuids)
+
+    async def has_episode_edge_get_by_group_ids(
+        self, _cls, driver, group_ids, limit=None, uuid_cursor=None
+    ):
+        """Return HAS_EPISODE edges of the listed groups with UUID cursor paging."""
+        return await driver.has_episode_edge_ops.get_by_group_ids(
+            driver, group_ids, limit=limit, uuid_cursor=uuid_cursor
+        )
+
+    async def next_episode_edge_save(self, edge, driver):
+        """Persist a NEXT_EPISODE edge after checking both episodes exist."""
+        await driver.next_episode_edge_ops.save(driver, edge)
+
+    async def next_episode_edge_delete(self, edge, driver):
+        """Delete one NEXT_EPISODE edge."""
+        await driver.next_episode_edge_ops.delete(driver, edge)
+
+    async def next_episode_edge_save_bulk(self, _cls, driver, transaction, edges, batch_size=100):
+        """Save NEXT_EPISODE edges on the caller's transaction, accepting dictionaries."""
+        prepared = [NextEpisodeEdge.model_validate(edge) for edge in edges]
+        await driver.next_episode_edge_ops.save_bulk(
+            driver, prepared, tx=transaction, batch_size=batch_size
+        )
+
+    async def next_episode_edge_delete_by_uuids(self, _cls, driver, uuids, group_id=None):
+        """Delete listed NEXT_EPISODE edges, keeping an optional group restriction."""
+        await driver.next_episode_edge_ops.delete_by_uuids(driver, uuids, group_id=group_id)
+
+    async def next_episode_edge_get_by_uuid(self, _cls, driver, uuid):
+        """Return a stored NEXT_EPISODE edge or raise EdgeNotFoundError."""
+        return await driver.next_episode_edge_ops.get_by_uuid(driver, uuid)
+
+    async def next_episode_edge_get_by_uuids(self, _cls, driver, uuids):
+        """Return the stored NEXT_EPISODE edges among the listed UUIDs."""
+        return await driver.next_episode_edge_ops.get_by_uuids(driver, uuids)
+
+    async def next_episode_edge_get_by_group_ids(
+        self, _cls, driver, group_ids, limit=None, uuid_cursor=None
+    ):
+        """Return NEXT_EPISODE edges of the listed groups with UUID cursor paging."""
+        return await driver.next_episode_edge_ops.get_by_group_ids(
+            driver, group_ids, limit=limit, uuid_cursor=uuid_cursor
+        )
+
+    async def get_mentioned_nodes(self, driver, episodes):
+        """Return the distinct entities the given episodes mention."""
+        return await driver.graph_ops.get_mentioned_nodes(driver, episodes)
+
+    async def get_communities_by_nodes(self, driver, nodes):
+        """Return the distinct communities having any given entity as a member."""
+        return await driver.graph_ops.get_communities_by_nodes(driver, nodes)
+
+    async def get_community_clusters(self, driver, group_ids):
+        """Return label-propagation entity clusters for the given groups."""
+        return await driver.graph_ops.get_community_clusters(driver, group_ids)
+
+    async def remove_communities(self, driver, group_ids=None):
+        """Delete communities, optionally only in the given groups."""
+        await driver.graph_ops.remove_communities(driver, group_ids=group_ids)
+
+    async def determine_entity_community(self, driver, entity):
+        """Return ``(community, is_new)`` for an entity by Graphiti's membership rule."""
+        return await driver.graph_ops.determine_entity_community(driver, entity)
