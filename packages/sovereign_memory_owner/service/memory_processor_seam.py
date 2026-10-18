@@ -25,16 +25,55 @@ class TerminalProcessingError(Exception):
 
 
 @dataclass(frozen=True)
-class RetrievalScope:
-    """The authenticated identity a retrieval is allowed to see.
+class Visibility:
+    """Which captured events an authenticated principal may see, resolved by a policy.
 
-    agent_id is the transport-authenticated principal; scope is its granted
-    scope label. Engines must return only memories derived from events whose
-    actor is agent_id. It never carries anything the caller merely claimed.
+    mode "own": only events the principal produced (the fail-closed default).
+    mode "pool": every event in the shared pool (the Sovereign universal pool).
+    mode "granted": events produced by any actor in actor_agent_ids, as granted
+    by a permission owner. It is data about authorization, never a request.
+    """
+
+    mode: str
+    actor_agent_ids: frozenset[str] = frozenset()
+
+    def permits(self, event_actor: str | None, principal_id: str) -> bool:
+        """Say whether an event produced by event_actor is visible to principal_id.
+
+        An unknown mode or a missing actor permits nothing.
+        """
+        if event_actor is None:
+            return False
+        if self.mode == "own":
+            return event_actor == principal_id
+        if self.mode == "pool":
+            return True
+        if self.mode == "granted":
+            return event_actor in self.actor_agent_ids
+        return False
+
+
+@dataclass(frozen=True)
+class RetrievalScope:
+    """The authenticated identity and visibility a retrieval is allowed to use.
+
+    agent_id is the transport-authenticated principal (provenance); scope is the
+    authenticator's scope label; visibility is what the policy resolved from
+    them. Engines must restrict every read, cache and traversal to events the
+    visibility permits. It never carries anything the caller merely claimed.
     """
 
     agent_id: str
     scope: str
+    visibility: Visibility
+
+
+class VisibilityPolicy(Protocol):
+    """The seam through which a permission owner decides what a principal may see."""
+
+    async def resolve(self, principal: "AuthenticatedPrincipal") -> Visibility:
+        """Return the principal's visibility, or raise PermissionError to refuse the request (fail closed)."""
+        ...
 
 
 class ProcessorResult:

@@ -11,7 +11,7 @@ from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import connect as du
 
 from service.memory_dispatcher import MemoryDispatcher, ProcessorRegistry
 from service.memory_owner_core import OwnerCore
-from service.memory_processor_seam import AuthenticatedPrincipal, MemoryRetriever
+from service.memory_processor_seam import AuthenticatedPrincipal, MemoryRetriever, VisibilityPolicy
 from service.memory_retrieval import MemoryRetrievalService
 
 logger = logging.getLogger(__name__)
@@ -27,12 +27,14 @@ class OwnerService:
         authenticator=None,
         registry: ProcessorRegistry | None = None,
         retrievers: dict[str, MemoryRetriever] | None = None,
+        policy: VisibilityPolicy | None = None,
     ):
         """Initialize the service with socket and db paths.
 
         registry holds the engines that process captured events and retrievers
         the engines that answer retrieval; both may be empty, in which case
-        receipts stay pending and retrieval reports every tier unavailable.
+        receipts stay pending and retrieval reports every tier unavailable. policy
+        decides each principal's visibility; the default is restricted (own events only).
         """
         self.socket_path = Path(socket_path)
         self.db_path = Path(db_path)
@@ -40,6 +42,7 @@ class OwnerService:
         self.authenticator = authenticator
         self.registry = registry or ProcessorRegistry()
         self.retrievers = retrievers or {}
+        self.policy = policy
 
     async def start(self) -> None:
         """Initialize database connection and start UNIX socket server."""
@@ -50,7 +53,7 @@ class OwnerService:
         core = OwnerCore(self.lifetime_conn)
         await core.initialize_schema()
         self.dispatcher = MemoryDispatcher(self.lifetime_conn, self.registry)
-        self.retrieval = MemoryRetrievalService(self.lifetime_conn, self.retrievers)
+        self.retrieval = MemoryRetrievalService(self.lifetime_conn, self.retrievers, self.policy)
         self.processing_tasks: set[asyncio.Task] = set()
         # Restart: finish whatever the previous run left owed to registered engines.
         self._spawn_processing(self.dispatcher.process_pending())
@@ -205,7 +208,11 @@ class OwnerService:
                         writer, "Invalid retrieval request", "query and limit required"
                     )
                     return
-                answers = await self.retrieval.retrieve(principal, query, limit)
+                try:
+                    answers = await self.retrieval.retrieve(principal, query, limit)
+                except PermissionError as refusal:
+                    self._send_error(writer, "Visibility Refused", str(refusal))
+                    return
                 writer.write(json.dumps({"status": "success", "tiers": answers}).encode("utf-8"))
                 await writer.drain()
                 return

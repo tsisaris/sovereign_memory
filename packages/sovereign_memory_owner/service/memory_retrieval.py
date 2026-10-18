@@ -4,7 +4,7 @@ Each tier answers through its own registered retriever. A tier with no
 retriever reports "unavailable" and a tier whose retriever raises reports
 "failed" with the reason; neither is ever shown as an empty success. Every hit
 is checked against the owner's durable events: it must name a captured event
-that the authenticated principal produced and that has not expired, or it is
+whose producer the principal's resolved visibility permits and that has not expired, or it is
 withheld and counted.
 """
 
@@ -14,7 +14,13 @@ from typing import Any
 from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import AsyncConnection
 
 from service.memory_owner_core import TIERS, OwnerCore
-from service.memory_processor_seam import AuthenticatedPrincipal, MemoryRetriever, RetrievalScope
+from service.memory_processor_seam import (
+    AuthenticatedPrincipal,
+    MemoryRetriever,
+    RetrievalScope,
+    VisibilityPolicy,
+)
+from service.memory_visibility import RestrictedPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +28,20 @@ logger = logging.getLogger(__name__)
 class MemoryRetrievalService:
     """Answer scoped retrieval requests across the registered tiers."""
 
-    def __init__(self, conn: AsyncConnection, retrievers: dict[str, MemoryRetriever]) -> None:
-        """Bind the owner connection and the retrievers keyed by tier name."""
+    def __init__(
+        self,
+        conn: AsyncConnection,
+        retrievers: dict[str, MemoryRetriever],
+        policy: VisibilityPolicy | None = None,
+    ) -> None:
+        """Bind the owner connection, the retrievers keyed by tier name and the visibility policy.
+
+        Without a policy every principal is restricted to its own events.
+        """
         self.conn = conn
         self.core = OwnerCore(conn)
         self.retrievers = retrievers
+        self.policy = policy or RestrictedPolicy()
 
     async def retrieve(
         self, principal: AuthenticatedPrincipal, query: str, limit: int
@@ -36,7 +51,10 @@ class MemoryRetrievalService:
         The scope comes only from the principal. It never writes and never
         returns another actor's hits.
         """
-        scope = RetrievalScope(agent_id=principal.agent_id, scope=principal.scope)
+        visibility = await self.policy.resolve(principal)
+        scope = RetrievalScope(
+            agent_id=principal.agent_id, scope=principal.scope, visibility=visibility
+        )
         expired = {event_id for event_id, _, _ in await self.core.expired_events()}
         answers: dict[str, dict[str, Any]] = {}
         for tier in TIERS:
@@ -80,10 +98,10 @@ class MemoryRetrievalService:
         return {"status": "ok", "hits": kept, "withheld": withheld}
 
     async def _owned(self, event_id: str, scope: RetrievalScope) -> bool:
-        """Say whether the stored event exists and was produced by the scope's agent."""
+        """Say whether the stored event exists and the scope's visibility permits its producer."""
         cursor = await self.conn.cursor()
         await cursor.execute(
             "SELECT actor_agent_id FROM memory_events WHERE event_id = ?", (event_id,)
         )
         row = await cursor.fetchone()
-        return row is not None and row[0] == scope.agent_id
+        return row is not None and scope.visibility.permits(row[0], scope.agent_id)

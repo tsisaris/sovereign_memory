@@ -22,8 +22,11 @@ from service.memory_processor_seam import MemoryProcessor, OwnerReader, Terminal
 
 # Receipt states a processor may report from apply; pending and processing are
 # the owner's own bookkeeping states and are never a processor's answer.
-REPORTABLE_STATUSES = frozenset(
-    {"processed", "processed_no_new_fact", "retryable_failure", "terminal_failure", "unknown"}
+# Only the first two mean the projection happened; for any other reported
+# state the projection is rolled back and the state is recorded separately.
+SUCCESS_STATUSES = frozenset({"processed", "processed_no_new_fact"})
+REPORTABLE_STATUSES = SUCCESS_STATUSES | frozenset(
+    {"retryable_failure", "terminal_failure", "unknown"}
 )
 ERROR_REF_LIMIT = 500
 logger = logging.getLogger(__name__)
@@ -205,9 +208,11 @@ class MemoryDispatcher:
     ) -> str:
         """Worker job: apply the projection and write its receipt in one transaction.
 
-        It rolls the whole transaction back, projection included, when apply
-        raises, reports an unreportable status, ends the transaction itself, or
-        when the receipt's attempt is no longer current.
+        Only a success status commits the projection with its receipt. When apply
+        raises, reports a failure or unknown status, reports an unreportable
+        status, ends the transaction itself, or the receipt's attempt is no
+        longer current, the projection is rolled back; a reported failure is then
+        recorded in a fresh transaction.
         """
         handle: duckdb.DuckDBPyConnection = self.conn.native
         handle.begin()
@@ -225,6 +230,15 @@ class MemoryDispatcher:
             if status not in REPORTABLE_STATUSES:
                 raise RuntimeError(f"Processor reported unreportable status {status!r}")
             error_ref = getattr(result, "error_ref", None)
+            if status not in SUCCESS_STATUSES:
+                # The processor reported no completed projection: discard its writes first.
+                ended = True
+                handle.rollback()
+                handle.begin()
+                ended = False
+                error_ref = error_ref or (
+                    f"processor reported {status}; its projection was rolled back"
+                )
             handle.execute(
                 "UPDATE memory_receipts SET status = ?, processor_id = ?, processor_version = ?, "
                 "projection_version = ?, completed_at = ?, error_ref = ? "
