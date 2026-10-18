@@ -15,10 +15,12 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from mem0.configs.base import MemoryConfig
 from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    from mem0.configs.base import MemoryConfig
 
 TIER_KEYS = ("episodic", "temporal", "relational", "personalization")
 
@@ -52,7 +54,7 @@ class RuntimeConfig:
     temporal_enabled: bool
     relational_database_name: str | None
     relational_embedding: EmbeddingSettings | None
-    personalization: MemoryConfig | None
+    personalization: "MemoryConfig | None"
 
 
 def _take(
@@ -114,7 +116,7 @@ def _embedding(table: Any, where: str) -> EmbeddingSettings:
     )
 
 
-def _personalization(table: Any) -> MemoryConfig:
+def _personalization(table: Any) -> "MemoryConfig":
     """Read the Mem0 table: llm, embedder and vector_store are required, the vector store is DuckDB."""
     where = "tiers.personalization"
     table = _take(table, where, ("memory",))
@@ -133,6 +135,8 @@ def _personalization(table: Any) -> MemoryConfig:
         if "model" not in settings["config"]:
             raise ConfigurationError(f"{engine_path}.config is missing: model")
         _text(settings["config"], f"{engine_path}.config", "model")
+    from mem0.configs.base import MemoryConfig
+
     try:
         config = MemoryConfig.model_validate(memory)
     except ValidationError as error:
@@ -181,6 +185,15 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         database_name = _text(relational, "tiers.relational", "database_name")
         embedding = _embedding(relational["embedding"], "tiers.relational.embedding")
     memory = _personalization(tiers["personalization"]) if "personalization" in tiers else None
+
+    socket_file = (base / _text(service, "service", "socket_path")).resolve()
+    database_file = (base / _text(service, "service", "database_path")).resolve()
+    if socket_file == database_file or (
+        socket_file.exists()
+        and database_file.exists()
+        and os.path.samefile(socket_file, database_file)
+    ):
+        raise ConfigurationError("service.socket_path and service.database_path name the same file")
 
     def path(key: str) -> Path:
         """Resolve one configured path against the configuration file's folder."""

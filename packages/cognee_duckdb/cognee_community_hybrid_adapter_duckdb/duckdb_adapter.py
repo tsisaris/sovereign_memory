@@ -5,8 +5,9 @@ from typing import ClassVar
 """DuckDB Vector and Graph adapter package."""
 import asyncio
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, TypeVar
 from uuid import UUID
 
 import duckdb
@@ -27,6 +28,8 @@ from cognee.infrastructure.engine import DataPoint
 from cognee.shared.logging_utils import get_logger
 from duckdb_engine import Dialect
 from duckdb_sqlalchemy_async.native import connect_native, require_native_connection
+
+T = TypeVar("T")
 
 
 class CollectionNotFoundError(CogneeCollectionNotFoundError):
@@ -78,6 +81,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
     """DuckDB hybrid adapter implementing both vector and graph database interfaces."""
 
     name = "DuckDB"
+    supports_payload_update = True
 
     def __init__(
         self,
@@ -176,32 +180,41 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             else:
                 return self.connection.execute(query).fetchone()
 
+    def _run_in_transaction(self, work: Callable[[], T]) -> T:
+        """Run work on the handle; an owned handle wraps it in its own transaction.
+
+        An owned handle begins, commits and, on a DuckDB error, rolls back. A
+        borrowed handle runs work inside the caller's transaction and leaves
+        commit or rollback to the caller; errors propagate unchanged. The caller
+        holds the adapter lock.
+        """
+        if not self.owns_connection:
+            return work()
+        try:
+            self.connection.execute("BEGIN TRANSACTION")
+            result = work()
+            self.connection.execute("COMMIT")
+            return result
+        except duckdb.Error:
+            self.connection.execute("ROLLBACK")
+            raise
+
     async def _execute_transaction(self, queries: list[tuple[str, list[Any] | None]]) -> None:
         """Run a batch of write statements in order under the adapter lock.
 
-        An owned handle wraps the batch in its own transaction and rolls it back on a
-        DuckDB error. A borrowed handle runs the batch inside the caller's transaction
-        and leaves commit or rollback to the caller; errors propagate unchanged.
+        See ``_run_in_transaction`` for how an owned and a borrowed handle differ.
         """
+
+        def work() -> None:
+            """Execute every statement of the batch on the handle."""
+            for query, params in queries:
+                if params:
+                    self.connection.execute(query, params)
+                else:
+                    self.connection.execute(query)
+
         async with self.VECTOR_DB_LOCK:
-            if not self.owns_connection:
-                for query, params in queries:
-                    if params:
-                        self.connection.execute(query, params)
-                    else:
-                        self.connection.execute(query)
-                return
-            try:
-                self.connection.execute("BEGIN TRANSACTION")
-                for query, params in queries:
-                    if params:
-                        self.connection.execute(query, params)
-                    else:
-                        self.connection.execute(query)
-                self.connection.execute("COMMIT")
-            except duckdb.Error:
-                self.connection.execute("ROLLBACK")
-                raise
+            self._run_in_transaction(work)
 
     async def close(self) -> None:
         """Close an owned DuckDB handle; a borrowed handle is left open for its caller."""
@@ -586,6 +599,133 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         except duckdb.Error as e:
             logger.error(f"Error deleting data points: {str(e)}")
             raise e
+
+    async def score_by_ids(
+        self, collection_name: str, data_point_ids: list[str], query_vector: list[float]
+    ) -> list[ScoredResult]:
+        """[VECTOR] Return raw cosine distances (lower is nearer) for the requested ids only.
+
+        Only rows whose id is requested are read and scored, with no top-k cut-off;
+        missing ids are omitted and the order of the result is unspecified. No ids
+        returns []. A missing collection raises CollectionNotFoundError and a query
+        vector of another dimension raises DuckDB's error. It never writes.
+        """
+        ids = list(dict.fromkeys(str(point_id) for point_id in data_point_ids))
+        if not ids:
+            return []
+        if not await self.has_collection(collection_name):
+            raise CollectionNotFoundError(f"Collection {collection_name} not found!")
+        if not query_vector:
+            raise ValueError("A query vector must have at least one dimension")
+        from cognee.infrastructure.engine.utils import parse_id
+
+        rows = await self._execute_query(
+            f"SELECT id, array_cosine_distance(vector, CAST($1 AS FLOAT[{len(query_vector)}])) "
+            f"FROM {self._table(collection_name)} WHERE list_contains($2, id)",
+            [query_vector, ids],
+        )
+        return [
+            ScoredResult(id=parse_id(str(row[0])), score=float(row[1]), payload=None)
+            for row in rows
+        ]
+
+    async def update_payload(
+        self, collection_name: str, payload_updates: dict[str, dict[str, Any]]
+    ) -> None:
+        """[VECTOR] Overwrite payload fields of existing rows; stored vectors are never touched.
+
+        Missing ids and a missing collection are skipped. Every named field must
+        already exist in that row's payload (Cognee's caller contract); if any does
+        not, ValueError is raised before anything is written. The read and the
+        write happen under one adapter lock, so no concurrent writer is overwritten.
+        """
+        if not payload_updates or not await self.has_collection(collection_name):
+            return
+        updates = {str(point_id): fields for point_id, fields in payload_updates.items()}
+        table = self._table(collection_name)
+
+        def work() -> None:
+            """Read the current payloads, validate every update, then write them."""
+            rows = self.connection.execute(
+                f"SELECT id, payload FROM {table} WHERE list_contains($1, id)", [list(updates)]
+            ).fetchall()
+            merged = {}
+            for row_id, payload_text in rows:
+                payload = json.loads(payload_text) if payload_text else {}
+                unknown = sorted(set(updates[row_id]) - set(payload))
+                if unknown:
+                    raise ValueError(
+                        f"update_payload: fields {unknown} do not exist in the payload of "
+                        f"{collection_name!r} row {row_id}"
+                    )
+                merged[row_id] = {**payload, **updates[row_id]}
+            for row_id, payload in merged.items():
+                self.connection.execute(
+                    f"UPDATE {table} SET payload = $1 WHERE id = $2",
+                    [json.dumps(serialize_for_json(payload)), row_id],
+                )
+
+        async with self.VECTOR_DB_LOCK:
+            self._run_in_transaction(work)
+
+    @classmethod
+    async def create_dataset(cls, dataset_id: UUID | None, user: Any) -> dict:
+        """[DATASET] Return the vector connection fields for a dataset's DuckDB namespace.
+
+        This is Cognee's own DuckDB dataset handler: the dataset gets its own schema
+        (``ds_<uuid hex>``) in the configured DuckDB file, derived from the relational
+        configuration, so no path, credential or registry is invented here. Raises
+        ValueError without a dataset id or without a configured local DuckDB file.
+        """
+        from cognee.cognee_duckdb_dataset import DuckDBVectorDatasetDatabaseHandler
+
+        return await DuckDBVectorDatasetDatabaseHandler.create_dataset(dataset_id, user)
+
+    async def delete_dataset(self, dataset_id: UUID, user: Any) -> None:
+        """[DATASET] Drop one dataset's schema from the shared file, for the dataset's owner only.
+
+        The dataset's record in Cognee's relational metadata names the schema and
+        file; it is dropped only when the record belongs to ``user``, is a DuckDB
+        record, names the schema derived from the dataset id and names the file
+        this adapter works in. A dataset with no record is already gone and nothing
+        happens. Other schemas and the file itself are kept. A borrowed handle does
+        the drop inside the caller's transaction; cached engines of the dropped
+        schema are evicted afterwards. Raises PermissionError for another user's
+        dataset and ValueError for a record that does not match.
+        """
+        from cognee.infrastructure.databases.graph.get_graph_engine import graph_engine_cache
+        from cognee.infrastructure.databases.relational import get_relational_engine
+        from cognee.infrastructure.databases.vector.create_vector_engine import vector_engine_cache
+        from cognee.modules.users.models import DatasetDatabase
+        from sqlalchemy import select
+
+        async with get_relational_engine().get_async_session() as session:
+            record = await session.scalar(
+                select(DatasetDatabase).where(DatasetDatabase.dataset_id == dataset_id)
+            )
+        if record is None:
+            return
+        if record.owner_id != user.id:
+            raise PermissionError("Only the owner of a dataset may delete its storage")
+        schema = f"ds_{UUID(str(dataset_id)).hex}"
+        file_rows = await self._execute_query(
+            "SELECT path FROM duckdb_databases() WHERE database_name = current_database()"
+        )
+        stored = record.vector_database_url
+        if (
+            record.vector_database_provider != "duckdb"
+            or record.vector_database_name != schema
+            or not stored
+            or not file_rows
+            or not file_rows[0][0]
+            or Path(stored).resolve() != Path(file_rows[0][0]).resolve()
+        ):
+            raise ValueError("Dataset storage does not match this adapter's DuckDB file")
+        await self._execute_transaction(
+            [(f"DROP SCHEMA IF EXISTS {self._identifier(schema)} CASCADE", None)]
+        )
+        await graph_engine_cache.aevict_for_database(schema)
+        await vector_engine_cache.aevict_for_database(schema)
 
     async def prune(self) -> None:
         """Documentation."""
