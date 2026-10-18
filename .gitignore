@@ -1,11 +1,8 @@
-# Never committed: weights, media, downloads, scratch and build output.
-local/
 .venv/
 __pycache__/
 *.pyc
-.coverage
-.mypy_cache/
-.ruff_cache/
-.pytest_cache/
-*.egg-info/
-strace_output*.txt
+*.db
+vendor/
+packages/mem0_duckdb/src/mem0/
+packages/mem0_duckdb/tests/
+packages/mem0_duckdb/LICENSE
