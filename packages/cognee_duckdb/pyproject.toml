@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-community-hybrid-adapter-duckdb"
+version = "0.2.1"
+description = "DuckDB vector adapter for Cognee with planned graph support"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = "Apache-2.0"
+authors = [
+    {name = "Cognee Community", email = "community@cognee.ai"},
+]
+maintainers = [
+    {name = "Cognee Community", email = "community@cognee.ai"},
+]
+keywords = ["cognee", "duckdb", "vector", "database", "embeddings", "ai", "ml"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "cognee==1.6.5",
+    # Transitive via cognee; pinned to the version cognee 1.6.1 locks, so CI
+    # resolves the litellm the upstream release was tested against. cognee 1.6.x
+    # caps the range itself (>=1.83.7,<1.97.0); 1.96.2 ships abi3 wheels that
+    # install on every Python this package supports.
+    "litellm==1.96.2",
+    "duckdb==1.5.6",
+    "starlette>=0.48.0",
+    "instructor>=1.11"
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.17.1",
+    "twine>=5.0.0",
+    "build>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-community"
+Repository = "https://github.com/topoteretes/cognee-community"
+Issues = "https://github.com/topoteretes/cognee-community/issues"
+Documentation = "https://docs.cognee.ai"
+README = "https://github.com/topoteretes/cognee-community/blob/main/packages/hybrid/duckdb/README.md"
+
+[tool.setuptools.packages.find]
+include = ["cognee_community_hybrid_adapter_duckdb*"]
+exclude = ["examples*", "typings*", "None*"]
