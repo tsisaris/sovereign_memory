@@ -5,6 +5,9 @@ import re
 from pathlib import Path
 
 import duckdb
+from duckdb_engine import ConnectionWrapper
+from sqlalchemy import Engine, create_engine
+from sqlalchemy.pool import StaticPool
 
 
 def require_native_connection(connection):
@@ -48,3 +51,40 @@ def connect_native(database=":memory:", *args, **kwargs):
         connection.close()
         raise
     return connection
+
+
+class BorrowedNativeHandle(ConnectionWrapper):
+    """Present a native DuckDB handle to SQLAlchemy without letting it own the handle.
+
+    SQLAlchemy's begin, rollback and close become no-ops and commit is refused,
+    so statements run inside whatever transaction the handle's owner holds and
+    only that owner finishes it.
+    """
+
+    def begin(self) -> None:
+        """Do nothing: the handle's owner has already begun or will begin it."""
+
+    def commit(self) -> None:
+        """Refuse: only the handle's owner may commit."""
+        raise duckdb.TransactionException("A borrowed DuckDB handle is committed only by its owner")
+
+    def rollback(self) -> None:
+        """Do nothing: the handle's owner rolls back its own failed transaction."""
+
+    def close(self) -> None:
+        """Do nothing: the handle's owner closes it."""
+
+
+def borrowed_engine(native: duckdb.DuckDBPyConnection) -> Engine:
+    """Return a SQLAlchemy engine whose only connection runs on native.
+
+    The engine never opens another connection, never resets the handle when a
+    session ends and never commits, rolls back or closes it, and it does not
+    change the handle's current schema.
+    """
+    return create_engine(
+        "duckdb://",
+        creator=lambda: BorrowedNativeHandle(native),
+        poolclass=StaticPool,
+        pool_reset_on_return=None,
+    )

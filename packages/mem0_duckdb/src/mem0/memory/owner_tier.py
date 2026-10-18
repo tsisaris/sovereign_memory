@@ -46,6 +46,31 @@ PROVENANCE_FIELDS = (
 )
 
 
+class EmbeddingIndexMismatch(RuntimeError):
+    """The stored memories were embedded by a different model than the configured one.
+
+    Mixing them in one search would compare vectors from different models (even at
+    the same dimension), so the tier refuses to write or search until the index is
+    rebuilt from the original events. The original memories are never altered.
+    """
+
+
+def embedding_identity(config: MemoryConfig) -> str:
+    """Return the configured embedding model's identity (provider, model, dimensions); pure.
+
+    It is stamped on every stored memory and compared before any write or search.
+    Raises ValueError when the configuration does not name a model.
+    """
+    settings = config.embedder.config
+    model = (
+        settings.get("model") if isinstance(settings, dict) else getattr(settings, "model", None)
+    )
+    if not model:
+        raise ValueError("The embedder configuration names no model")
+    dims = getattr(config.vector_store.config, "embedding_model_dims", None)
+    return f"{config.embedder.provider}|{model}|{dims}"
+
+
 class TerminalCaptureError(Exception):
     """The event can never be processed by this tier (for example, an unsupported payload).
 
@@ -125,6 +150,7 @@ class Mem0Tier:
         if config.vector_store.provider != "duckdb":
             raise ValueError("Mem0Tier needs the duckdb vector store provider")
         self.config = config
+        self.embedding_identity = embedding_identity(config)
         self.terminal_error = terminal_error
         self.scope_of = scope_of
         self.may_modify = may_modify
@@ -136,18 +162,51 @@ class Mem0Tier:
         """Receive the owner's reader; every read before a decision goes through it."""
         self._reader = reader
 
-    def _memory_for(self, handle: duckdb.DuckDBPyConnection) -> Memory:
-        """Return the Memory bound to the owner's handle, creating it on first use.
+    def initialize_storage(self, native_tx_handle: duckdb.DuckDBPyConnection) -> None:
+        """Bind Memory to the owner's handle and create its tables, in the owner's transaction.
 
-        Runs on the owner's worker. Raises RuntimeError if the owner ever
-        passes a different handle than the one this tier was bound to.
+        The owner calls this once at start, on its worker, inside a short
+        transaction it commits or rolls back. It creates the vector, entity and
+        history tables and no model client (those are made on first use, off the
+        worker). Raises RuntimeError if the tier was already bound to another handle.
         """
         if self._memory is None:
-            self._memory = Memory(self.config, connection=handle)
-            self._handle = handle
-        elif handle is not self._handle:
+            self._memory = Memory(self.config, connection=native_tx_handle)
+            self._handle = native_tx_handle
+            self._memory.entity_store
+        elif native_tx_handle is not self._handle:
+            raise RuntimeError("Mem0Tier was bound to a different owner handle")
+
+    def _memory_for(self, handle: duckdb.DuckDBPyConnection) -> Memory:
+        """Return the Memory bound to the owner's handle; it never creates one.
+
+        Storage is created only by initialize_storage, so a read-only callback never
+        runs DDL. Raises RuntimeError if the owner never initialized the tier or
+        passes a different handle than the one it was bound to.
+        """
+        if self._memory is None:
+            raise RuntimeError("Mem0Tier storage is not initialized; the owner must start it first")
+        if handle is not self._handle:
             raise RuntimeError("Mem0Tier was bound to a different owner handle")
         return self._memory
+
+    def _require_matching_index(self, memory: Memory) -> None:
+        """Raise EmbeddingIndexMismatch if any stored memory has another embedding identity.
+
+        Memories stored before identities were recorded count as unknown, so they
+        also need a rebuild. Reads only, on the owner's handle.
+        """
+        table = memory.vector_store.collection_name
+        (other,) = memory.vector_store.connection.execute(
+            f"SELECT count(*) FROM {table} "
+            "WHERE json_extract_string(payload, '$.embedding_identity') IS DISTINCT FROM ?",
+            [self.embedding_identity],
+        ).fetchone()
+        if other:
+            raise EmbeddingIndexMismatch(
+                f"{other} stored memories were embedded by a model other than "
+                f"{self.embedding_identity!r}; rebuild the index from the source events"
+            )
 
     async def _read(self, func: Callable[[Memory], Any]) -> Any:
         """Run func(memory) on the owner's worker through the attached reader."""
@@ -164,25 +223,30 @@ class Mem0Tier:
 
         Raises the terminal error for payloads this tier cannot read, and any
         model error unchanged (the owner records it as a retryable failure).
+        Model clients are created and called in worker threads, never on the
+        owner's database worker and never inside a write transaction.
         """
+        event_id = event_envelope["event_id"]
+        operation = REMOVAL_OPERATIONS.get(event_envelope.get("event_type"))
+        if operation is not None:
+            # A removal is native storage work only: no model client and no memory read.
+            return self._prepare_removal(
+                event_id, event_envelope, verified_payload_bytes, operation
+            )
         if not self.config.enable_update_delete_branches:
             raise self.terminal_error(
                 "Mem0Tier requires enable_update_delete_branches (the action flow)"
             )
         memory = await self._read(lambda m: m)
-        event_id = event_envelope["event_id"]
+        await self._read(self._require_matching_index)
         actor = event_envelope.get("actor_agent_id", event_envelope.get("agent_id"))
-        operation = REMOVAL_OPERATIONS.get(event_envelope.get("event_type"))
-        if operation is not None:
-            return self._prepare_removal(
-                event_id, event_envelope, verified_payload_bytes, operation
-            )
         scope_id = self.scope_of(actor)
 
         messages, infer = self._messages_of(event_envelope, verified_payload_bytes)
         provenance = {
             key: event_envelope[key] for key in PROVENANCE_FIELDS if event_envelope.get(key)
         }
+        provenance["embedding_identity"] = self.embedding_identity
         provenance["event_id"] = event_id
         provenance["actor_agent_id"] = actor
         metadata, filters = _build_filters_and_metadata(user_id=scope_id, input_metadata=provenance)
@@ -334,6 +398,8 @@ class Mem0Tier:
         """
         memory = self._memory_for(native_tx_handle)
         work = prepared_work
+        if work.kind != "remove":
+            self._require_matching_index(memory)
         with memory.use_planned_embeddings(work.entity_embeddings):
             if work.kind == "remove":
                 removed = self._remove(memory, work)
@@ -397,6 +463,7 @@ class Mem0Tier:
     async def prepare_query(self, scope: Any, query: str, limit: int) -> Dict[str, Any]:
         """Embed the question outside the database worker."""
         memory = await self._read(lambda m: m)
+        await self._read(self._require_matching_index)
         vector = await asyncio.to_thread(memory.embedding_model.embed, query, "search")
         return {"query": query, "vector": vector, "limit": limit}
 

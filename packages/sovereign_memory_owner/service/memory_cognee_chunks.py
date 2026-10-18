@@ -51,6 +51,28 @@ PROVENANCE_FIELDS = (
 )
 
 
+class EmbeddingIndexMismatch(RuntimeError):
+    """The stored chunks were embedded by a different model than the configured one.
+
+    Comparing vectors from different models (even of the same dimension) is
+    meaningless, so the tier refuses to write or search until the index is rebuilt
+    from the original events. The original events are never altered.
+    """
+
+
+def embedding_identity(engine: Any) -> str:
+    """Return the embedding engine's identity: provider, model, dimensions and API version.
+
+    It is stamped on every stored chunk and compared before any write or search.
+    Raises ValueError when the engine does not name its model and dimensions.
+    """
+    model, dimensions = getattr(engine, "model", None), getattr(engine, "dimensions", None)
+    if not model or not dimensions:
+        raise ValueError("The embedding engine does not name its model and dimensions")
+    provider, version_ = getattr(engine, "provider", None), getattr(engine, "api_version", None)
+    return f"{provider}|{model}|{dimensions}|{version_ or ''}"
+
+
 def chunk_id(event_id: str) -> str:
     """Return the deterministic Cognee chunk id of a captured event; pure."""
     return str(uuid.uuid5(CHUNK_NAMESPACE, event_id))
@@ -85,6 +107,7 @@ class CogneeChunkTier:
         if not isinstance(database_name, str) or not database_name:
             raise ValueError("CogneeChunkTier needs a non-empty database_name")
         self.embedding_engine = embedding_engine
+        self.embedding_identity = embedding_identity(embedding_engine)
         self.database_name = database_name
 
     def _adapter(self, handle: duckdb.DuckDBPyConnection) -> DuckDBAdapter:
@@ -94,6 +117,26 @@ class CogneeChunkTier:
             database_name=self.database_name,
             embedding_engine=self.embedding_engine,
         )
+
+    def _require_matching_index(self, adapter: DuckDBAdapter) -> None:
+        """Raise EmbeddingIndexMismatch if any stored chunk has another embedding identity; reads only."""
+        (exists,) = adapter.connection.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_catalog = "
+            "current_database() AND table_schema = ? AND table_name = ?",
+            [self.database_name, COLLECTION],
+        ).fetchone()
+        if not exists:
+            return
+        (other,) = adapter.connection.execute(
+            f"SELECT count(*) FROM {adapter._table(COLLECTION)} "
+            "WHERE json_extract_string(payload, '$.embedding_identity') IS DISTINCT FROM ?",
+            [self.embedding_identity],
+        ).fetchone()
+        if other:
+            raise EmbeddingIndexMismatch(
+                f"{other} stored chunks were embedded by a model other than "
+                f"{self.embedding_identity!r}; rebuild the index from the source events"
+            )
 
     # ---- write seam -------------------------------------------------------------
 
@@ -124,6 +167,7 @@ class CogneeChunkTier:
             "belongs_to_set": [group_of(actor)],
             "event_id": event_id,
             "actor_agent_id": actor,
+            "embedding_identity": self.embedding_identity,
             "event_time": event_instant(event_envelope),
             **{
                 key: event_envelope.get(key)
@@ -142,6 +186,8 @@ class CogneeChunkTier:
         A removal of a chunk that was never stored reports processed_no_new_fact.
         """
         adapter = self._adapter(native_tx_handle)
+        if prepared_work.removal_target is None:
+            self._require_matching_index(adapter)
         asyncio.run(adapter.initialize())
         identifier = prepared_work.chunk_id
         if prepared_work.removal_target is not None:
@@ -196,6 +242,7 @@ class CogneeChunkTier:
         if groups == []:
             return []
         adapter = self._adapter(native_handle)
+        self._require_matching_index(adapter)
         found = asyncio.run(
             adapter.search(
                 COLLECTION,

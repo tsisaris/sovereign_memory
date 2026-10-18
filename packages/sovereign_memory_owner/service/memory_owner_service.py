@@ -134,6 +134,7 @@ class OwnerService:
             self.retrieval = MemoryRetrievalService(
                 self.lifetime_conn, self.retrievers, self.policy
             )
+            await self.dispatcher.initialize_storage()
             # Ensure socket directory exists
             self.socket_path.parent.mkdir(parents=True, exist_ok=True)
             if stale is not None:
