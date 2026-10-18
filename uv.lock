@@ -3551,9 +3551,13 @@ wheels = [
 [[package]]
 name = "sovereign-memory"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
+    { name = "cognee" },
     { name = "duckdb" },
+    { name = "mem0-duckdb" },
+    { name = "pydantic" },
+    { name = "sovereign-memory-owner" },
     { name = "sqlalchemy" },
 ]
 
@@ -3584,7 +3588,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cognee", editable = "packages/cognee_duckdb" },
     { name = "duckdb", specifier = "==1.5.6" },
+    { name = "mem0-duckdb", editable = "packages/mem0_duckdb" },
+    { name = "pydantic", specifier = "==2.14.1" },
+    { name = "sovereign-memory-owner", editable = "packages/sovereign_memory_owner" },
     { name = "sqlalchemy", specifier = "==2.0.39" },
 ]
 
@@ -3618,18 +3626,22 @@ name = "sovereign-memory-owner"
 version = "0.1.0"
 source = { editable = "packages/sovereign_memory_owner" }
 dependencies = [
+    { name = "cognee" },
     { name = "duckdb" },
     { name = "duckdb-sqlalchemy-async" },
     { name = "graphiti-duckdb" },
     { name = "jsonschema" },
+    { name = "letta-memory-model" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "cognee", editable = "packages/cognee_duckdb" },
     { name = "duckdb", specifier = "==1.5.6" },
     { name = "duckdb-sqlalchemy-async", editable = "packages/duckdb_sqlalchemy_async" },
     { name = "graphiti-duckdb", editable = "packages/graphiti_duckdb" },
     { name = "jsonschema", specifier = "==4.25.1" },
+    { name = "letta-memory-model", editable = "packages/letta_memory_model" },
 ]
 
 [[package]]

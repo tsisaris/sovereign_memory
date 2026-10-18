@@ -1,11 +1,16 @@
 """Answer Graphiti's hybrid-search questions with native DuckDB SQL over current rows.
 
-Keyword search scores Lucene's BM25 in plain SQL, so every query reads the text that is
-stored right now: edits, deletions and group changes are visible immediately and no
-extension download or rebuilt index is needed. Similarity search uses Neo4j's normalized
+Keyword search scores a BM25 formula (Lucene's default constants, but this module's own
+simple tokenizer, so scores and tokenization are not claimed identical to Lucene's) in plain
+SQL, so every query reads the text that is stored right now: edits, deletions and group
+changes are visible immediately and no extension download or rebuilt index is needed.
+Keyword queries are plain words; quoted phrases and Boolean operators are refused, never
+reinterpreted as words. Similarity search uses Neo4j's normalized
 cosine, ``(1 + cosine) / 2``, over stored embeddings. Graph walks are bounded recursive
 SQL. Nothing here calls a model, opens a connection or returns a placeholder result.
 """
+
+import re
 
 from graphiti_core.driver.operations.search_ops import SearchOperations
 from graphiti_core.edges import EntityEdge
@@ -14,11 +19,11 @@ from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode
 from graphiti_core.search.search_filters import ComparisonOperator
 from graphiti_core.search.search_utils import MAX_QUERY_LENGTH, rrf
 
-# Lucene's BM25Similarity defaults, which Neo4j's fulltext indexes use for scoring.
+# Lucene's BM25Similarity default constants, used here in this module's own BM25 formula.
 LUCENE_BM25_K1 = 1.2
 LUCENE_BM25_B = 0.75
 
-# Lowercased runs of Unicode letters and digits, like Lucene's standard analyzer.
+# Lowercased runs of Unicode letters and digits: a plain tokenizer, not Lucene's analyzer.
 TOKEN_PATTERN = r"[\p{L}\p{N}]+"
 
 # Text fields of Graphiti's four Neo4j fulltext indexes; group_id is enforced as a filter.
@@ -60,6 +65,31 @@ def _labels_clause(alias, labels, parameters):
         f"list_has_any(CAST(json_extract({alias}.properties, '$.labels') AS VARCHAR[]), "
         f"{parameters.bind(list(labels))}::VARCHAR[])"
     )
+
+
+# Lucene syntax this driver cannot honor: a double-quoted phrase, the uppercase operators
+# AND OR NOT, && and ||, and + - ! written directly in front of a term.
+_UNSUPPORTED_SYNTAX = (
+    (re.compile(r'"[^"]*"'), "a quoted phrase"),
+    (re.compile(r"(?<!\w)(?:AND|OR|NOT)(?!\w)"), "a Boolean operator (AND, OR, NOT)"),
+    (re.compile(r"&&|\|\|"), "a Boolean operator (&&, ||)"),
+    (re.compile(r"(?:^|\s)[+\-!]\S"), "a required, prohibited or negated term (+, -, !)"),
+)
+
+
+def _refuse_unsupported_syntax(query):
+    """Raise ValueError when the keyword query uses phrase or Boolean syntax.
+
+    This driver ranks plain keywords only (any matching word counts, like Graphiti's
+    sanitized keyword search). Matching those forms as ordinary words would return
+    results that contradict what the caller wrote, so they are refused instead.
+    Anything else is a plain keyword query and never refused.
+    """
+    for pattern, name in _UNSUPPORTED_SYNTAX:
+        if pattern.search(query):
+            raise ValueError(
+                f"Keyword search does not support {name}; send plain words or remove the operator"
+            )
 
 
 def _refuse_property_filters(search_filters):
@@ -151,10 +181,14 @@ class DuckDBSearchOps(SearchOperations):
     def build_fulltext_query(self, query, group_ids=None, max_query_length=MAX_QUERY_LENGTH):
         """Return the lowercased keyword query, or "" when it exceeds Graphiti's term budget.
 
+        Raises ValueError for a quoted phrase or Boolean operator (see
+        ``_refuse_unsupported_syntax``).
+
         The budget is Graphiti's own rule: query words plus requested groups must stay
         below ``max_query_length``. An empty result means the search is not run.
         """
         validate_group_ids(group_ids)
+        _refuse_unsupported_syntax(query)
         if len(query.split(" ")) + len(group_ids or []) >= max_query_length:
             return ""
         return query.lower()
@@ -175,7 +209,7 @@ class DuckDBSearchOps(SearchOperations):
         """Score current rows of one label with BM25 and return their stored properties.
 
         Statistics come from the rows visible in the requested groups. A field's score
-        follows Lucene: ``idf * tf * (k1 + 1) / (tf + k1 * (1 - b + b * dl / avgdl))``,
+        uses this BM25 form: ``idf * tf * (k1 + 1) / (tf + k1 * (1 - b + b * dl / avgdl))``,
         summed over matching terms and fields like a multi-field OR query.
         """
         keywords = self.build_fulltext_query(query, group_ids)

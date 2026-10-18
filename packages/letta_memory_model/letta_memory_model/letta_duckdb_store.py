@@ -493,12 +493,16 @@ class LettaMemoryStore:
         after_sequence_id: Optional[int] = None,
         roles: Optional[Sequence[str]] = None,
         query_text: Optional[str] = None,
+        otid: Optional[str] = None,
         limit: Optional[int] = None,
+        newest_first: bool = False,
     ) -> list[PydanticMessage]:
         """Return the agent's messages in stored order, filtered as asked.
 
-        query_text matches message text case-insensitively as a substring.
-        limit, when given, keeps the earliest matching messages.
+        query_text matches message text case-insensitively as a substring and
+        otid matches the message's offline threading id exactly. limit, when
+        given, keeps the earliest matching messages, or with newest_first the
+        latest ones, returned latest first.
         """
         statement = select(Message).where(
             Message.organization_id == organization_id,
@@ -513,11 +517,26 @@ class LettaMemoryStore:
             statement = statement.where(Message.role.in_(list(roles)))
         if query_text is not None:
             statement = statement.where(Message.text.icontains(query_text, autoescape=True))
-        statement = statement.order_by(Message.sequence_id)
+        if otid is not None:
+            statement = statement.where(Message.otid == otid)
+        statement = statement.order_by(
+            Message.sequence_id.desc() if newest_first else Message.sequence_id
+        )
         if limit is not None:
             statement = statement.limit(limit)
         with self.transaction() as session:
             return [row.to_pydantic() for row in session.scalars(statement)]
+
+    def list_message_agent_ids(self, organization_id: str) -> list[str]:
+        """Return, sorted, every agent id that has a current message in the organization."""
+        statement = (
+            select(Message.agent_id)
+            .where(Message.organization_id == organization_id, Message.is_deleted.is_(False))
+            .distinct()
+            .order_by(Message.agent_id)
+        )
+        with self.transaction() as session:
+            return [agent for agent in session.scalars(statement) if agent is not None]
 
     def correct_message(
         self,

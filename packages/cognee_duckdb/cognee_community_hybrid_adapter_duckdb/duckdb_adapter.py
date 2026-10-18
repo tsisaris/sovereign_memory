@@ -673,7 +673,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
     def _parse_node_row(self, row) -> dict[str, Any]:
         properties = json.loads(row[3]) if isinstance(row[3], str) else (row[3] if row[3] else {})
-        return {"id": row[0], "name": row[1], "type": row[2], **properties}
+        return {**properties, "id": row[0], "name": row[1], "type": row[2]}
 
     async def query(self, query: str, params: dict[str, Any]) -> list[Any]:
         """[GRAPH] Execute a query against the graph."""
@@ -1162,7 +1162,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
     ) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
         """Return every edge touching the node as (source node, edge, target node).
 
-        The edge dictionary holds ``relationship_name`` and the stored edge properties.
+        The edge dictionary holds the stored edge properties and ``relationship_name``;
+        the stored relationship column always wins over a property of the same name.
         """
         connections = []
         for r in await self._incident_edge_rows(str(node_id)):
@@ -1170,7 +1171,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             connections.append(
                 (
                     self._parse_node_row((r[0], r[1], r[2], r[3])),
-                    {"relationship_name": r[4], **edge_properties},
+                    {**edge_properties, "relationship_name": r[4]},
                     self._parse_node_row((r[6], r[7], r[8], r[9])),
                 )
             )
