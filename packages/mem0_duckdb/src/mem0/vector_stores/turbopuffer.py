@@ -131,11 +131,13 @@ class TurbopufferDB(VectorStoreBase):
             else:
                 score = 1 - dist
 
-            results.append(OutputData(
-                id=row_id,
-                score=score,
-                payload=row_dict,
-            ))
+            results.append(
+                OutputData(
+                    id=row_id,
+                    score=score,
+                    payload=row_dict,
+                )
+            )
         return results
 
     # Maps mem0 filter operators to their Turbopuffer equivalents.

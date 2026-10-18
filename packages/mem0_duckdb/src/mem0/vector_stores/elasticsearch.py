@@ -6,7 +6,9 @@ try:
     from elasticsearch import Elasticsearch
     from elasticsearch.helpers import bulk
 except ImportError:
-    raise ImportError("Elasticsearch requires extra dependencies. Install with `pip install elasticsearch`") from None
+    raise ImportError(
+        "Elasticsearch requires extra dependencies. Install with `pip install elasticsearch`"
+    ) from None
 
 from pydantic import BaseModel
 
@@ -30,8 +32,7 @@ def _validate_filter(key: str, value: Any) -> None:
         raise ValueError(f"Invalid filter key: {key!r}")
     if not isinstance(value, (str, int, float, bool)):
         raise ValueError(
-            f"Filter value for {key!r} must be str, int, float, or bool, "
-            f"got {type(value).__name__}"
+            f"Filter value for {key!r} must be str, int, float, or bool, got {type(value).__name__}"
         )
 
 
@@ -46,15 +47,17 @@ class ElasticsearchDB(VectorStoreBase):
                 api_key=config.api_key,
                 verify_certs=config.verify_certs,
                 ca_certs=config.ca_certs,
-                headers= config.headers or {},
+                headers=config.headers or {},
             )
         else:
             self.client = Elasticsearch(
                 hosts=[f"{config.host}" if config.port is None else f"{config.host}:{config.port}"],
-                basic_auth=(config.user, config.password) if (config.user and config.password) else None,
+                basic_auth=(config.user, config.password)
+                if (config.user and config.password)
+                else None,
                 verify_certs=config.verify_certs,
                 ca_certs=config.ca_certs,
-                headers= config.headers or {},
+                headers=config.headers or {},
             )
 
         self.collection_name = config.collection_name
@@ -72,7 +75,9 @@ class ElasticsearchDB(VectorStoreBase):
     def create_index(self) -> None:
         """Create Elasticsearch index with proper mappings if it doesn't exist"""
         index_settings = {
-            "settings": {"index": {"number_of_replicas": 1, "number_of_shards": 5, "refresh_interval": "1s"}},
+            "settings": {
+                "index": {"number_of_replicas": 1, "number_of_shards": 5, "refresh_interval": "1s"}
+            },
             "mappings": {
                 "properties": {
                     "text": {"type": "text"},
@@ -105,7 +110,12 @@ class ElasticsearchDB(VectorStoreBase):
         index_settings = {
             "mappings": {
                 "properties": {
-                    "vector": {"type": "dense_vector", "dims": vector_size, "index": True, "similarity": "cosine"},
+                    "vector": {
+                        "type": "dense_vector",
+                        "dims": vector_size,
+                        "index": True,
+                        "similarity": "cosine",
+                    },
                     "payload": {"type": "object"},
                     "id": {"type": "keyword"},
                 }
@@ -117,7 +127,10 @@ class ElasticsearchDB(VectorStoreBase):
             logger.info(f"Created index {name}")
 
     def insert(
-        self, vectors: List[List[float]], payloads: Optional[List[Dict]] = None, ids: Optional[List[str]] = None
+        self,
+        vectors: List[List[float]],
+        payloads: Optional[List[Dict]] = None,
+        ids: Optional[List[str]] = None,
     ) -> List[OutputData]:
         """Insert vectors into the index."""
         if not ids:
@@ -166,7 +179,12 @@ class ElasticsearchDB(VectorStoreBase):
                 # Without `size`, Elasticsearch caps the response at its default of 10 hits
                 # regardless of `knn.k`, silently truncating results when top_k > 10.
                 "size": top_k,
-                "knn": {"field": "vector", "query_vector": vectors, "k": top_k, "num_candidates": top_k * 2},
+                "knn": {
+                    "field": "vector",
+                    "query_vector": vectors,
+                    "k": top_k,
+                    "num_candidates": top_k * 2,
+                },
             }
             if filters:
                 filter_conditions = []
@@ -180,7 +198,11 @@ class ElasticsearchDB(VectorStoreBase):
         results = []
         for hit in response["hits"]["hits"]:
             results.append(
-                OutputData(id=hit["_id"], score=hit["_score"], payload=hit.get("_source", {}).get("metadata", {}))
+                OutputData(
+                    id=hit["_id"],
+                    score=hit["_score"],
+                    payload=hit.get("_source", {}).get("metadata", {}),
+                )
             )
 
         return results
@@ -224,7 +246,11 @@ class ElasticsearchDB(VectorStoreBase):
         results = []
         for hit in response["hits"]["hits"]:
             results.append(
-                OutputData(id=hit["_id"], score=hit["_score"], payload=hit.get("_source", {}).get("metadata", {}))
+                OutputData(
+                    id=hit["_id"],
+                    score=hit["_score"],
+                    payload=hit.get("_source", {}).get("metadata", {}),
+                )
             )
 
         return results
@@ -233,7 +259,9 @@ class ElasticsearchDB(VectorStoreBase):
         """Delete a vector by ID."""
         self.client.delete(index=self.collection_name, id=vector_id)
 
-    def update(self, vector_id: str, vector: Optional[List[float]] = None, payload: Optional[Dict] = None) -> None:
+    def update(
+        self, vector_id: str, vector: Optional[List[float]] = None, payload: Optional[Dict] = None
+    ) -> None:
         """Update a vector and its payload."""
         doc = {}
         if vector is not None:
@@ -274,7 +302,9 @@ class ElasticsearchDB(VectorStoreBase):
         """Get information about a collection (index)."""
         return self.client.indices.get(index=name)
 
-    def list(self, filters: Optional[Dict] = None, top_k: Optional[int] = None) -> List[List[OutputData]]:
+    def list(
+        self, filters: Optional[Dict] = None, top_k: Optional[int] = None
+    ) -> List[List[OutputData]]:
         """List all memories."""
         query: Dict[str, Any] = {"query": {"match_all": {}}}
 

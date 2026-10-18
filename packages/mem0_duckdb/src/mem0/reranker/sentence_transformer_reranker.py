@@ -11,6 +11,7 @@ from mem0.reranker.base import BaseReranker
 
 try:
     from sentence_transformers import CrossEncoder
+
     SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError:
     SENTENCE_TRANSFORMERS_AVAILABLE = False
@@ -29,18 +30,22 @@ class SentenceTransformerReranker(BaseReranker):
             config: Configuration object with reranker parameters
         """
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
-            raise ImportError("sentence-transformers package is required for SentenceTransformerReranker. Install with: pip install sentence-transformers")
+            raise ImportError(
+                "sentence-transformers package is required for SentenceTransformerReranker. Install with: pip install sentence-transformers"
+            )
 
         # Convert to SentenceTransformerRerankerConfig if needed
         if isinstance(config, dict):
             config = SentenceTransformerRerankerConfig(**config)
-        elif isinstance(config, BaseRerankerConfig) and not isinstance(config, SentenceTransformerRerankerConfig):
+        elif isinstance(config, BaseRerankerConfig) and not isinstance(
+            config, SentenceTransformerRerankerConfig
+        ):
             # Convert BaseRerankerConfig to SentenceTransformerRerankerConfig with defaults
             config = SentenceTransformerRerankerConfig(
-                provider=getattr(config, 'provider', 'sentence_transformer'),
-                model=getattr(config, 'model', 'cross-encoder/ms-marco-MiniLM-L-6-v2'),
-                api_key=getattr(config, 'api_key', None),
-                top_k=getattr(config, 'top_k', None),
+                provider=getattr(config, "provider", "sentence_transformer"),
+                model=getattr(config, "model", "cross-encoder/ms-marco-MiniLM-L-6-v2"),
+                api_key=getattr(config, "api_key", None),
+                top_k=getattr(config, "top_k", None),
                 device=None,  # Will auto-detect
                 batch_size=32,  # Default
                 show_progress_bar=False,  # Default
@@ -49,7 +54,9 @@ class SentenceTransformerReranker(BaseReranker):
         self.config = config
         self.model = CrossEncoder(self.config.model, device=self.config.device)
 
-    def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int = None) -> List[Dict[str, Any]]:
+    def rerank(
+        self, query: str, documents: List[Dict[str, Any]], top_k: int = None
+    ) -> List[Dict[str, Any]]:
         """
         Rerank documents using sentence transformer cross-encoder.
 
@@ -67,12 +74,12 @@ class SentenceTransformerReranker(BaseReranker):
         # Extract text content for reranking
         doc_texts = []
         for doc in documents:
-            if 'memory' in doc:
-                doc_texts.append(doc['memory'])
-            elif 'text' in doc:
-                doc_texts.append(doc['text'])
-            elif 'content' in doc:
-                doc_texts.append(doc['content'])
+            if "memory" in doc:
+                doc_texts.append(doc["memory"])
+            elif "text" in doc:
+                doc_texts.append(doc["text"])
+            elif "content" in doc:
+                doc_texts.append(doc["content"])
             else:
                 doc_texts.append(str(doc))
 
@@ -103,18 +110,20 @@ class SentenceTransformerReranker(BaseReranker):
             reranked_docs = []
             for doc, score in doc_score_pairs:
                 reranked_doc = doc.copy()
-                reranked_doc['rerank_score'] = float(score)
+                reranked_doc["rerank_score"] = float(score)
                 reranked_docs.append(reranked_doc)
 
             return reranked_docs
 
         except Exception as e:
             # Fallback to original order if reranking fails
-            logger.warning("SentenceTransformer reranking failed, falling back to original order: %s", e)
+            logger.warning(
+                "SentenceTransformer reranking failed, falling back to original order: %s", e
+            )
             fallback_docs = []
             for doc in documents:
                 fallback_doc = doc.copy()
-                fallback_doc['rerank_score'] = 0.0
+                fallback_doc["rerank_score"] = 0.0
                 fallback_docs.append(fallback_doc)
             final_top_k = top_k or self.config.top_k
             return fallback_docs[:final_top_k] if final_top_k else fallback_docs

@@ -33,7 +33,9 @@ class HnswParams(BaseModel):
 class IvfParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    neighbor_partitions: Optional[int] = Field(None, alias="neighbor partitions", ge=1, le=10_000_000)
+    neighbor_partitions: Optional[int] = Field(
+        None, alias="neighbor partitions", ge=1, le=10_000_000
+    )
     samples_per_partition: Optional[int] = Field(None, ge=1)
     min_vectors_per_partition: Optional[int] = Field(None, ge=0)
 
@@ -41,25 +43,32 @@ class IvfParams(BaseModel):
 class OracleAIVectorSearchConfig(BaseModel):
     """Configuration required to connect to an Oracle database with vector search enabled."""
 
-    connection_params: Optional[dict] = Field(None, description="Database connection parameters, including auth.")
+    connection_params: Optional[dict] = Field(
+        None, description="Database connection parameters, including auth."
+    )
     use_connection_pool: bool = Field(
         True,
         description="Create a ConnectionPool instead of a single Connection when no client is provided",
     )
 
     client: Optional[Any] = Field(
-        None, description="Oracle Connection or ConnectionPool (overrides connection string and individual parameters)"
+        None,
+        description="Oracle Connection or ConnectionPool (overrides connection string and individual parameters)",
     )
 
     collection_name: str = Field("mem0", description="Default name for the collection")
     embedding_model_dims: int = Field(1536, description="Dimension of the embedding vectors")
-    distance_metric: Literal["EUCLIDEAN", "EUCLIDEAN_SQUARED", "COSINE", "DOT", "HAMMING", "MANHATTAN"] = Field(
+    distance_metric: Literal[
+        "EUCLIDEAN", "EUCLIDEAN_SQUARED", "COSINE", "DOT", "HAMMING", "MANHATTAN"
+    ] = Field(
         "COSINE",
         description="Similarity metric: EUCLIDEAN, EUCLIDEAN_SQUARED, COSINE, DOT, HAMMING or MANHATTAN. Defaults to COSINE",
     )
 
     do_create_index: Optional[bool] = Field(True, description="Optional whether to create index")
-    index_type: Literal["HNSW", "IVF"] = Field("HNSW", description="Optional index type, HNSW or IVF")
+    index_type: Literal["HNSW", "IVF"] = Field(
+        "HNSW", description="Optional index type, HNSW or IVF"
+    )
     index_name: Optional[str] = Field(None, description="Optional custom name for the vector index")
     index_parameters: Optional[dict] = Field(
         None,
@@ -87,7 +96,9 @@ class OracleAIVectorSearchConfig(BaseModel):
 
         if self.index_parameters is not None:
             parameter_model = HnswParams if self.index_type == "HNSW" else IvfParams
-            self.index_parameters = parameter_model.model_validate(self.index_parameters).model_dump(
+            self.index_parameters = parameter_model.model_validate(
+                self.index_parameters
+            ).model_dump(
                 by_alias=True,
                 exclude_none=True,
             )

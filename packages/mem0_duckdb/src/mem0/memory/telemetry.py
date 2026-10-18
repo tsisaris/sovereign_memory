@@ -37,21 +37,37 @@ def _parse_sample_rate(raw):
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        _logger.debug("MEM0_TELEMETRY_SAMPLE_RATE %r is not a number, defaulting to %s", raw, _DEFAULT_SAMPLE_RATE)
+        _logger.debug(
+            "MEM0_TELEMETRY_SAMPLE_RATE %r is not a number, defaulting to %s",
+            raw,
+            _DEFAULT_SAMPLE_RATE,
+        )
         return _DEFAULT_SAMPLE_RATE
     if not 0.0 <= value <= 1.0:
-        _logger.debug("MEM0_TELEMETRY_SAMPLE_RATE %s out of [0.0, 1.0], defaulting to %s", value, _DEFAULT_SAMPLE_RATE)
+        _logger.debug(
+            "MEM0_TELEMETRY_SAMPLE_RATE %s out of [0.0, 1.0], defaulting to %s",
+            value,
+            _DEFAULT_SAMPLE_RATE,
+        )
         return _DEFAULT_SAMPLE_RATE
     return value
 
 
-MEM0_TELEMETRY_SAMPLE_RATE = _parse_sample_rate(os.environ.get("MEM0_TELEMETRY_SAMPLE_RATE", str(_DEFAULT_SAMPLE_RATE)))
+MEM0_TELEMETRY_SAMPLE_RATE = _parse_sample_rate(
+    os.environ.get("MEM0_TELEMETRY_SAMPLE_RATE", str(_DEFAULT_SAMPLE_RATE))
+)
 
 # Events that bypass sampling and always fire. Keep this set in sync with the
 # event names passed to capture_event() in mem0/memory/main.py.
 # $identify is included so PostHog person-merging is never lost to sampling.
 _LIFECYCLE_EVENTS = frozenset(
-    {"mem0.init", "mem0.reset", "mem0._create_procedural_memory", "mem0.notice_displayed", "$identify"}
+    {
+        "mem0.init",
+        "mem0.reset",
+        "mem0._create_procedural_memory",
+        "mem0.notice_displayed",
+        "$identify",
+    }
 )
 
 

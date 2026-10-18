@@ -9,7 +9,9 @@ from mem0.vector_stores.base import VectorStoreBase
 try:
     from upstash_vector import Index
 except ImportError:
-    raise ImportError("The 'upstash_vector' library is required. Please install it using 'pip install upstash_vector'.")
+    raise ImportError(
+        "The 'upstash_vector' library is required. Please install it using 'pip install upstash_vector'."
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -22,8 +24,7 @@ def _validate_filter(key: str, value: Any) -> None:
         raise ValueError(f"Invalid filter key: {key!r}")
     if not isinstance(value, (str, int, float, bool)):
         raise ValueError(
-            f"Filter value for {key!r} must be str, int, float, or bool, "
-            f"got {type(value).__name__}"
+            f"Filter value for {key!r} must be str, int, float, or bool, got {type(value).__name__}"
         )
     if isinstance(value, str) and ('"' in value or "\\" in value):
         raise ValueError(
@@ -85,7 +86,9 @@ class UpstashVector(VectorStoreBase):
 
         if self.enable_embeddings:
             if not payloads or any("data" not in m or m["data"] is None for m in payloads):
-                raise ValueError("When embeddings are enabled, all payloads must contain a 'data' field.")
+                raise ValueError(
+                    "When embeddings are enabled, all payloads must contain a 'data' field."
+                )
             processed_vectors = [
                 {
                     "id": ids[i] if ids else None,
@@ -136,7 +139,11 @@ class UpstashVector(VectorStoreBase):
         if filters:
             for k, v in filters.items():
                 _validate_filter(k, v)
-        filters_str = " AND ".join([f"{k} = {self._stringify(v)}" for k, v in filters.items()]) if filters else None
+        filters_str = (
+            " AND ".join([f"{k} = {self._stringify(v)}" for k, v in filters.items()])
+            if filters
+            else None
+        )
 
         response = []
 
@@ -281,7 +288,11 @@ class UpstashVector(VectorStoreBase):
         if filters:
             for k, v in filters.items():
                 _validate_filter(k, v)
-        filters_str = " AND ".join([f"{k} = {self._stringify(v)}" for k, v in filters.items()]) if filters else None
+        filters_str = (
+            " AND ".join([f"{k} = {self._stringify(v)}" for k, v in filters.items()])
+            if filters
+            else None
+        )
 
         info = self.client.info()
         ns_info = info.namespaces.get(self.collection_name)

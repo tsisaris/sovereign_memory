@@ -4,7 +4,9 @@ from typing import Dict, List, Optional, Union
 try:
     import anthropic
 except ImportError:
-    raise ImportError("The 'anthropic' library is required. Please install it using 'pip install anthropic'.")
+    raise ImportError(
+        "The 'anthropic' library is required. Please install it using 'pip install anthropic'."
+    )
 
 from mem0.configs.llms.anthropic import AnthropicConfig
 from mem0.configs.llms.base import BaseLlmConfig

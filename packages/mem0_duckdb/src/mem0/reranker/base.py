@@ -1,11 +1,14 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from typing import Any, Dict, List
+
 
 class BaseReranker(ABC):
     """Abstract base class for all rerankers."""
 
     @abstractmethod
-    def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int = None) -> List[Dict[str, Any]]:
+    def rerank(
+        self, query: str, documents: List[Dict[str, Any]], top_k: int = None
+    ) -> List[Dict[str, Any]]:
         """
         Rerank documents based on relevance to the query.
 

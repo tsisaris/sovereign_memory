@@ -84,7 +84,9 @@ class SQLiteManager:
                 intersecting = list(expected_cols & old_cols)
                 if intersecting:
                     cols_csv = ", ".join(intersecting)
-                    cur.execute(f"INSERT INTO history ({cols_csv}) SELECT {cols_csv} FROM history_old")
+                    cur.execute(
+                        f"INSERT INTO history ({cols_csv}) SELECT {cols_csv} FROM history_old"
+                    )
 
                 # Drop the old table
                 cur.execute("DROP TABLE history_old")

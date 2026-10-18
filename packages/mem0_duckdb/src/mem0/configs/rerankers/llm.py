@@ -19,33 +19,16 @@ class LLMRerankerConfig(BaseRerankerConfig):
         scoring_prompt (str): Custom prompt template for scoring documents.
     """
 
-    model: str = Field(
-        default="gpt-5-mini",
-        description="LLM model to use for reranking"
-    )
-    api_key: Optional[str] = Field(
-        default=None,
-        description="API key for the LLM provider"
-    )
-    provider: str = Field(
-        default="openai",
-        description="LLM provider (openai, anthropic, etc.)"
-    )
+    model: str = Field(default="gpt-5-mini", description="LLM model to use for reranking")
+    api_key: Optional[str] = Field(default=None, description="API key for the LLM provider")
+    provider: str = Field(default="openai", description="LLM provider (openai, anthropic, etc.)")
     top_k: Optional[int] = Field(
-        default=None,
-        description="Number of top documents to return after reranking"
+        default=None, description="Number of top documents to return after reranking"
     )
-    temperature: float = Field(
-        default=0.0,
-        description="Temperature for LLM generation"
-    )
-    max_tokens: int = Field(
-        default=100,
-        description="Maximum tokens for LLM response"
-    )
+    temperature: float = Field(default=0.0, description="Temperature for LLM generation")
+    max_tokens: int = Field(default=100, description="Maximum tokens for LLM response")
     scoring_prompt: Optional[str] = Field(
-        default=None,
-        description="Custom prompt template for scoring documents"
+        default=None, description="Custom prompt template for scoring documents"
     )
     llm: Optional[Dict[str, Any]] = Field(
         default=None,

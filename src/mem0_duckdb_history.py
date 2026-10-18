@@ -8,6 +8,7 @@ import duckdb
 
 logger = logging.getLogger(__name__)
 
+
 class DuckDBManager:
     """DuckDB implementation of the Mem0 history and message storage."""
 
@@ -36,7 +37,9 @@ class DuckDBManager:
     def _in_txn(self) -> bool:
         # DuckDB 1.x has current_transaction_id()
         try:
-            return self.connection.execute("SELECT current_transaction_id()").fetchone()[0] is not None
+            return (
+                self.connection.execute("SELECT current_transaction_id()").fetchone()[0] is not None
+            )
         except duckdb.CatalogException:
             # Fallback if function doesn't exist
             return False
@@ -99,7 +102,9 @@ class DuckDBManager:
                     intersecting = list(expected_cols & old_cols)
                     if intersecting:
                         cols_csv = ", ".join(intersecting)
-                        self.connection.execute(f"INSERT INTO history ({cols_csv}) SELECT {cols_csv} FROM history_old")
+                        self.connection.execute(
+                            f"INSERT INTO history ({cols_csv}) SELECT {cols_csv} FROM history_old"
+                        )
 
                     self.connection.execute("DROP TABLE history_old")
                     if not in_txn:
@@ -207,18 +212,20 @@ class DuckDBManager:
                 try:
                     rows = []
                     for record in records:
-                        rows.append((
-                            str(uuid.uuid4()),
-                            record.get("memory_id"),
-                            record.get("old_memory"),
-                            record.get("new_memory"),
-                            record.get("event"),
-                            record.get("created_at"),
-                            record.get("updated_at"),
-                            bool(record.get("is_deleted", 0)),
-                            record.get("actor_id"),
-                            record.get("role"),
-                        ))
+                        rows.append(
+                            (
+                                str(uuid.uuid4()),
+                                record.get("memory_id"),
+                                record.get("old_memory"),
+                                record.get("new_memory"),
+                                record.get("event"),
+                                record.get("created_at"),
+                                record.get("updated_at"),
+                                bool(record.get("is_deleted", 0)),
+                                record.get("actor_id"),
+                                record.get("role"),
+                            )
+                        )
                     self.connection.executemany(
                         """
                         INSERT INTO history (
@@ -227,7 +234,7 @@ class DuckDBManager:
                         )
                         VALUES (?, ?, ?, ?, ?, CAST(? AS TIMESTAMP WITH TIME ZONE), CAST(? AS TIMESTAMP WITH TIME ZONE), ?, ?, ?)
                         """,
-                        rows
+                        rows,
                     )
                     if not in_txn:
                         self.connection.execute("COMMIT")
@@ -249,27 +256,37 @@ class DuckDBManager:
                 WHERE memory_id = ?
                 ORDER BY created_at ASC NULLS LAST, updated_at ASC NULLS LAST
                 """,
-                (memory_id,)
+                (memory_id,),
             )
             rows = cur.fetchall()
 
         result = []
         for r in rows:
-            created_at_str = r[5].astimezone(timezone.utc).isoformat().replace("+00:00", "") + "+00:00" if r[5] else None
-            updated_at_str = r[6].astimezone(timezone.utc).isoformat().replace("+00:00", "") + "+00:00" if r[6] else None
+            created_at_str = (
+                r[5].astimezone(timezone.utc).isoformat().replace("+00:00", "") + "+00:00"
+                if r[5]
+                else None
+            )
+            updated_at_str = (
+                r[6].astimezone(timezone.utc).isoformat().replace("+00:00", "") + "+00:00"
+                if r[6]
+                else None
+            )
 
-            result.append({
-                "id": r[0],
-                "memory_id": r[1],
-                "old_memory": r[2],
-                "new_memory": r[3],
-                "event": r[4],
-                "created_at": created_at_str,
-                "updated_at": updated_at_str,
-                "is_deleted": bool(r[7]),
-                "actor_id": r[8],
-                "role": r[9],
-            })
+            result.append(
+                {
+                    "id": r[0],
+                    "memory_id": r[1],
+                    "old_memory": r[2],
+                    "new_memory": r[3],
+                    "event": r[4],
+                    "created_at": created_at_str,
+                    "updated_at": updated_at_str,
+                    "is_deleted": bool(r[7]),
+                    "actor_id": r[8],
+                    "role": r[9],
+                }
+            )
         return result
 
     def save_messages(self, messages: List[Dict[str, Any]], session_scope: str) -> None:
@@ -328,7 +345,10 @@ class DuckDBManager:
                 "role": r[0],
                 "content": r[1],
                 "name": r[2],
-                "created_at": r[3].astimezone(timezone.utc).isoformat().replace("+00:00", "") + "+00:00" if r[3] else None,
+                "created_at": r[3].astimezone(timezone.utc).isoformat().replace("+00:00", "")
+                + "+00:00"
+                if r[3]
+                else None,
             }
             for r in rows
         ]

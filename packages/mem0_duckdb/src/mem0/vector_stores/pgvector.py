@@ -12,6 +12,7 @@ try:
     from psycopg import sql
     from psycopg.types.json import Json
     from psycopg_pool import ConnectionPool
+
     PSYCOPG_VERSION = 3
     logger = logging.getLogger(__name__)
     logger.info("Using psycopg (psycopg3) with ConnectionPool for PostgreSQL connections")
@@ -20,6 +21,7 @@ except ImportError:
         from psycopg2 import sql
         from psycopg2.extras import Json, execute_values
         from psycopg2.pool import ThreadedConnectionPool as ConnectionPool
+
         PSYCOPG_VERSION = 2
         logger = logging.getLogger(__name__)
         logger.info("Using psycopg2 with ThreadedConnectionPool for PostgreSQL connections")
@@ -97,7 +99,9 @@ def _build_filter_conditions(filters):
                     conditions.append(template)
                     params.extend([key, str_list])
                 elif op in ("contains", "icontains"):
-                    escaped = str(op_value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    escaped = (
+                        str(op_value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    )
                     conditions.append(template + " ESCAPE '\\'")
                     params.extend([key, f"%{escaped}%"])
                 else:
@@ -127,12 +131,20 @@ def _with_sslmode(connection_string: str, sslmode: str) -> str:
     """
     if "://" in connection_string:
         parsed = urlsplit(connection_string)
-        query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != "sslmode"]
+        query = [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key != "sslmode"
+        ]
         query.append(("sslmode", sslmode))
         return parsed._replace(query=urlencode(query)).geturl()
 
     if re.search(r"(^|\s)sslmode=", connection_string):
-        return re.sub(r"(^|\s)sslmode=\S+", lambda match: f"{match.group(1)}sslmode={sslmode}", connection_string)
+        return re.sub(
+            r"(^|\s)sslmode=\S+",
+            lambda match: f"{match.group(1)}sslmode={sslmode}",
+            connection_string,
+        )
 
     return f"{connection_string} sslmode={sslmode}"
 
@@ -211,7 +223,9 @@ class PGVector(VectorStoreBase):
                 self.connection_pool.open(wait=False)
             else:
                 # psycopg2 ThreadedConnectionPool
-                self.connection_pool = ConnectionPool(minconn=minconn, maxconn=maxconn, dsn=connection_string)
+                self.connection_pool = ConnectionPool(
+                    minconn=minconn, maxconn=maxconn, dsn=connection_string
+                )
 
     def _ensure_collection(self):
         if self._collection_ensured:
@@ -317,7 +331,9 @@ class PGVector(VectorStoreBase):
         if PSYCOPG_VERSION == 3:
             with self._get_cursor(commit=True) as cur:
                 cur.executemany(
-                    sql.SQL("INSERT INTO {} (id, vector, payload) VALUES (%s, %s, %s)").format(self._col()),
+                    sql.SQL("INSERT INTO {} (id, vector, payload) VALUES (%s, %s, %s)").format(
+                        self._col()
+                    ),
                     data,
                 )
         else:
@@ -349,7 +365,11 @@ class PGVector(VectorStoreBase):
         """
         self._ensure_collection()
         filter_conditions, filter_params = _build_filter_conditions(filters)
-        filter_clause = sql.SQL("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
+        filter_clause = (
+            sql.SQL("WHERE " + " AND ".join(filter_conditions))
+            if filter_conditions
+            else sql.SQL("")
+        )
 
         with self._get_cursor() as cur:
             cur.execute(
@@ -364,7 +384,10 @@ class PGVector(VectorStoreBase):
             )
 
             results = cur.fetchall()
-        return [OutputData(id=str(r[0]), score=max(0.0, 1.0 - float(r[1])), payload=r[2]) for r in results]
+        return [
+            OutputData(id=str(r[0]), score=max(0.0, 1.0 - float(r[1])), payload=r[2])
+            for r in results
+        ]
 
     def keyword_search(self, query, top_k=5, filters=None):
         """
@@ -380,7 +403,9 @@ class PGVector(VectorStoreBase):
         """
         self._ensure_collection()
         filter_conditions, filter_params = _build_filter_conditions(filters)
-        filter_clause = sql.SQL("AND " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
+        filter_clause = (
+            sql.SQL("AND " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
+        )
 
         try:
             with self._get_cursor() as cur:
@@ -430,7 +455,7 @@ class PGVector(VectorStoreBase):
         self._ensure_collection()
         with self._get_cursor(commit=True) as cur:
             if vector is not None:
-               cur.execute(
+                cur.execute(
                     sql.SQL("UPDATE {} SET vector = %s WHERE id = %s").format(self._col()),
                     (vector, vector_id),
                 )
@@ -448,7 +473,6 @@ class PGVector(VectorStoreBase):
                         sql.SQL("UPDATE {} SET payload = %s WHERE id = %s").format(self._col()),
                         (Json(payload), vector_id),
                     )
-
 
     def get(self, vector_id: str) -> OutputData:
         """
@@ -479,7 +503,9 @@ class PGVector(VectorStoreBase):
             List[str]: List of collection names.
         """
         with self._get_cursor() as cur:
-            cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+            )
             return [row[0] for row in cur.fetchall()]
 
     def delete_col(self) -> None:
@@ -510,11 +536,7 @@ class PGVector(VectorStoreBase):
             result = cur.fetchone()
         return {"name": result[0], "count": result[1], "size": result[2]}
 
-    def list(
-        self,
-        filters: Optional[dict] = None,
-        top_k: Optional[int] = 100
-    ) -> List[OutputData]:
+    def list(self, filters: Optional[dict] = None, top_k: Optional[int] = 100) -> List[OutputData]:
         """
         List all vectors in a collection.
 
@@ -527,7 +549,11 @@ class PGVector(VectorStoreBase):
         """
         self._ensure_collection()
         filter_conditions, filter_params = _build_filter_conditions(filters)
-        filter_clause = sql.SQL("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
+        filter_clause = (
+            sql.SQL("WHERE " + " AND ".join(filter_conditions))
+            if filter_conditions
+            else sql.SQL("")
+        )
 
         with self._get_cursor() as cur:
             cur.execute(

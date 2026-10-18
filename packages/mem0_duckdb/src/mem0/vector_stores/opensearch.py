@@ -6,7 +6,9 @@ from typing import Any, Dict, List, Optional
 try:
     from opensearchpy import OpenSearch, RequestsHttpConnection
 except ImportError:
-    raise ImportError("OpenSearch requires extra dependencies. Install with `pip install opensearch-py`") from None
+    raise ImportError(
+        "OpenSearch requires extra dependencies. Install with `pip install opensearch-py`"
+    ) from None
 
 from pydantic import BaseModel
 
@@ -24,8 +26,7 @@ def _validate_filter(key: str, value) -> None:
         raise ValueError(f"Invalid filter key: {key!r}")
     if not isinstance(value, (str, int, float, bool)):
         raise ValueError(
-            f"Filter value for {key!r} must be str, int, float, or bool, "
-            f"got {type(value).__name__}"
+            f"Filter value for {key!r} must be str, int, float, or bool, got {type(value).__name__}"
         )
 
 
@@ -84,7 +85,12 @@ class OpenSearchDB(VectorStoreBase):
         """Create OpenSearch index with proper mappings if it doesn't exist."""
         index_settings = {
             "settings": {
-                "index": {"number_of_replicas": 1, "number_of_shards": 5, "refresh_interval": "10s", "knn": True}
+                "index": {
+                    "number_of_replicas": 1,
+                    "number_of_shards": 5,
+                    "refresh_interval": "10s",
+                    "knn": True,
+                }
             },
             "mappings": {
                 "properties": {
@@ -146,11 +152,16 @@ class OpenSearchDB(VectorStoreBase):
                 except Exception:
                     retry_count += 1
                     if retry_count == max_retries:
-                        raise TimeoutError(f"Index {name} creation timed out after {max_retries} seconds")
+                        raise TimeoutError(
+                            f"Index {name} creation timed out after {max_retries} seconds"
+                        )
                     time.sleep(0.5)
 
     def insert(
-        self, vectors: List[List[float]], payloads: Optional[List[Dict]] = None, ids: Optional[List[str]] = None
+        self,
+        vectors: List[List[float]],
+        payloads: Optional[List[Dict]] = None,
+        ids: Optional[List[str]] = None,
     ) -> List[OutputData]:
         """Insert vectors into the index."""
         if not ids:
@@ -242,7 +253,11 @@ class OpenSearchDB(VectorStoreBase):
 
             hits = response["hits"]["hits"]
             results = [
-                OutputData(id=hit["_source"].get("id"), score=hit["_score"], payload=hit["_source"].get("payload", {}))
+                OutputData(
+                    id=hit["_source"].get("id"),
+                    score=hit["_score"],
+                    payload=hit["_source"].get("payload", {}),
+                )
                 for hit in hits[:top_k]  # Ensure we don't exceed top_k
             ]
             return results
@@ -288,7 +303,11 @@ class OpenSearchDB(VectorStoreBase):
 
             hits = response["hits"]["hits"]
             results = [
-                OutputData(id=hit["_source"].get("id"), score=hit["_score"], payload=hit["_source"].get("payload", {}))
+                OutputData(
+                    id=hit["_source"].get("id"),
+                    score=hit["_score"],
+                    payload=hit["_source"].get("payload", {}),
+                )
                 for hit in hits[:top_k]
             ]
             return results
@@ -316,7 +335,9 @@ class OpenSearchDB(VectorStoreBase):
         # Delete using the actual document ID
         self.client.delete(index=self.collection_name, id=opensearch_id)
 
-    def update(self, vector_id: str, vector: Optional[List[float]] = None, payload: Optional[Dict] = None) -> None:
+    def update(
+        self, vector_id: str, vector: Optional[List[float]] = None, payload: Optional[Dict] = None
+    ) -> None:
         """Update a vector and its payload using the custom 'id' field."""
         if vector is not None:
             if len(vector) == 0:
@@ -348,7 +369,9 @@ class OpenSearchDB(VectorStoreBase):
 
         if doc:
             try:
-                response = self.client.update(index=self.collection_name, id=opensearch_id, body={"doc": doc})
+                response = self.client.update(
+                    index=self.collection_name, id=opensearch_id, body={"doc": doc}
+                )
             except Exception as e:
                 logger.error(f"Error updating vector {vector_id}: {e}", exc_info=True)
                 raise
@@ -364,7 +387,11 @@ class OpenSearchDB(VectorStoreBase):
             if not hits:
                 return None
 
-            return OutputData(id=hits[0]["_source"].get("id"), score=1.0, payload=hits[0]["_source"].get("payload", {}))
+            return OutputData(
+                id=hits[0]["_source"].get("id"),
+                score=1.0,
+                payload=hits[0]["_source"].get("payload", {}),
+            )
         except Exception as e:
             logger.error(f"Error retrieving vector {vector_id}: {str(e)}", exc_info=True)
             return None
@@ -399,7 +426,11 @@ class OpenSearchDB(VectorStoreBase):
 
             # Return a flat list, not a nested array
             results = [
-                OutputData(id=hit["_source"].get("id"), score=1.0, payload=hit["_source"].get("payload", {}))
+                OutputData(
+                    id=hit["_source"].get("id"),
+                    score=1.0,
+                    payload=hit["_source"].get("payload", {}),
+                )
                 for hit in hits
             ]
             return [results]  # VectorStore expects tuple/list format

@@ -107,7 +107,9 @@ class AWSBedrockConfig(BaseLlmConfig):
             config["aws_access_key_id"] = self.aws_access_key_id or os.getenv("AWS_ACCESS_KEY_ID")
 
         if self.aws_secret_access_key:
-            config["aws_secret_access_key"] = self.aws_secret_access_key or os.getenv("AWS_SECRET_ACCESS_KEY")
+            config["aws_secret_access_key"] = self.aws_secret_access_key or os.getenv(
+                "AWS_SECRET_ACCESS_KEY"
+            )
 
         if self.aws_session_token:
             config["aws_session_token"] = self.aws_session_token or os.getenv("AWS_SESSION_TOKEN")
@@ -135,9 +137,22 @@ class AWSBedrockConfig(BaseLlmConfig):
 
         # Validate provider
         valid_providers = [
-            "ai21", "amazon", "anthropic", "cohere", "meta", "mistral",
-            "stability", "writer", "deepseek", "gpt-oss", "perplexity",
-            "snowflake", "titan", "command", "j2", "llama"
+            "ai21",
+            "amazon",
+            "anthropic",
+            "cohere",
+            "meta",
+            "mistral",
+            "stability",
+            "writer",
+            "deepseek",
+            "gpt-oss",
+            "perplexity",
+            "snowflake",
+            "titan",
+            "command",
+            "j2",
+            "llama",
         ]
 
         if provider not in valid_providers:
@@ -170,33 +185,43 @@ class AWSBedrockConfig(BaseLlmConfig):
         }
 
         if self.provider == "anthropic":
-            capabilities.update({
-                "supports_tools": True,
-                "supports_vision": True,
-                "supports_streaming": True,
-                "supports_multimodal": True,
-            })
+            capabilities.update(
+                {
+                    "supports_tools": True,
+                    "supports_vision": True,
+                    "supports_streaming": True,
+                    "supports_multimodal": True,
+                }
+            )
         elif self.provider == "amazon":
-            capabilities.update({
-                "supports_tools": True,
-                "supports_vision": True,
-                "supports_streaming": True,
-                "supports_multimodal": True,
-            })
+            capabilities.update(
+                {
+                    "supports_tools": True,
+                    "supports_vision": True,
+                    "supports_streaming": True,
+                    "supports_multimodal": True,
+                }
+            )
         elif self.provider == "cohere":
-            capabilities.update({
-                "supports_tools": True,
-                "supports_streaming": True,
-            })
+            capabilities.update(
+                {
+                    "supports_tools": True,
+                    "supports_streaming": True,
+                }
+            )
         elif self.provider == "meta":
-            capabilities.update({
-                "supports_vision": True,
-                "supports_streaming": True,
-            })
+            capabilities.update(
+                {
+                    "supports_vision": True,
+                    "supports_streaming": True,
+                }
+            )
         elif self.provider == "mistral":
-            capabilities.update({
-                "supports_vision": True,
-                "supports_streaming": True,
-            })
+            capabilities.update(
+                {
+                    "supports_vision": True,
+                    "supports_streaming": True,
+                }
+            )
 
         return capabilities

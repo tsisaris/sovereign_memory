@@ -26,8 +26,8 @@ class OutputData(BaseModel):
 # but exposed by several concrete implementations.
 _SCORED_BY_VECTOR_METHODS = [
     "similarity_search_by_vector_with_relevance_scores",  # Chroma
-    "similarity_search_with_score_by_vector",             # FAISS, Qdrant
-    "similarity_search_by_vector_with_score",             # Pinecone, YDB
+    "similarity_search_with_score_by_vector",  # FAISS, Qdrant
+    "similarity_search_by_vector_with_score",  # Pinecone, YDB
 ]
 
 
@@ -47,7 +47,9 @@ class Langchain(VectorStoreBase):
             List[OutputData]: Parsed output data.
         """
         # Check if input is a list of Document objects
-        if isinstance(data, list) and all(hasattr(doc, "metadata") for doc in data if hasattr(doc, "__dict__")):
+        if isinstance(data, list) and all(
+            hasattr(doc, "metadata") for doc in data if hasattr(doc, "__dict__")
+        ):
             result = []
             for doc in data:
                 entry = OutputData(
@@ -75,8 +77,16 @@ class Langchain(VectorStoreBase):
         for i in range(max_length):
             entry = OutputData(
                 id=ids[i] if isinstance(ids, list) and ids and i < len(ids) else None,
-                score=(distances[i] if isinstance(distances, list) and distances and i < len(distances) else None),
-                payload=(metadatas[i] if isinstance(metadatas, list) and metadatas and i < len(metadatas) else None),
+                score=(
+                    distances[i]
+                    if isinstance(distances, list) and distances and i < len(distances)
+                    else None
+                ),
+                payload=(
+                    metadatas[i]
+                    if isinstance(metadatas, list) and metadatas and i < len(metadatas)
+                    else None
+                ),
             )
             result.append(entry)
 
@@ -87,7 +97,10 @@ class Langchain(VectorStoreBase):
         return self.client
 
     def insert(
-        self, vectors: List[List[float]], payloads: Optional[List[Dict]] = None, ids: Optional[List[str]] = None
+        self,
+        vectors: List[List[float]],
+        payloads: Optional[List[Dict]] = None,
+        ids: Optional[List[str]] = None,
     ):
         """
         Insert vectors into the LangChain vectorstore.
@@ -98,10 +111,16 @@ class Langchain(VectorStoreBase):
             self.client.add_embeddings(embeddings=vectors, metadatas=payloads, ids=ids)
         else:
             # Fallback to add_texts method
-            texts = [payload.get("data", "") for payload in payloads] if payloads else [""] * len(vectors)
+            texts = (
+                [payload.get("data", "") for payload in payloads]
+                if payloads
+                else [""] * len(vectors)
+            )
             self.client.add_texts(texts=texts, metadatas=payloads, ids=ids)
 
-    def search(self, query: str, vectors: List[List[float]], top_k: int = 5, filters: Optional[Dict] = None):
+    def search(
+        self, query: str, vectors: List[List[float]], top_k: int = 5, filters: Optional[Dict] = None
+    ):
         """
         Search for similar vectors in LangChain.
         """

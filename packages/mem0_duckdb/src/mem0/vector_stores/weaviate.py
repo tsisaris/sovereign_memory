@@ -109,8 +109,16 @@ class Weaviate(VectorStoreBase):
         for i in range(max_length):
             entry = OutputData(
                 id=ids[i] if isinstance(ids, list) and ids and i < len(ids) else None,
-                score=(distances[i] if isinstance(distances, list) and distances and i < len(distances) else None),
-                payload=(metadatas[i] if isinstance(metadatas, list) and metadatas and i < len(metadatas) else None),
+                score=(
+                    distances[i]
+                    if isinstance(distances, list) and distances and i < len(distances)
+                    else None
+                ),
+                payload=(
+                    metadatas[i]
+                    if isinstance(metadatas, list) and metadatas and i < len(metadatas)
+                    else None
+                ),
             )
             result.append(entry)
 
@@ -176,7 +184,12 @@ class Weaviate(VectorStoreBase):
                 if "ids" in data_object:
                     del data_object["ids"]
 
-                batch.add_object(collection=self.collection_name, properties=data_object, uuid=object_id, vector=vector)
+                batch.add_object(
+                    collection=self.collection_name,
+                    properties=data_object,
+                    uuid=object_id,
+                    vector=vector,
+                )
 
     def search(
         self, query: str, vectors: List[float], top_k: int = 5, filters: Optional[Dict] = None
@@ -196,7 +209,16 @@ class Weaviate(VectorStoreBase):
             vector=vectors,
             limit=top_k,
             filters=combined_filter,
-            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "run_id", "data", "category"],
+            return_properties=[
+                "hash",
+                "created_at",
+                "updated_at",
+                "user_id",
+                "agent_id",
+                "run_id",
+                "data",
+                "category",
+            ],
             return_metadata=MetadataQuery(score=True),
         )
         results = []
@@ -247,7 +269,16 @@ class Weaviate(VectorStoreBase):
             query_properties=["data"],
             limit=top_k,
             filters=combined_filter,
-            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "run_id", "data", "category"],
+            return_properties=[
+                "hash",
+                "created_at",
+                "updated_at",
+                "user_id",
+                "agent_id",
+                "run_id",
+                "data",
+                "category",
+            ],
             return_metadata=MetadataQuery(score=True),
         )
         results = []
@@ -314,7 +345,16 @@ class Weaviate(VectorStoreBase):
 
         response = collection.query.fetch_object_by_id(
             uuid=vector_id,
-            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "run_id", "data", "category"],
+            return_properties=[
+                "hash",
+                "created_at",
+                "updated_at",
+                "user_id",
+                "agent_id",
+                "run_id",
+                "data",
+                "category",
+            ],
         )
         if response is None:
             return None
@@ -368,7 +408,16 @@ class Weaviate(VectorStoreBase):
         response = collection.query.fetch_objects(
             limit=top_k,
             filters=combined_filter,
-            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "run_id", "data", "category"],
+            return_properties=[
+                "hash",
+                "created_at",
+                "updated_at",
+                "user_id",
+                "agent_id",
+                "run_id",
+                "data",
+                "category",
+            ],
         )
         results = []
         for obj in response.objects:

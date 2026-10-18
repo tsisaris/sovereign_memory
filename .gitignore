@@ -6,3 +6,5 @@ vendor/
 packages/mem0_duckdb/src/mem0/
 packages/mem0_duckdb/tests/
 packages/mem0_duckdb/LICENSE
+packages/mem0_duckdb/src/mem0/
+packages/mem0_duckdb/tests/

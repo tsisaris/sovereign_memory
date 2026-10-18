@@ -29,9 +29,9 @@ class OpenAILLM(LLMBase):
                 top_k=config.top_k,
                 enable_vision=config.enable_vision,
                 vision_details=config.vision_details,
-                reasoning_effort=getattr(config, 'reasoning_effort', None),
+                reasoning_effort=getattr(config, "reasoning_effort", None),
                 http_client_proxies=config.http_client_proxies,
-                is_reasoning_model=getattr(config, 'is_reasoning_model', None),
+                is_reasoning_model=getattr(config, "is_reasoning_model", None),
             )
 
         super().__init__(config)
@@ -48,7 +48,11 @@ class OpenAILLM(LLMBase):
             )
         else:
             api_key = self.config.api_key or os.getenv("OPENAI_API_KEY")
-            base_url = self.config.openai_base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+            base_url = (
+                self.config.openai_base_url
+                or os.getenv("OPENAI_BASE_URL")
+                or "https://api.openai.com/v1"
+            )
 
             self.client = OpenAI(api_key=api_key, base_url=base_url)
 
@@ -105,10 +109,12 @@ class OpenAILLM(LLMBase):
         """
         params = self._get_supported_params(messages=messages, **kwargs)
 
-        params.update({
-            "model": self.config.model,
-            "messages": messages,
-        })
+        params.update(
+            {
+                "model": self.config.model,
+                "messages": messages,
+            }
+        )
 
         if os.getenv("OPENROUTER_API_KEY"):
             openrouter_params = {}

@@ -12,12 +12,18 @@ class PineconeConfig(BaseModel):
     client: Optional[Any] = Field(None, description="Existing Pinecone client instance")
     api_key: Optional[str] = Field(None, description="API key for Pinecone")
     environment: Optional[str] = Field(None, description="Pinecone environment")
-    serverless_config: Optional[Dict[str, Any]] = Field(None, description="Configuration for serverless deployment")
-    pod_config: Optional[Dict[str, Any]] = Field(None, description="Configuration for pod-based deployment")
+    serverless_config: Optional[Dict[str, Any]] = Field(
+        None, description="Configuration for serverless deployment"
+    )
+    pod_config: Optional[Dict[str, Any]] = Field(
+        None, description="Configuration for pod-based deployment"
+    )
     hybrid_search: bool = Field(False, description="Whether to enable hybrid search")
     metric: str = Field("cosine", description="Distance metric for vector similarity")
     batch_size: int = Field(100, description="Batch size for operations")
-    extra_params: Optional[Dict[str, Any]] = Field(None, description="Additional parameters for Pinecone client")
+    extra_params: Optional[Dict[str, Any]] = Field(
+        None, description="Additional parameters for Pinecone client"
+    )
     namespace: Optional[str] = Field(None, description="Namespace for the collection")
 
     @model_validator(mode="before")

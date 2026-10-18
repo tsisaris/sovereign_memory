@@ -97,4 +97,6 @@ class VectorStoreBase(ABC):
         Returns:
             List of result lists, one per query.
         """
-        return [self.search(q, v, top_k=top_k, filters=filters) for q, v in zip(queries, vectors_list)]
+        return [
+            self.search(q, v, top_k=top_k, filters=filters) for q, v in zip(queries, vectors_list)
+        ]

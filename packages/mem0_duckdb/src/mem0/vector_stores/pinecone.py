@@ -304,7 +304,12 @@ class PineconeDB(VectorStoreBase):
         """
         self.index.delete(ids=[str(vector_id)], namespace=self.namespace)
 
-    def update(self, vector_id: Union[str, int], vector: Optional[List[float]] = None, payload: Optional[Dict] = None):
+    def update(
+        self,
+        vector_id: Union[str, int],
+        vector: Optional[List[float]] = None,
+        payload: Optional[Dict] = None,
+    ):
         """
         Update a vector and its payload.
 
@@ -362,12 +367,16 @@ class PineconeDB(VectorStoreBase):
         try:
             if self.namespace is not None:
                 self.index.delete(delete_all=True, namespace=self.namespace)
-                logger.info(f"Namespace {self.namespace} in index {self.collection_name} cleared successfully")
+                logger.info(
+                    f"Namespace {self.namespace} in index {self.collection_name} cleared successfully"
+                )
             else:
                 self.client.delete_index(self.collection_name)
                 logger.info(f"Index {self.collection_name} deleted successfully")
         except Exception as e:
-            logger.error(f"Error deleting index {self.collection_name} (namespace={self.namespace}): {e}")
+            logger.error(
+                f"Error deleting index {self.collection_name} (namespace={self.namespace}): {e}"
+            )
 
     def col_info(self) -> Dict:
         """

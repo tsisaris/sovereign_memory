@@ -5,7 +5,9 @@ try:
     from google import genai
     from google.genai import types
 except ImportError:
-    raise ImportError("The 'google-genai' library is required. Please install it using 'pip install google-genai'.")
+    raise ImportError(
+        "The 'google-genai' library is required. Please install it using 'pip install google-genai'."
+    )
 
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.configs.llms.gemini import GeminiConfig
@@ -37,7 +39,9 @@ class GeminiLLM(LLMBase):
             self.config.model = "gemini-2.0-flash"
 
         if self.config.vertexai:
-            self.client = genai.Client(vertexai=True, project=self.config.project, location=self.config.location)
+            self.client = genai.Client(
+                vertexai=True, project=self.config.project, location=self.config.location
+            )
         else:
             api_key = self.config.api_key or os.getenv("GOOGLE_API_KEY")
             self.client = genai.Client(api_key=api_key)
@@ -213,7 +217,9 @@ class GeminiLLM(LLMBase):
                     function_calling_config=types.FunctionCallingConfig(
                         mode=mode,
                         allowed_function_names=(
-                            [tool["function"]["name"] for tool in tools] if tool_choice == "any" else None
+                            [tool["function"]["name"] for tool in tools]
+                            if tool_choice == "any"
+                            else None
                         ),
                     )
                 )

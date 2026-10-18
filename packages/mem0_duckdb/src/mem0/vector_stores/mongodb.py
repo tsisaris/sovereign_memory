@@ -10,13 +10,16 @@ try:
     from pymongo.errors import PyMongoError
     from pymongo.operations import SearchIndexModel
 except ImportError:
-    raise ImportError("The 'pymongo' library is required. Please install it using 'pip install pymongo'.")
+    raise ImportError(
+        "The 'pymongo' library is required. Please install it using 'pip install pymongo'."
+    )
 
 from mem0.vector_stores.base import VectorStoreBase
 
 logger = logging.getLogger(__name__)
 
 _DRIVER_METADATA = DriverInfo(name="Mem0", version=version("mem0ai"))
+
 
 class OutputData(BaseModel):
     id: Optional[str]
@@ -28,7 +31,9 @@ class MongoDB(VectorStoreBase):
     VECTOR_TYPE = "vector"
     SIMILARITY_METRIC = "cosine"
 
-    def __init__(self, db_name: str, collection_name: str, embedding_model_dims: int, mongo_uri: str):
+    def __init__(
+        self, db_name: str, collection_name: str, embedding_model_dims: int, mongo_uri: str
+    ):
         """
         Initialize the MongoDB vector store with vector search capabilities.
 
@@ -64,7 +69,9 @@ class MongoDB(VectorStoreBase):
             self.index_name = f"{self.collection_name}_vector_index"
             found_indexes = list(collection.list_search_indexes(name=self.index_name))
             if found_indexes:
-                logger.info(f"Search index '{self.index_name}' already exists in collection '{self.collection_name}'.")
+                logger.info(
+                    f"Search index '{self.index_name}' already exists in collection '{self.collection_name}'."
+                )
             else:
                 search_index_model = SearchIndexModel(
                     name=self.index_name,
@@ -112,7 +119,9 @@ class MongoDB(VectorStoreBase):
                         f"Text search index '{text_index_name}' created successfully for collection '{self.collection_name}'."
                     )
                 else:
-                    logger.info(f"Text search index '{text_index_name}' already exists in collection '{self.collection_name}'.")
+                    logger.info(
+                        f"Text search index '{text_index_name}' already exists in collection '{self.collection_name}'."
+                    )
             except Exception as e:
                 logger.warning(
                     f"Could not create text search index '{text_index_name}': {e}. "
@@ -125,7 +134,10 @@ class MongoDB(VectorStoreBase):
             return None
 
     def insert(
-        self, vectors: List[List[float]], payloads: Optional[List[Dict]] = None, ids: Optional[List[str]] = None
+        self,
+        vectors: List[List[float]],
+        payloads: Optional[List[Dict]] = None,
+        ids: Optional[List[str]] = None,
     ) -> None:
         """
         Insert vectors into the collection.
@@ -138,7 +150,9 @@ class MongoDB(VectorStoreBase):
         logger.info(f"Inserting {len(vectors)} vectors into collection '{self.collection_name}'.")
 
         data = []
-        for vector, payload, _id in zip(vectors, payloads or [{}] * len(vectors), ids or [None] * len(vectors)):
+        for vector, payload, _id in zip(
+            vectors, payloads or [{}] * len(vectors), ids or [None] * len(vectors)
+        ):
             document = {"_id": _id, "embedding": vector, "payload": payload}
             data.append(document)
         try:
@@ -163,7 +177,9 @@ class MongoDB(VectorStoreBase):
                         f"which may contain MongoDB query operators."
                     )
 
-    def search(self, query: str, vectors: List[float], top_k=5, filters: Optional[Dict] = None) -> List[OutputData]:
+    def search(
+        self, query: str, vectors: List[float], top_k=5, filters: Optional[Dict] = None
+    ) -> List[OutputData]:
         """
         Search for similar vectors using the vector search index.
 
@@ -219,7 +235,10 @@ class MongoDB(VectorStoreBase):
             logger.error(f"Error during vector search for query {query}: {e}")
             return []
 
-        output = [OutputData(id=str(doc["_id"]), score=doc.get("score"), payload=doc.get("payload")) for doc in results]
+        output = [
+            OutputData(id=str(doc["_id"]), score=doc.get("score"), payload=doc.get("payload"))
+            for doc in results
+        ]
         return output
 
     def keyword_search(self, query, top_k=5, filters=None):
@@ -293,7 +312,9 @@ class MongoDB(VectorStoreBase):
         except PyMongoError as e:
             logger.error(f"Error deleting document: {e}")
 
-    def update(self, vector_id: str, vector: Optional[List[float]] = None, payload: Optional[Dict] = None) -> None:
+    def update(
+        self, vector_id: str, vector: Optional[List[float]] = None, payload: Optional[Dict] = None
+    ) -> None:
         """
         Update a vector and its payload.
 
@@ -373,7 +394,11 @@ class MongoDB(VectorStoreBase):
         """
         try:
             stats = self.db.command("collstats", self.collection_name)
-            info = {"name": self.collection_name, "count": stats.get("count"), "size": stats.get("size")}
+            info = {
+                "name": self.collection_name,
+                "count": stats.get("count"),
+                "size": stats.get("size"),
+            }
             logger.info(f"Collection info: {info}")
             return info
         except PyMongoError as e:
@@ -405,8 +430,13 @@ class MongoDB(VectorStoreBase):
                     query = {"$and": filter_conditions}
 
             cursor = self.collection.find(query).limit(top_k)
-            results = [OutputData(id=str(doc["_id"]), score=None, payload=doc.get("payload")) for doc in cursor]
-            logger.info(f"Retrieved {len(results)} documents from collection '{self.collection_name}'.")
+            results = [
+                OutputData(id=str(doc["_id"]), score=None, payload=doc.get("payload"))
+                for doc in cursor
+            ]
+            logger.info(
+                f"Retrieved {len(results)} documents from collection '{self.collection_name}'."
+            )
             return [results]
         except PyMongoError as e:
             logger.error(f"Error listing documents: {e}")

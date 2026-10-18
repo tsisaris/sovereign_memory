@@ -125,7 +125,9 @@ class RedisDB(VectorStoreBase):
         for vector, payload, id in zip(vectors, payloads, ids):
             # Start with required fields
             created_at_str = payload.get("created_at")
-            created_at_ts = int(datetime.fromisoformat(created_at_str).timestamp()) if created_at_str else 0
+            created_at_ts = (
+                int(datetime.fromisoformat(created_at_str).timestamp()) if created_at_str else 0
+            )
             entry = {
                 "memory_id": id,
                 "hash": payload.get("hash", ""),
@@ -140,7 +142,9 @@ class RedisDB(VectorStoreBase):
                     entry[field] = payload[field]
 
             # Add metadata excluding specific keys
-            entry["metadata"] = json.dumps({k: v for k, v in payload.items() if k not in excluded_keys})
+            entry["metadata"] = json.dumps(
+                {k: v for k, v in payload.items() if k not in excluded_keys}
+            )
 
             data.append(entry)
         self.index.load(data, id_field="memory_id")
@@ -155,7 +159,16 @@ class RedisDB(VectorStoreBase):
         v = VectorQuery(
             vector=np.array(vectors, dtype=np.float32).tobytes(),
             vector_field_name="embedding",
-            return_fields=["memory_id", "hash", "agent_id", "run_id", "user_id", "memory", "metadata", "created_at"],
+            return_fields=[
+                "memory_id",
+                "hash",
+                "agent_id",
+                "run_id",
+                "user_id",
+                "memory",
+                "metadata",
+                "created_at",
+            ],
             filter_expression=filter,
             num_results=top_k,
         )
@@ -181,7 +194,11 @@ class RedisDB(VectorStoreBase):
                         if "updated_at" in result
                         else {}
                     ),
-                    **{field: result[field] for field in ["agent_id", "run_id", "user_id"] if field in result},
+                    **{
+                        field: result[field]
+                        for field in ["agent_id", "run_id", "user_id"]
+                        if field in result
+                    },
                     **{k: v for k, v in json.loads(extract_json(result["metadata"])).items()},
                 },
             )
@@ -209,7 +226,16 @@ class RedisDB(VectorStoreBase):
         t = TextQuery(
             text=query,
             text_field_name="memory",
-            return_fields=["memory_id", "hash", "agent_id", "run_id", "user_id", "memory", "metadata", "created_at"],
+            return_fields=[
+                "memory_id",
+                "hash",
+                "agent_id",
+                "run_id",
+                "user_id",
+                "memory",
+                "metadata",
+                "created_at",
+            ],
             filter_expression=filter_expression,
             num_results=top_k,
         )
@@ -235,7 +261,11 @@ class RedisDB(VectorStoreBase):
                         if "updated_at" in result
                         else {}
                     ),
-                    **{field: result[field] for field in ["agent_id", "run_id", "user_id"] if field in result},
+                    **{
+                        field: result[field]
+                        for field in ["agent_id", "run_id", "user_id"]
+                        if field in result
+                    },
                     **{k: v for k, v in json.loads(extract_json(result["metadata"])).items()},
                 },
             )
@@ -247,9 +277,13 @@ class RedisDB(VectorStoreBase):
 
     def update(self, vector_id=None, vector=None, payload=None):
         created_at_str = payload.get("created_at")
-        created_at_ts = int(datetime.fromisoformat(created_at_str).timestamp()) if created_at_str else 0
+        created_at_ts = (
+            int(datetime.fromisoformat(created_at_str).timestamp()) if created_at_str else 0
+        )
         updated_at_str = payload.get("updated_at")
-        updated_at_ts = int(datetime.fromisoformat(updated_at_str).timestamp()) if updated_at_str else 0
+        updated_at_ts = (
+            int(datetime.fromisoformat(updated_at_str).timestamp()) if updated_at_str else 0
+        )
         data = {
             "memory_id": vector_id,
             "hash": payload.get("hash", ""),
@@ -267,7 +301,11 @@ class RedisDB(VectorStoreBase):
                 data[field] = payload[field]
 
         data["metadata"] = json.dumps({k: v for k, v in payload.items() if k not in excluded_keys})
-        self.index.load(data=[data], keys=[f"{self.schema['index']['prefix']}:{vector_id}"], id_field="memory_id")
+        self.index.load(
+            data=[data],
+            keys=[f"{self.schema['index']['prefix']}:{vector_id}"],
+            id_field="memory_id",
+        )
 
     def get(self, vector_id):
         result = self.index.fetch(vector_id)
@@ -276,9 +314,9 @@ class RedisDB(VectorStoreBase):
         payload = {
             "hash": result["hash"],
             "data": result["memory"],
-            "created_at": datetime.fromtimestamp(int(result["created_at"]), tz=timezone.utc).isoformat(
-                timespec="microseconds"
-            ),
+            "created_at": datetime.fromtimestamp(
+                int(result["created_at"]), tz=timezone.utc
+            ).isoformat(timespec="microseconds"),
             **(
                 {
                     "updated_at": datetime.fromtimestamp(
@@ -288,7 +326,11 @@ class RedisDB(VectorStoreBase):
                 if "updated_at" in result
                 else {}
             ),
-            **{field: result[field] for field in ["agent_id", "run_id", "user_id"] if field in result},
+            **{
+                field: result[field]
+                for field in ["agent_id", "run_id", "user_id"]
+                if field in result
+            },
             **{k: v for k, v in json.loads(extract_json(result["metadata"])).items()},
         }
 

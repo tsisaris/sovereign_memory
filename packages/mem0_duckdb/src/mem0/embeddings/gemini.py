@@ -13,7 +13,9 @@ class GoogleGenAIEmbedding(EmbeddingBase):
         super().__init__(config)
 
         self.config.model = self.config.model or "models/gemini-embedding-001"
-        self.config.embedding_dims = self.config.embedding_dims or self.config.output_dimensionality or 768
+        self.config.embedding_dims = (
+            self.config.embedding_dims or self.config.output_dimensionality or 768
+        )
 
         api_key = self.config.api_key or os.getenv("GOOGLE_API_KEY")
 
@@ -34,7 +36,9 @@ class GoogleGenAIEmbedding(EmbeddingBase):
         config = types.EmbedContentConfig(output_dimensionality=self.config.embedding_dims)
 
         # Call the embed_content method with the correct parameters
-        response = self.client.models.embed_content(model=self.config.model, contents=text, config=config)
+        response = self.client.models.embed_content(
+            model=self.config.model, contents=text, config=config
+        )
 
         return response.embeddings[0].values
 
@@ -46,7 +50,9 @@ class GoogleGenAIEmbedding(EmbeddingBase):
         all_embeddings = []
         for i in range(0, len(texts), MAX_BATCH):
             chunk = [t.replace("\n", " ") for t in texts[i : i + MAX_BATCH]]
-            response = self.client.models.embed_content(model=self.config.model, contents=chunk, config=config)
+            response = self.client.models.embed_content(
+                model=self.config.model, contents=chunk, config=config
+            )
             all_embeddings.extend(e.values for e in response.embeddings)
         if len(all_embeddings) != len(texts):
             raise ValueError(

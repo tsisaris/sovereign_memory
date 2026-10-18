@@ -32,9 +32,9 @@ class AzureOpenAILLM(LLMBase):
                 top_k=config.top_k,
                 enable_vision=config.enable_vision,
                 vision_details=config.vision_details,
-                reasoning_effort=getattr(config, 'reasoning_effort', None),
+                reasoning_effort=getattr(config, "reasoning_effort", None),
                 http_client_proxies=config.http_client_proxies,
-                is_reasoning_model=getattr(config, 'is_reasoning_model', None),
+                is_reasoning_model=getattr(config, "is_reasoning_model", None),
             )
 
         super().__init__(config)
@@ -44,7 +44,9 @@ class AzureOpenAILLM(LLMBase):
             self.config.model = "gpt-5-mini"
 
         api_key = self.config.azure_kwargs.api_key or os.getenv("LLM_AZURE_OPENAI_API_KEY")
-        azure_deployment = self.config.azure_kwargs.azure_deployment or os.getenv("LLM_AZURE_DEPLOYMENT")
+        azure_deployment = self.config.azure_kwargs.azure_deployment or os.getenv(
+            "LLM_AZURE_DEPLOYMENT"
+        )
         azure_endpoint = self.config.azure_kwargs.azure_endpoint or os.getenv("LLM_AZURE_ENDPOINT")
         api_version = self.config.azure_kwargs.api_version or os.getenv("LLM_AZURE_API_VERSION")
         default_headers = self.config.azure_kwargs.default_headers
@@ -151,10 +153,12 @@ class AzureOpenAILLM(LLMBase):
         params = self._get_supported_params(messages=messages, **kwargs)
 
         # Add model and messages
-        params.update({
-            "model": self.config.model,
-            "messages": messages,
-        })
+        params.update(
+            {
+                "model": self.config.model,
+                "messages": messages,
+            }
+        )
 
         if response_format:
             params["response_format"] = response_format

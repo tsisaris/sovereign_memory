@@ -7,7 +7,9 @@ try:
     import boto3
     from botocore.exceptions import ClientError, NoCredentialsError
 except ImportError:
-    raise ImportError("The 'boto3' library is required. Please install it using 'pip install boto3'.")
+    raise ImportError(
+        "The 'boto3' library is required. Please install it using 'pip install boto3'."
+    )
 
 from mem0.configs.llms.aws_bedrock import AWSBedrockConfig
 from mem0.configs.llms.base import BaseLlmConfig
@@ -17,8 +19,22 @@ from mem0.memory.utils import extract_json
 logger = logging.getLogger(__name__)
 
 PROVIDERS = [
-    "ai21", "amazon", "anthropic", "cohere", "meta", "mistral", "stability", "writer",
-    "deepseek", "gpt-oss", "perplexity", "snowflake", "titan", "command", "j2", "llama",
+    "ai21",
+    "amazon",
+    "anthropic",
+    "cohere",
+    "meta",
+    "mistral",
+    "stability",
+    "writer",
+    "deepseek",
+    "gpt-oss",
+    "perplexity",
+    "snowflake",
+    "titan",
+    "command",
+    "j2",
+    "llama",
     "minimax",
 ]
 
@@ -116,7 +132,9 @@ class AWSBedrockLLM(LLMBase):
 
             # Check if our model is available
             if self.config.model not in self.available_models:
-                logger.warning(f"Model {self.config.model} may not be available in region {self.config.aws_region}")
+                logger.warning(
+                    f"Model {self.config.model} may not be available in region {self.config.aws_region}"
+                )
                 logger.info(f"Available models: {', '.join(self.available_models[:5])}...")
 
         except Exception as e:
@@ -132,7 +150,13 @@ class AWSBedrockLLM(LLMBase):
         # endpoint, not via the bedrock-runtime Converse API used by this class.
         # See: https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-minimax-minimax-m2-5.html
         self.supports_vision = self.provider in ["anthropic", "amazon", "meta", "mistral"]
-        self.supports_streaming = self.provider in ["anthropic", "cohere", "mistral", "amazon", "meta"]
+        self.supports_streaming = self.provider in [
+            "anthropic",
+            "cohere",
+            "mistral",
+            "amazon",
+            "meta",
+        ]
 
         # Set message formatting method
         if self.provider == "anthropic":
@@ -148,7 +172,9 @@ class AWSBedrockLLM(LLMBase):
         else:
             self._format_messages = self._format_messages_generic
 
-    def _format_messages_anthropic(self, messages: List[Dict[str, str]]) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    def _format_messages_anthropic(
+        self, messages: List[Dict[str, str]]
+    ) -> tuple[List[Dict[str, Any]], Optional[str]]:
         """Format messages for Anthropic models."""
         formatted_messages = []
         system_message = None
@@ -383,7 +409,9 @@ class AWSBedrockLLM(LLMBase):
                         processed_response["tool_calls"].append(
                             {
                                 "name": item["toolUse"]["name"],
-                                "arguments": json.loads(extract_json(json.dumps(item["toolUse"]["input"]))),
+                                "arguments": json.loads(
+                                    extract_json(json.dumps(item["toolUse"]["input"]))
+                                ),
                             }
                         )
 
@@ -415,7 +443,11 @@ class AWSBedrockLLM(LLMBase):
             elif self.provider == "cohere":
                 return response_json.get("generations", [{"text": ""}])[0].get("text", "")
             elif self.provider == "ai21":
-                return response_json.get("completions", [{"data": {"text": ""}}])[0].get("data", {}).get("text", "")
+                return (
+                    response_json.get("completions", [{"data": {"text": ""}}])[0]
+                    .get("data", {})
+                    .get("text", "")
+                )
             else:
                 # Generic parsing - try common response fields
                 for field in ["content", "text", "completion", "generation"]:
@@ -481,9 +513,7 @@ class AWSBedrockLLM(LLMBase):
                     "toolSpec": {
                         "name": func["name"],
                         "description": func.get("description", ""),
-                        "inputSchema": {
-                            "json": func.get("parameters", {})
-                        }
+                        "inputSchema": {"json": func.get("parameters", {})},
                     }
                 }
                 converse_tools.append(converse_tool)
@@ -505,7 +535,9 @@ class AWSBedrockLLM(LLMBase):
         those providers even when the user has configured it.
         """
         inference_config: Dict[str, Any] = {
-            "maxTokens": self.model_config.get("max_tokens", self._default_max_tokens_for_converse()),
+            "maxTokens": self.model_config.get(
+                "max_tokens", self._default_max_tokens_for_converse()
+            ),
             "temperature": self.model_config.get("temperature", 0.1),
         }
 
@@ -515,13 +547,19 @@ class AWSBedrockLLM(LLMBase):
                 # Both Anthropic and MiniMax M2.x (reasoning models) raise a
                 # ValidationException when temperature and topP are both present
                 # in inferenceConfig.  Omit topP and rely on temperature only.
-                logger.debug("Omitting topP for %s Converse (using temperature); top_p=%s", self.provider, top_p)
+                logger.debug(
+                    "Omitting topP for %s Converse (using temperature); top_p=%s",
+                    self.provider,
+                    top_p,
+                )
             else:
                 inference_config["topP"] = top_p
 
         return inference_config
 
-    def _generate_with_tools(self, messages: List[Dict[str, str]], tools: List[Dict], stream: bool = False) -> Dict[str, Any]:
+    def _generate_with_tools(
+        self, messages: List[Dict[str, str]], tools: List[Dict], stream: bool = False
+    ) -> Dict[str, Any]:
         """Generate response with tool calling support using correct message format."""
         # Format messages for tool-enabled models
         system_message = None
@@ -583,15 +621,15 @@ class AWSBedrockLLM(LLMBase):
             # `reasoningContent` block before the `text` block, so iterate to
             # find the first block that carries text instead of indexing
             # content[0] (same approach as the MiniMax branch below).
-            if hasattr(response, 'output') and hasattr(response.output, 'message'):
+            if hasattr(response, "output") and hasattr(response.output, "message"):
                 for block in response.output.message.content:
-                    if hasattr(block, 'text'):
+                    if hasattr(block, "text"):
                         return block.text
                 return ""
-            elif 'output' in response and 'message' in response['output']:
-                for block in response['output']['message']['content']:
-                    if 'text' in block:
-                        return block['text']
+            elif "output" in response and "message" in response["output"]:
+                for block in response["output"]["message"]["content"]:
+                    if "text" in block:
+                        return block["text"]
                 return ""
             else:
                 return str(response)
@@ -680,7 +718,9 @@ class AWSBedrockLLM(LLMBase):
                         "providerName": model.get("providerName", ""),
                         "inputModalities": model.get("inputModalities", []),
                         "outputModalities": model.get("outputModalities", []),
-                        "responseStreamingSupported": model.get("responseStreamingSupported", False),
+                        "responseStreamingSupported": model.get(
+                            "responseStreamingSupported", False
+                        ),
                     }
                 )
 
@@ -712,7 +752,7 @@ class AWSBedrockLLM(LLMBase):
                 self.client.converse(
                     modelId=self.config.model,
                     messages=test_messages,
-                    inferenceConfig={"maxTokens": 10}
+                    inferenceConfig={"maxTokens": 10},
                 )
             else:
                 # Test other models with invoke_model

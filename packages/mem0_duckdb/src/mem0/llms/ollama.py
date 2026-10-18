@@ -4,7 +4,9 @@ from typing import Dict, List, Optional, Union
 try:
     from ollama import Client
 except ImportError:
-    raise ImportError("The 'ollama' library is required. Please install it using 'pip install ollama'.")
+    raise ImportError(
+        "The 'ollama' library is required. Please install it using 'pip install ollama'."
+    )
 
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.configs.llms.ollama import OllamaConfig
@@ -81,9 +83,7 @@ class OllamaLLM(LLMBase):
                 if isinstance(arguments, str):
                     arguments = json.loads(extract_json(arguments))
 
-                processed_response["tool_calls"].append(
-                    {"name": name, "arguments": arguments}
-                )
+                processed_response["tool_calls"].append({"name": name, "arguments": arguments})
 
             return processed_response
         else:

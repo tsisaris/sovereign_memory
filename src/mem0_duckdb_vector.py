@@ -4,9 +4,8 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 import duckdb
-from pydantic import BaseModel
-
 from mem0.vector_stores.base import VectorStoreBase
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,12 @@ class DuckDBVectorStore(VectorStoreBase):
         self.embedding_model_dims = vector_size
         self._ensure_collection()
 
-    def insert(self, vectors: List[List[float]], payloads: Optional[List[Dict]] = None, ids: Optional[List[str]] = None) -> None:
+    def insert(
+        self,
+        vectors: List[List[float]],
+        payloads: Optional[List[Dict]] = None,
+        ids: Optional[List[str]] = None,
+    ) -> None:
         if not vectors:
             return
 
@@ -64,7 +68,9 @@ class DuckDBVectorStore(VectorStoreBase):
             raise ValueError("Lengths of vectors, payloads, and ids must match")
 
         try:
-            in_txn = self.connection.execute("SELECT current_transaction_id()").fetchone()[0] is not None
+            in_txn = (
+                self.connection.execute("SELECT current_transaction_id()").fetchone()[0] is not None
+            )
         except duckdb.CatalogException:
             in_txn = False
 
@@ -85,7 +91,7 @@ class DuckDBVectorStore(VectorStoreBase):
                     vector = EXCLUDED.vector,
                     payload = EXCLUDED.payload
                 """,
-                rows
+                rows,
             )
 
             if not in_txn:
@@ -126,7 +132,9 @@ class DuckDBVectorStore(VectorStoreBase):
                         params.append(json_path)
                         params.extend([str(v) for v in val])
                     else:
-                        logger.warning(f"Operator {op} not fully supported or optimized in DuckDB vector store")
+                        logger.warning(
+                            f"Operator {op} not fully supported or optimized in DuckDB vector store"
+                        )
             else:
                 json_path = f"$.{key}"
                 clauses.append(f"json_extract_string(payload, ?) = ?")
@@ -135,7 +143,9 @@ class DuckDBVectorStore(VectorStoreBase):
         where_clause = " AND ".join(clauses)
         return f" AND {where_clause}" if where_clause else "", params
 
-    def search(self, query: str, vectors: List[float], top_k: int = 5, filters: Optional[Dict] = None) -> List[OutputData]:
+    def search(
+        self, query: str, vectors: List[float], top_k: int = 5, filters: Optional[Dict] = None
+    ) -> List[OutputData]:
         where_clause, params = self._build_filter_clause(filters or {})
 
         query_sql = f"""
@@ -151,16 +161,30 @@ class DuckDBVectorStore(VectorStoreBase):
 
         output = []
         for r in results:
-            output.append(OutputData(id=r[0], score=r[1], payload=json.loads(r[2]) if r[2] else None))
+            output.append(
+                OutputData(id=r[0], score=r[1], payload=json.loads(r[2]) if r[2] else None)
+            )
         return output
 
-    def search_batch(self, queries: List[str], vectors_list: List[List[float]], top_k: int = 1, filters: Optional[Dict] = None) -> List[List[OutputData]]:
-        return [self.search(q, v, top_k=top_k, filters=filters) for q, v in zip(queries, vectors_list)]
+    def search_batch(
+        self,
+        queries: List[str],
+        vectors_list: List[List[float]],
+        top_k: int = 1,
+        filters: Optional[Dict] = None,
+    ) -> List[List[OutputData]]:
+        return [
+            self.search(q, v, top_k=top_k, filters=filters) for q, v in zip(queries, vectors_list)
+        ]
 
-    def keyword_search(self, query: str, top_k: int = 5, filters: Optional[Dict] = None) -> List[OutputData]:
+    def keyword_search(
+        self, query: str, top_k: int = 5, filters: Optional[Dict] = None
+    ) -> List[OutputData]:
         # Implement FTS search on DuckDB
         # Ensure FTS is fresh before query
-        self.connection.execute(f"PRAGMA create_fts_index('{self.collection_name}', 'id', 'payload', overwrite=1)")
+        self.connection.execute(
+            f"PRAGMA create_fts_index('{self.collection_name}', 'id', 'payload', overwrite=1)"
+        )
 
         where_clause, params = self._build_filter_clause(filters or {})
 
@@ -180,44 +204,51 @@ class DuckDBVectorStore(VectorStoreBase):
 
         output = []
         for r in results:
-            output.append(OutputData(id=r[0], score=r[1], payload=json.loads(r[2]) if r[2] else None))
+            output.append(
+                OutputData(id=r[0], score=r[1], payload=json.loads(r[2]) if r[2] else None)
+            )
         return output
 
     def delete(self, vector_id: str) -> None:
         self.connection.execute(f"DELETE FROM {self.collection_name} WHERE id = ?", (vector_id,))
 
-    def update(self, vector_id: str, vector: Optional[List[float]] = None, payload: Optional[Dict] = None) -> None:
+    def update(
+        self, vector_id: str, vector: Optional[List[float]] = None, payload: Optional[Dict] = None
+    ) -> None:
         if vector is None and payload is None:
             return
 
         if vector is not None and payload is not None:
             self.connection.execute(
                 f"UPDATE {self.collection_name} SET vector = ?, payload = ? WHERE id = ?",
-                (vector, json.dumps(payload), vector_id)
+                (vector, json.dumps(payload), vector_id),
             )
         elif vector is not None:
             self.connection.execute(
-                f"UPDATE {self.collection_name} SET vector = ? WHERE id = ?",
-                (vector, vector_id)
+                f"UPDATE {self.collection_name} SET vector = ? WHERE id = ?", (vector, vector_id)
             )
         elif payload is not None:
             self.connection.execute(
                 f"UPDATE {self.collection_name} SET payload = ? WHERE id = ?",
-                (json.dumps(payload), vector_id)
+                (json.dumps(payload), vector_id),
             )
 
     def get(self, vector_id: str) -> OutputData:
         result = self.connection.execute(
             f"SELECT id, NULL as score, payload FROM {self.collection_name} WHERE id = ?",
-            (vector_id,)
+            (vector_id,),
         ).fetchone()
 
         if result:
-            return OutputData(id=result[0], score=result[1], payload=json.loads(result[2]) if result[2] else None)
+            return OutputData(
+                id=result[0], score=result[1], payload=json.loads(result[2]) if result[2] else None
+            )
         return None
 
     def list_cols(self) -> List[str]:
-        tables = self.connection.execute("SELECT table_name FROM information_schema.tables").fetchall()
+        tables = self.connection.execute(
+            "SELECT table_name FROM information_schema.tables"
+        ).fetchall()
         return [t[0] for t in tables if "fts" not in t[0] and t[0] not in ("history", "messages")]
 
     def delete_col(self) -> None:
@@ -228,11 +259,13 @@ class DuckDBVectorStore(VectorStoreBase):
         self.connection.execute(f"DROP TABLE IF EXISTS fts_main_{self.collection_name}_dict")
 
     def col_info(self) -> Dict:
-        count = self.connection.execute(f"SELECT COUNT(*) FROM {self.collection_name}").fetchone()[0]
+        count = self.connection.execute(f"SELECT COUNT(*) FROM {self.collection_name}").fetchone()[
+            0
+        ]
         return {
             "name": self.collection_name,
             "count": count,
-            "embedding_model_dims": self.embedding_model_dims
+            "embedding_model_dims": self.embedding_model_dims,
         }
 
     def list(self, filters: Optional[Dict] = None, top_k: int = 100) -> List[OutputData]:
@@ -250,7 +283,9 @@ class DuckDBVectorStore(VectorStoreBase):
 
         output = []
         for r in results:
-            output.append(OutputData(id=r[0], score=r[1], payload=json.loads(r[2]) if r[2] else None))
+            output.append(
+                OutputData(id=r[0], score=r[1], payload=json.loads(r[2]) if r[2] else None)
+            )
         return output
 
     def reset(self) -> None:

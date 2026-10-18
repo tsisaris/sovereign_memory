@@ -103,7 +103,9 @@ class ValkeyDB(VectorStoreBase):
                 self.client = ValkeyCluster.from_url(valkey_url)
             else:
                 self.client = valkey.from_url(valkey_url)
-            logger.debug(f"Successfully connected to Valkey at {valkey_url} (cluster_mode={cluster_mode})")
+            logger.debug(
+                f"Successfully connected to Valkey at {valkey_url} (cluster_mode={cluster_mode})"
+            )
         except Exception as e:
             logger.exception(f"Failed to connect to Valkey at {valkey_url}: {e}")
             raise
@@ -237,7 +239,9 @@ class ValkeyDB(VectorStoreBase):
 
         try:
             self.client.execute_command(*cmd)
-            logger.info(f"Successfully created {self.index_type.upper()} index {self.collection_name}")
+            logger.info(
+                f"Successfully created {self.index_type.upper()} index {self.collection_name}"
+            )
         except Exception as e:
             logger.exception(f"Error creating index {self.collection_name}: {e}")
             raise
@@ -307,7 +311,9 @@ class ValkeyDB(VectorStoreBase):
                 hash_data = {
                     "memory_id": id,
                     "hash": payload.get("hash", f"hash_{id}"),  # Use a default hash if not provided
-                    "memory": payload.get("data", f"data_{id}"),  # Use a default data if not provided
+                    "memory": payload.get(
+                        "data", f"data_{id}"
+                    ),  # Use a default data if not provided
                     "created_at": int(datetime.fromisoformat(payload["created_at"]).timestamp()),
                     "embedding": np.array(vector, dtype=np.float32).tobytes(),
                 }
@@ -318,7 +324,9 @@ class ValkeyDB(VectorStoreBase):
                         hash_data[field] = payload[field]
 
                 # Add metadata
-                hash_data["metadata"] = json.dumps({k: v for k, v in payload.items() if k not in excluded_keys})
+                hash_data["metadata"] = json.dumps(
+                    {k: v for k, v in payload.items() if k not in excluded_keys}
+                )
 
                 # Store in Valkey
                 self.client.hset(key, mapping=hash_data)
@@ -428,7 +436,14 @@ class ValkeyDB(VectorStoreBase):
 
         return memory_results
 
-    def search(self, query: str, vectors: list, top_k: int = 5, filters: dict = None, ef_runtime: int = None):
+    def search(
+        self,
+        query: str,
+        vectors: list,
+        top_k: int = 5,
+        filters: dict = None,
+        ef_runtime: int = None,
+    ):
         """
         Search for similar vectors in the index.
 
@@ -447,7 +462,9 @@ class ValkeyDB(VectorStoreBase):
 
         # Build the KNN part with optional EF_RUNTIME for HNSW
         if self.index_type == "hnsw" and ef_runtime is not None:
-            knn_part = f"[KNN {top_k} @embedding $vec_param EF_RUNTIME {ef_runtime} AS vector_score]"
+            knn_part = (
+                f"[KNN {top_k} @embedding $vec_param EF_RUNTIME {ef_runtime} AS vector_score]"
+            )
         else:
             # For FLAT indexes or when ef_runtime is None, use basic KNN
             knn_part = f"[KNN {top_k} @embedding $vec_param AS vector_score]"
@@ -501,8 +518,12 @@ class ValkeyDB(VectorStoreBase):
             # Prepare the hash data
             hash_data = {
                 "memory_id": vector_id,
-                "hash": payload.get("hash", f"hash_{vector_id}"),  # Use a default hash if not provided
-                "memory": payload.get("data", f"data_{vector_id}"),  # Use a default data if not provided
+                "hash": payload.get(
+                    "hash", f"hash_{vector_id}"
+                ),  # Use a default hash if not provided
+                "memory": payload.get(
+                    "data", f"data_{vector_id}"
+                ),  # Use a default data if not provided
                 "created_at": int(datetime.fromisoformat(payload["created_at"]).timestamp()),
             }
 
@@ -512,7 +533,9 @@ class ValkeyDB(VectorStoreBase):
 
             # Add updated_at if available
             if payload.get("updated_at"):
-                hash_data["updated_at"] = int(datetime.fromisoformat(payload["updated_at"]).timestamp())
+                hash_data["updated_at"] = int(
+                    datetime.fromisoformat(payload["updated_at"]).timestamp()
+                )
 
             # Add optional fields
             for field in ["agent_id", "run_id", "user_id"]:
@@ -520,7 +543,9 @@ class ValkeyDB(VectorStoreBase):
                     hash_data[field] = payload[field]
 
             # Add metadata
-            hash_data["metadata"] = json.dumps({k: v for k, v in payload.items() if k not in excluded_keys})
+            hash_data["metadata"] = json.dumps(
+                {k: v for k, v in payload.items() if k not in excluded_keys}
+            )
 
             # Update in Valkey
             self.client.hset(key, mapping=hash_data)
@@ -589,7 +614,8 @@ class ValkeyDB(VectorStoreBase):
                     payload[field] = "unknown"
                 elif field == "created_at":
                     payload[field] = self._format_timestamp(
-                        int(datetime.now(tz=pytz.timezone(self.timezone)).timestamp()), self.timezone
+                        int(datetime.now(tz=pytz.timezone(self.timezone)).timestamp()),
+                        self.timezone,
                     )
 
         # Rename memory to data for consistency
@@ -599,7 +625,9 @@ class ValkeyDB(VectorStoreBase):
         # Add updated_at if available
         if "updated_at" in result:
             try:
-                payload["updated_at"] = self._format_timestamp(int(result["updated_at"]), self.timezone)
+                payload["updated_at"] = self._format_timestamp(
+                    int(result["updated_at"]), self.timezone
+                )
             except (ValueError, TypeError):
                 payload["updated_at"] = result["updated_at"]
 
@@ -629,7 +657,9 @@ class ValkeyDB(VectorStoreBase):
             except UnicodeDecodeError:
                 return data
         if isinstance(data, dict):
-            return {self._convert_bytes(key): self._convert_bytes(value) for key, value in data.items()}
+            return {
+                self._convert_bytes(key): self._convert_bytes(value) for key, value in data.items()
+            }
         if isinstance(data, list):
             return [self._convert_bytes(item) for item in data]
         if isinstance(data, tuple):

@@ -10,7 +10,9 @@ from mem0.vector_stores.base import VectorStoreBase
 try:
     import pymilvus  # noqa: F401
 except ImportError:
-    raise ImportError("The 'pymilvus' library is required. Please install it using 'pip install pymilvus'.")
+    raise ImportError(
+        "The 'pymilvus' library is required. Please install it using 'pip install pymilvus'."
+    )
 
 from pymilvus import (
     CollectionSchema,
@@ -94,7 +96,9 @@ class MilvusDB(VectorStoreBase):
                 FieldSchema(name="vectors", dtype=DataType.FLOAT_VECTOR, dim=vector_size),
                 FieldSchema(name="metadata", dtype=DataType.JSON),
                 # Text field for BM25 full-text search (auto-tokenized by Milvus analyzer)
-                FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535, enable_analyzer=True),
+                FieldSchema(
+                    name="text", dtype=DataType.VARCHAR, max_length=65535, enable_analyzer=True
+                ),
                 # Sparse vector field populated automatically by the BM25 function below
                 FieldSchema(name="sparse", dtype=DataType.SPARSE_FLOAT_VECTOR),
             ]
@@ -112,7 +116,10 @@ class MilvusDB(VectorStoreBase):
 
             index_params = self.client.prepare_index_params()
             index_params.add_index(
-                field_name="vectors", metric_type=metric_type, index_type="AUTOINDEX", index_name="vector_index"
+                field_name="vectors",
+                metric_type=metric_type,
+                index_type="AUTOINDEX",
+                index_name="vector_index",
             )
             index_params.add_index(
                 field_name="sparse",
@@ -120,7 +127,9 @@ class MilvusDB(VectorStoreBase):
                 metric_type="BM25",
                 index_name="sparse_index",
             )
-            self.client.create_collection(collection_name=collection_name, schema=schema, index_params=index_params)
+            self.client.create_collection(
+                collection_name=collection_name, schema=schema, index_params=index_params
+            )
             self._has_bm25_schema = True
 
     def insert(self, ids, vectors, payloads, **kwargs: Optional[dict[str, any]]):
@@ -131,6 +140,7 @@ class MilvusDB(VectorStoreBase):
             payloads (List[Dict], optional): List of payloads corresponding to vectors.
             ids (List[str], optional): List of IDs corresponding to vectors.
         """
+
         # Batch insert all records at once for better performance and consistency.
         # Only include the `text` field when the collection's schema has it — legacy
         # collections created pre-v3 reject unknown top-level fields.
@@ -138,10 +148,17 @@ class MilvusDB(VectorStoreBase):
             record = {"id": idx, "vectors": embedding, "metadata": metadata}
             if self._has_bm25_schema:
                 # Populate the text field for BM25 sparse search; prefer lemmatized text, fall back to raw data
-                record["text"] = (metadata.get("text_lemmatized") or metadata.get("data", ""))[:65535] if metadata else ""
+                record["text"] = (
+                    (metadata.get("text_lemmatized") or metadata.get("data", ""))[:65535]
+                    if metadata
+                    else ""
+                )
             return record
 
-        data = [_build_record(idx, embedding, metadata) for idx, embedding, metadata in zip(ids, vectors, payloads)]
+        data = [
+            _build_record(idx, embedding, metadata)
+            for idx, embedding, metadata in zip(ids, vectors, payloads)
+        ]
         self.client.insert(collection_name=self.collection_name, data=data, **kwargs)
 
     _SAFE_FILTER_KEY = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -290,7 +307,9 @@ class MilvusDB(VectorStoreBase):
         if vector is None or payload is None:
             existing = self.client.get(collection_name=self.collection_name, ids=vector_id)
             if not existing:
-                raise ValueError(f"Vector with id {vector_id} not found in collection {self.collection_name}")
+                raise ValueError(
+                    f"Vector with id {vector_id} not found in collection {self.collection_name}"
+                )
             if vector is None:
                 vector = existing[0].get("vectors")
                 if vector is None:
@@ -360,7 +379,9 @@ class MilvusDB(VectorStoreBase):
             List[OutputData]: List of vectors.
         """
         query_filter = self._create_filter(filters) if filters else None
-        result = self.client.query(collection_name=self.collection_name, filter=query_filter, limit=top_k)
+        result = self.client.query(
+            collection_name=self.collection_name, filter=query_filter, limit=top_k
+        )
         memories = []
         for data in result:
             obj = OutputData(id=data.get("id"), score=None, payload=data.get("metadata"))

@@ -349,7 +349,9 @@ class MemoryClient:
         elif isinstance(messages, dict):
             messages = [messages]
         elif not isinstance(messages, list):
-            raise ValueError(f"messages must be str, dict, or list[dict], got {type(messages).__name__}")
+            raise ValueError(
+                f"messages must be str, dict, or list[dict], got {type(messages).__name__}"
+            )
 
         kwargs = self._prepare_params(kwargs)
         payload = self._prepare_payload(messages, kwargs)
@@ -379,7 +381,9 @@ class MemoryClient:
             MemoryNotFoundError: If the memory doesn't exist (for updates/deletes).
         """
         params = self._prepare_params()
-        response = self.client.get(f"/v1/memories/{_encode_path_segment(memory_id)}/", params=params)
+        response = self.client.get(
+            f"/v1/memories/{_encode_path_segment(memory_id)}/", params=params
+        )
         response.raise_for_status()
         capture_client_event("client.get", self, {"memory_id": memory_id, "sync_type": "sync"})
         return response.json()
@@ -433,7 +437,9 @@ class MemoryClient:
         return response.json()
 
     @api_error_handler
-    def search(self, query: str, options: Optional[SearchMemoryOptions] = None, **kwargs) -> Dict[str, Any]:
+    def search(
+        self, query: str, options: Optional[SearchMemoryOptions] = None, **kwargs
+    ) -> Dict[str, Any]:
         """Search memories based on a query.
 
         Args:
@@ -516,7 +522,9 @@ class MemoryClient:
 
         capture_client_event("client.update", self, {"memory_id": memory_id, "sync_type": "sync"})
         params = self._prepare_params()
-        response = self.client.put(f"/v1/memories/{_encode_path_segment(memory_id)}/", json=payload, params=params)
+        response = self.client.put(
+            f"/v1/memories/{_encode_path_segment(memory_id)}/", json=payload, params=params
+        )
         response.raise_for_status()
         return response.json()
 
@@ -544,15 +552,21 @@ class MemoryClient:
             MemoryNotFoundError: If the memory doesn't exist (for updates/deletes).
         """
         params = self._prepare_params({"delete_linked": delete_linked or None})
-        response = self.client.delete(f"/v1/memories/{_encode_path_segment(memory_id)}/", params=params)
+        response = self.client.delete(
+            f"/v1/memories/{_encode_path_segment(memory_id)}/", params=params
+        )
         response.raise_for_status()
         capture_client_event(
-            "client.delete", self, {"memory_id": memory_id, "delete_linked": delete_linked, "sync_type": "sync"}
+            "client.delete",
+            self,
+            {"memory_id": memory_id, "delete_linked": delete_linked, "sync_type": "sync"},
         )
         return response.json()
 
     @api_error_handler
-    def delete_all(self, options: Optional[DeleteAllMemoryOptions] = None, **kwargs) -> Dict[str, str]:
+    def delete_all(
+        self, options: Optional[DeleteAllMemoryOptions] = None, **kwargs
+    ) -> Dict[str, str]:
         """Delete all memories for the given entity IDs.
 
         Args:
@@ -604,7 +618,9 @@ class MemoryClient:
             MemoryNotFoundError: If the memory doesn't exist (for updates/deletes).
         """
         params = self._prepare_params()
-        response = self.client.get(f"/v1/memories/{_encode_path_segment(memory_id)}/history/", params=params)
+        response = self.client.get(
+            f"/v1/memories/{_encode_path_segment(memory_id)}/history/", params=params
+        )
         response.raise_for_status()
         capture_client_event("client.history", self, {"memory_id": memory_id, "sync_type": "sync"})
         return response.json()
@@ -644,7 +660,9 @@ class MemoryClient:
             MemoryNotFoundError: If the entity doesn't exist.
             NetworkError: If network connectivity issues occur.
         """
-        _reject_blank_entity_ids({"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id})
+        _reject_blank_entity_ids(
+            {"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id}
+        )
 
         if user_id:
             to_delete = [{"type": "user", "name": user_id}]
@@ -657,7 +675,9 @@ class MemoryClient:
         else:
             entities = self.users()
             # Filter entities based on provided IDs using list comprehension
-            to_delete = [{"type": entity["type"], "name": entity["name"]} for entity in entities["results"]]
+            to_delete = [
+                {"type": entity["type"], "name": entity["name"]} for entity in entities["results"]
+            ]
 
         params = self._prepare_params()
 
@@ -853,7 +873,9 @@ class MemoryClient:
         return response.json()
 
     @api_error_handler
-    def generate_profile(self, entity_id: str, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+    def generate_profile(
+        self, entity_id: str, idempotency_key: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Generate or refresh the profile for a single user, now.
 
         Profiles are otherwise built once a user crosses an internal message
@@ -941,7 +963,9 @@ class MemoryClient:
         return response.json()
 
     @api_error_handler
-    def sample_profiles(self, limit: Optional[int] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+    def sample_profiles(
+        self, limit: Optional[int] = None, idempotency_key: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Generate profiles for a few real users, to check a schema.
 
         Real generations against real memories, and the results are kept. The
@@ -1020,7 +1044,9 @@ class MemoryClient:
             "instead."
         )
         if not (self.org_id and self.project_id):
-            raise ValueError("org_id and project_id must be set to access instructions or categories")
+            raise ValueError(
+                "org_id and project_id must be set to access instructions or categories"
+            )
 
         params = self._prepare_params({"fields": fields})
         response = self.client.get(
@@ -1068,7 +1094,9 @@ class MemoryClient:
             "Please use the client.project.update() method instead."
         )
         if not (self.org_id and self.project_id):
-            raise ValueError("org_id and project_id must be set to update instructions or categories")
+            raise ValueError(
+                "org_id and project_id must be set to update instructions or categories"
+            )
 
         kwargs = {
             **(options.model_dump(exclude_unset=True) if options else {}),
@@ -1140,7 +1168,9 @@ class MemoryClient:
         return response.json()
 
     @api_error_handler
-    def create_webhook(self, url: str, name: str, project_id: str, event_types: List[str]) -> Dict[str, Any]:
+    def create_webhook(
+        self, url: str, name: str, project_id: str, event_types: List[str]
+    ) -> Dict[str, Any]:
         """Create a webhook for the current project.
 
         Args:
@@ -1195,10 +1225,16 @@ class MemoryClient:
             MemoryNotFoundError: If the memory doesn't exist (for updates/deletes).
         """
 
-        payload = {k: v for k, v in {"name": name, "url": url, "event_types": event_types}.items() if v is not None}
+        payload = {
+            k: v
+            for k, v in {"name": name, "url": url, "event_types": event_types}.items()
+            if v is not None
+        }
         response = self.client.put(f"api/v1/webhooks/{webhook_id}/", json=payload)
         response.raise_for_status()
-        capture_client_event("client.update_webhook", self, {"webhook_id": webhook_id, "sync_type": "sync"})
+        capture_client_event(
+            "client.update_webhook", self, {"webhook_id": webhook_id, "sync_type": "sync"}
+        )
         return response.json()
 
     @api_error_handler
@@ -1253,7 +1289,9 @@ class MemoryClient:
         capture_client_event("client.feedback", self, {**data, "sync_type": "sync"})
         return response.json()
 
-    def _prepare_payload(self, messages: List[Dict[str, str]], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_payload(
+        self, messages: List[Dict[str, str]], kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Prepare the payload for API requests.
 
         Args:
@@ -1379,7 +1417,9 @@ class AsyncMemoryClient:
                 error_message = str(e)
             raise ValueError(f"Error: {error_message}")
 
-    def _prepare_payload(self, messages: List[Dict[str, str]], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_payload(
+        self, messages: List[Dict[str, str]], kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Prepare the payload for API requests.
 
         Args:
@@ -1419,7 +1459,9 @@ class AsyncMemoryClient:
         await self.async_client.aclose()
 
     @api_error_handler
-    async def add(self, messages, options: Optional[AddMemoryOptions] = None, **kwargs) -> Dict[str, Any]:
+    async def add(
+        self, messages, options: Optional[AddMemoryOptions] = None, **kwargs
+    ) -> Dict[str, Any]:
         """Add a new memory.
 
         Args:
@@ -1450,7 +1492,9 @@ class AsyncMemoryClient:
         elif isinstance(messages, dict):
             messages = [messages]
         elif not isinstance(messages, list):
-            raise ValueError(f"messages must be str, dict, or list[dict], got {type(messages).__name__}")
+            raise ValueError(
+                f"messages must be str, dict, or list[dict], got {type(messages).__name__}"
+            )
 
         kwargs = self._prepare_params(kwargs)
         payload = self._prepare_payload(messages, kwargs)
@@ -1458,19 +1502,25 @@ class AsyncMemoryClient:
         response.raise_for_status()
         if "metadata" in kwargs:
             del kwargs["metadata"]
-        capture_client_event("client.add", self, {"keys": list(kwargs.keys()), "sync_type": "async"})
+        capture_client_event(
+            "client.add", self, {"keys": list(kwargs.keys()), "sync_type": "async"}
+        )
         return response.json()
 
     @api_error_handler
     async def get(self, memory_id: str) -> Dict[str, Any]:
         params = self._prepare_params()
-        response = await self.async_client.get(f"/v1/memories/{_encode_path_segment(memory_id)}/", params=params)
+        response = await self.async_client.get(
+            f"/v1/memories/{_encode_path_segment(memory_id)}/", params=params
+        )
         response.raise_for_status()
         capture_client_event("client.get", self, {"memory_id": memory_id, "sync_type": "async"})
         return response.json()
 
     @api_error_handler
-    async def get_all(self, options: Optional[GetAllMemoryOptions] = None, **kwargs) -> Dict[str, Any]:
+    async def get_all(
+        self, options: Optional[GetAllMemoryOptions] = None, **kwargs
+    ) -> Dict[str, Any]:
         """Retrieve all memories, with optional filtering.
 
         Args:
@@ -1501,7 +1551,9 @@ class AsyncMemoryClient:
 
         query_params = {key: params.pop(key) for key in ("page", "page_size") if key in params}
         if query_params:
-            response = await self.async_client.post("/v3/memories/", json=params, params=query_params)
+            response = await self.async_client.post(
+                "/v3/memories/", json=params, params=query_params
+            )
         else:
             response = await self.async_client.post("/v3/memories/", json=params)
         response.raise_for_status()
@@ -1518,7 +1570,9 @@ class AsyncMemoryClient:
         return response.json()
 
     @api_error_handler
-    async def search(self, query: str, options: Optional[SearchMemoryOptions] = None, **kwargs) -> Dict[str, Any]:
+    async def search(
+        self, query: str, options: Optional[SearchMemoryOptions] = None, **kwargs
+    ) -> Dict[str, Any]:
         """Search memories based on a query.
 
         Args:
@@ -1631,15 +1685,21 @@ class AsyncMemoryClient:
             MemoryNotFoundError: If the memory doesn't exist (for updates/deletes).
         """
         params = self._prepare_params({"delete_linked": delete_linked or None})
-        response = await self.async_client.delete(f"/v1/memories/{_encode_path_segment(memory_id)}/", params=params)
+        response = await self.async_client.delete(
+            f"/v1/memories/{_encode_path_segment(memory_id)}/", params=params
+        )
         response.raise_for_status()
         capture_client_event(
-            "client.delete", self, {"memory_id": memory_id, "delete_linked": delete_linked, "sync_type": "async"}
+            "client.delete",
+            self,
+            {"memory_id": memory_id, "delete_linked": delete_linked, "sync_type": "async"},
         )
         return response.json()
 
     @api_error_handler
-    async def delete_all(self, options: Optional[DeleteAllMemoryOptions] = None, **kwargs) -> Dict[str, str]:
+    async def delete_all(
+        self, options: Optional[DeleteAllMemoryOptions] = None, **kwargs
+    ) -> Dict[str, str]:
         """Delete all memories for the given entity IDs.
 
         Args:
@@ -1665,7 +1725,9 @@ class AsyncMemoryClient:
         params = self._prepare_params(kwargs)
         response = await self.async_client.delete("/v1/memories/", params=params)
         response.raise_for_status()
-        capture_client_event("client.delete_all", self, {"keys": list(kwargs.keys()), "sync_type": "async"})
+        capture_client_event(
+            "client.delete_all", self, {"keys": list(kwargs.keys()), "sync_type": "async"}
+        )
         return response.json()
 
     @api_error_handler
@@ -1730,7 +1792,9 @@ class AsyncMemoryClient:
             MemoryNotFoundError: If the entity doesn't exist.
             NetworkError: If network connectivity issues occur.
         """
-        _reject_blank_entity_ids({"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id})
+        _reject_blank_entity_ids(
+            {"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id}
+        )
 
         if user_id:
             to_delete = [{"type": "user", "name": user_id}]
@@ -1743,7 +1807,9 @@ class AsyncMemoryClient:
         else:
             entities = await self.users()
             # Filter entities based on provided IDs using list comprehension
-            to_delete = [{"type": entity["type"], "name": entity["name"]} for entity in entities["results"]]
+            to_delete = [
+                {"type": entity["type"], "name": entity["name"]} for entity in entities["results"]
+            ]
 
         params = self._prepare_params()
 
@@ -1844,7 +1910,9 @@ class AsyncMemoryClient:
             NetworkError: If network connectivity issues occur.
             MemoryNotFoundError: If the memory doesn't exist (for updates/deletes).
         """
-        response = await self.async_client.request("DELETE", "/v1/batch/", json={"memories": memories})
+        response = await self.async_client.request(
+            "DELETE", "/v1/batch/", json={"memories": memories}
+        )
         response.raise_for_status()
 
         capture_client_event("client.batch_delete", self, {"sync_type": "async"})
@@ -1861,10 +1929,14 @@ class AsyncMemoryClient:
         Returns:
             Dict containing export request ID and status message
         """
-        response = await self.async_client.post("/v1/exports/", json={"schema": schema, **self._prepare_params(kwargs)})
+        response = await self.async_client.post(
+            "/v1/exports/", json={"schema": schema, **self._prepare_params(kwargs)}
+        )
         response.raise_for_status()
         capture_client_event(
-            "client.create_memory_export", self, {"schema": schema, "keys": list(kwargs.keys()), "sync_type": "async"}
+            "client.create_memory_export",
+            self,
+            {"schema": schema, "keys": list(kwargs.keys()), "sync_type": "async"},
         )
         return response.json()
 
@@ -1878,9 +1950,13 @@ class AsyncMemoryClient:
         Returns:
             Dict containing the exported data
         """
-        response = await self.async_client.post("/v1/exports/get/", json=self._prepare_params(kwargs))
+        response = await self.async_client.post(
+            "/v1/exports/get/", json=self._prepare_params(kwargs)
+        )
         response.raise_for_status()
-        capture_client_event("client.get_memory_export", self, {"keys": list(kwargs.keys()), "sync_type": "async"})
+        capture_client_event(
+            "client.get_memory_export", self, {"keys": list(kwargs.keys()), "sync_type": "async"}
+        )
         return response.json()
 
     @api_error_handler
@@ -1894,7 +1970,9 @@ class AsyncMemoryClient:
             Dict containing the export status and summary data
         """
 
-        response = await self.async_client.post("/v1/summary/", json=self._prepare_params({"filters": filters}))
+        response = await self.async_client.post(
+            "/v1/summary/", json=self._prepare_params({"filters": filters})
+        )
         response.raise_for_status()
         capture_client_event("client.get_summary", self, {"sync_type": "async"})
         return response.json()
@@ -1919,13 +1997,17 @@ class AsyncMemoryClient:
             NotFoundError: If no such user exists in the project.
         """
 
-        response = await self.async_client.get(f"/v2/entities/user/{_encode_path_segment(entity_id)}/profile/")
+        response = await self.async_client.get(
+            f"/v2/entities/user/{_encode_path_segment(entity_id)}/profile/"
+        )
         response.raise_for_status()
         capture_client_event("client.get_profile", self, {"sync_type": "async"})
         return response.json()
 
     @api_error_handler
-    async def generate_profile(self, entity_id: str, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+    async def generate_profile(
+        self, entity_id: str, idempotency_key: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Generate or refresh the profile for a single user, now.
 
         Profiles are otherwise built once a user crosses an internal message
@@ -2094,7 +2176,9 @@ class AsyncMemoryClient:
             "instead."
         )
         if not (self.org_id and self.project_id):
-            raise ValueError("org_id and project_id must be set to access instructions or categories")
+            raise ValueError(
+                "org_id and project_id must be set to access instructions or categories"
+            )
 
         params = self._prepare_params({"fields": fields})
         response = await self.async_client.get(
@@ -2138,7 +2222,9 @@ class AsyncMemoryClient:
             "Please use the client.project.update() method instead."
         )
         if not (self.org_id and self.project_id):
-            raise ValueError("org_id and project_id must be set to update instructions or categories")
+            raise ValueError(
+                "org_id and project_id must be set to update instructions or categories"
+            )
 
         kwargs = {
             **(options.model_dump(exclude_unset=True) if options else {}),
@@ -2210,7 +2296,9 @@ class AsyncMemoryClient:
         return response.json()
 
     @api_error_handler
-    async def create_webhook(self, url: str, name: str, project_id: str, event_types: List[str]) -> Dict[str, Any]:
+    async def create_webhook(
+        self, url: str, name: str, project_id: str, event_types: List[str]
+    ) -> Dict[str, Any]:
         """Create a webhook for the current project.
 
         Args:
@@ -2232,7 +2320,9 @@ class AsyncMemoryClient:
         """
 
         payload = {"url": url, "name": name, "event_types": event_types}
-        response = await self.async_client.post(f"api/v1/webhooks/projects/{project_id}/", json=payload)
+        response = await self.async_client.post(
+            f"api/v1/webhooks/projects/{project_id}/", json=payload
+        )
         response.raise_for_status()
         capture_client_event("client.create_webhook", self, {"sync_type": "async"})
         return response.json()
@@ -2265,10 +2355,16 @@ class AsyncMemoryClient:
             MemoryNotFoundError: If the memory doesn't exist (for updates/deletes).
         """
 
-        payload = {k: v for k, v in {"name": name, "url": url, "event_types": event_types}.items() if v is not None}
+        payload = {
+            k: v
+            for k, v in {"name": name, "url": url, "event_types": event_types}.items()
+            if v is not None
+        }
         response = await self.async_client.put(f"api/v1/webhooks/{webhook_id}/", json=payload)
         response.raise_for_status()
-        capture_client_event("client.update_webhook", self, {"webhook_id": webhook_id, "sync_type": "async"})
+        capture_client_event(
+            "client.update_webhook", self, {"webhook_id": webhook_id, "sync_type": "async"}
+        )
         return response.json()
 
     @api_error_handler
@@ -2292,7 +2388,9 @@ class AsyncMemoryClient:
 
         response = await self.async_client.delete(f"api/v1/webhooks/{webhook_id}/")
         response.raise_for_status()
-        capture_client_event("client.delete_webhook", self, {"webhook_id": webhook_id, "sync_type": "async"})
+        capture_client_event(
+            "client.delete_webhook", self, {"webhook_id": webhook_id, "sync_type": "async"}
+        )
         return response.json()
 
     @api_error_handler

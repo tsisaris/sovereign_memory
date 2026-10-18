@@ -9,7 +9,9 @@ from pydantic import BaseModel
 try:
     from langchain_aws import NeptuneAnalyticsGraph
 except ImportError:
-    raise ImportError("langchain_aws is not installed. Please install it using pip install langchain_aws")
+    raise ImportError(
+        "langchain_aws is not installed. Please install it using pip install langchain_aws"
+    )
 
 from mem0.vector_stores.base import VectorStoreBase
 
@@ -24,13 +26,13 @@ def _validate_filter(key: str, value: Any) -> None:
         raise ValueError(f"Invalid filter key: {key!r}")
     if not isinstance(value, (str, int, float, bool)):
         raise ValueError(
-            f"Filter value for {key!r} must be str, int, float, or bool, "
-            f"got {type(value).__name__}"
+            f"Filter value for {key!r} must be str, int, float, or bool, got {type(value).__name__}"
         )
 
 
 def _escape_cypher(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
+
 
 class OutputData(BaseModel):
     id: Optional[str]  # memory id
@@ -47,12 +49,12 @@ class NeptuneAnalyticsVector(VectorStoreBase):
     """
 
     _COLLECTION_PREFIX = "MEM0_VECTOR_"
-    _FIELD_N = 'n'
-    _FIELD_ID = '~id'
-    _FIELD_PROP = '~properties'
-    _FIELD_SCORE = 'score'
-    _FIELD_LABEL = 'label'
-    _TIMEZONE =  "UTC"
+    _FIELD_N = "n"
+    _FIELD_ID = "~id"
+    _FIELD_PROP = "~properties"
+    _FIELD_SCORE = "score"
+    _FIELD_LABEL = "label"
+    _TIMEZONE = "UTC"
 
     def __init__(
         self,
@@ -72,7 +74,9 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         """
 
         if not endpoint.startswith("neptune-graph://"):
-            raise ValueError("Please provide 'endpoint' with the format as 'neptune-graph://<graphid>'.")
+            raise ValueError(
+                "Please provide 'endpoint' with the format as 'neptune-graph://<graphid>'."
+            )
 
         if not _VALID_IDENTIFIER.match(collection_name):
             raise ValueError(
@@ -83,7 +87,6 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         graph_id = endpoint.replace("neptune-graph://", "")
         self.graph = NeptuneAnalyticsGraph(graph_id)
         self.collection_name = self._COLLECTION_PREFIX + collection_name
-
 
     def create_col(self, name, vector_size, distance):
         """
@@ -99,10 +102,12 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         """
         pass
 
-
-    def insert(self, vectors: List[list],
+    def insert(
+        self,
+        vectors: List[list],
         payloads: Optional[List[Dict]] = None,
-        ids: Optional[List[str]] = None):
+        ids: Optional[List[str]] = None,
+    ):
         """
         Insert vectors into the collection.
 
@@ -123,25 +128,25 @@ class NeptuneAnalyticsVector(VectorStoreBase):
                 payload["updated_at"] = str(int(time.time()))
             else:
                 payload = {}
-            para_list.append(dict(
-                node_id=ids[index] if ids else str(uuid.uuid4()),
-                properties=payload,
-                embedding=data_vector,
-            ))
+            para_list.append(
+                dict(
+                    node_id=ids[index] if ids else str(uuid.uuid4()),
+                    properties=payload,
+                    embedding=data_vector,
+                )
+            )
 
         para_map_to_insert = {"rows": para_list}
 
-        query_string = (f"""
+        query_string = f"""
             UNWIND $rows AS row
             MERGE (n :{self.collection_name} {{`~id`: row.node_id}})
             ON CREATE SET n = row.properties
             ON MATCH SET n += row.properties
         """
-        )
         self.execute_query(query_string, para_map_to_insert)
 
-
-        query_string_vector = (f"""
+        query_string_vector = f"""
             UNWIND $rows AS row
             MATCH (n
             :{self.collection_name}
@@ -151,13 +156,11 @@ class NeptuneAnalyticsVector(VectorStoreBase):
             YIELD success
             RETURN success
         """
-        )
         result = self.execute_query(query_string_vector, para_map_to_insert)
         self._process_success_message(result, "Vector store - Insert")
 
-
     def search(
-            self, query: str, vectors: List[float], top_k: int = 5, filters: Optional[Dict] = None
+        self, query: str, vectors: List[float], top_k: int = 5, filters: Optional[Dict] = None
     ) -> List[OutputData]:
         """
         Search for similar vectors using embedding similarity.
@@ -194,9 +197,8 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         query_response = self.execute_query(query_string)
         if len(query_response) > 0:
             return self._parse_query_responses(query_response, with_score=True)
-        else :
+        else:
             return []
-
 
     def delete(self, vector_id: str):
         """
@@ -216,10 +218,10 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         self.execute_query(query_string, params)
 
     def update(
-            self,
-            vector_id: str,
-            vector: Optional[List[float]] = None,
-            payload: Optional[Dict] = None,
+        self,
+        vector_id: str,
+        vector: Optional[List[float]] = None,
+        payload: Optional[Dict] = None,
     ):
         """
         Update a vector's embedding and/or metadata.
@@ -251,10 +253,7 @@ class NeptuneAnalyticsVector(VectorStoreBase):
             # Replace payload
             payload[self._FIELD_LABEL] = self.collection_name
             payload["updated_at"] = str(int(time.time()))
-            para_payload = {
-                "properties": payload,
-                "vector_id": vector_id
-            }
+            para_payload = {"properties": payload, "vector_id": vector_id}
             query_string_embedding = f"""
             MATCH (n :{self.collection_name})
                 WHERE id(n) = $vector_id
@@ -263,10 +262,7 @@ class NeptuneAnalyticsVector(VectorStoreBase):
             self.execute_query(query_string_embedding, para_payload)
 
         if vector:
-            para_embedding = {
-                "embedding": vector,
-                "vector_id": vector_id
-            }
+            para_embedding = {"embedding": vector, "vector_id": vector_id}
             query_string_embedding = f"""
             MATCH (n :{self.collection_name})
                 WHERE id(n) = $vector_id
@@ -283,7 +279,9 @@ class NeptuneAnalyticsVector(VectorStoreBase):
                 # _process_success_message only logs, so it cannot drive the rollback).
                 for row in result or []:
                     if "success" in row and row["success"] is not True:
-                        raise RuntimeError(f"Neptune Analytics update upsert reported failure for {vector_id}")
+                        raise RuntimeError(
+                            f"Neptune Analytics update upsert reported failure for {vector_id}"
+                        )
             except Exception:
                 if prior_properties is not None:
                     try:
@@ -302,8 +300,6 @@ class NeptuneAnalyticsVector(VectorStoreBase):
                             "after a failed vector upsert"
                         )
                 raise
-
-
 
     def get(self, vector_id: str):
         """
@@ -330,7 +326,6 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         if len(result) != 0:
             return self._parse_query_responses(result)[0]
 
-
     def list_cols(self):
         """
         List all collections with the Mem0 prefix.
@@ -352,7 +347,6 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         else:
             return []
 
-
     def delete_col(self):
         """
         Delete the entire collection.
@@ -362,7 +356,6 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         """
         self.execute_query(f"MATCH (n :{self.collection_name}) DETACH DELETE n")
 
-
     def col_info(self):
         """
         Get collection information (no-op for Neptune Analytics).
@@ -371,7 +364,6 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         collection-specific metadata is available.
         """
         pass
-
 
     def list(self, filters: Optional[Dict] = None, top_k: int = 100) -> List[OutputData]:
         """
@@ -404,7 +396,6 @@ class NeptuneAnalyticsVector(VectorStoreBase):
             return [self._parse_query_responses(query_response)]
         return [[]]
 
-
     def reset(self):
         """
         Reset the collection by deleting all vectors.
@@ -412,7 +403,6 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         Removes all vectors from the collection, effectively resetting it to empty state.
         """
         self.delete_col()
-
 
     def _parse_query_responses(self, response: dict, with_score: bool = False):
         """
@@ -435,13 +425,14 @@ class NeptuneAnalyticsVector(VectorStoreBase):
                 score = item[self._FIELD_SCORE]
             else:
                 score = None
-            result.append(OutputData(
-                id=id,
-                score=score,
-                payload=properties,
-            ))
+            result.append(
+                OutputData(
+                    id=id,
+                    score=score,
+                    payload=properties,
+                )
+            )
         return result
-
 
     def execute_query(self, query_string: str, params=None):
         """
@@ -461,7 +452,6 @@ class NeptuneAnalyticsVector(VectorStoreBase):
             params = {}
         logger.debug(f"Executing openCypher query:[{query_string}], with parameters:[{params}].")
         return self.graph.query(query_string, params)
-
 
     @staticmethod
     def _get_where_clause(filters: dict):
@@ -512,7 +502,6 @@ class NeptuneAnalyticsVector(VectorStoreBase):
                   """
         return filter_clause
 
-
     @staticmethod
     def _process_success_message(response, context):
         """
@@ -531,5 +520,7 @@ class NeptuneAnalyticsVector(VectorStoreBase):
                 break
 
             if success_message["success"] is not True:
-                logger.error(f"Abnormal response status on action: [{context}] with message: [{success_message['success']}] ")
+                logger.error(
+                    f"Abnormal response status on action: [{context}] with message: [{success_message['success']}] "
+                )
                 break

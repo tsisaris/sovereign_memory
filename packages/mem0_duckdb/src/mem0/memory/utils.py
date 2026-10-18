@@ -87,6 +87,7 @@ def format_entities(entities):
 
     return "\n".join(formatted_lines)
 
+
 def normalize_facts(raw_facts):
     """Normalize LLM-extracted facts to a list of strings.
 
@@ -133,9 +134,8 @@ def remove_code_blocks(content: str) -> str:
         return ""
     pattern = r"^```[a-zA-Z0-9]*\n([\s\S]*?)\n```$"
     match = re.match(pattern, content.strip())
-    match_res=match.group(1).strip() if match else content.strip()
+    match_res = match.group(1).strip() if match else content.strip()
     return re.sub(r"<think>.*?</think>", "", match_res, flags=re.DOTALL).strip()
-
 
 
 def extract_json(text):
@@ -172,7 +172,10 @@ def get_image_description(image_obj, llm, vision_details):
                         "type": "text",
                         "text": "A user is providing an image. Provide a high level description of the image and do not include any additional text.",
                     },
-                    {"type": "image_url", "image_url": {"url": image_obj, "detail": vision_details}},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_obj, "detail": vision_details},
+                    },
                 ],
             },
         ]
@@ -204,7 +207,8 @@ def parse_vision_messages(messages, llm=None, vision_details="auto"):
         if isinstance(content, list):
             if llm is None:
                 text_parts = [
-                    part["text"] for part in msg["content"]
+                    part["text"]
+                    for part in msg["content"]
                     if isinstance(part, dict) and part.get("type") == "text"
                 ]
                 if not text_parts:
@@ -323,7 +327,9 @@ def remove_spaces_from_entities(
             continue
         item["source"] = item["source"].lower().replace(" ", "_")
         rel = item["relationship"].lower().replace(" ", "_")
-        item["relationship"] = sanitize_relationship_for_cypher(rel) if sanitize_relationship else rel
+        item["relationship"] = (
+            sanitize_relationship_for_cypher(rel) if sanitize_relationship else rel
+        )
         item["destination"] = item["destination"].lower().replace(" ", "_")
         cleaned.append(item)
     return cleaned

@@ -100,9 +100,13 @@ class Completions:
         prepared_messages = self._prepare_messages(messages)
         if prepared_messages[-1]["role"] == "user":
             self._async_add_to_memory(messages, user_id, agent_id, run_id, metadata)
-            relevant_memories = self._fetch_relevant_memories(messages, user_id, agent_id, run_id, filters, top_k)
+            relevant_memories = self._fetch_relevant_memories(
+                messages, user_id, agent_id, run_id, filters, top_k
+            )
             logger.debug(f"Retrieved {len(relevant_memories)} relevant memories")
-            prepared_messages[-1]["content"] = self._format_query_with_memories(messages, relevant_memories)
+            prepared_messages[-1]["content"] = self._format_query_with_memories(
+                messages, relevant_memories
+            )
 
         response = litellm.completion(
             model=model,

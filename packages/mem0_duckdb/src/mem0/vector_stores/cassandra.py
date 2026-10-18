@@ -20,7 +20,7 @@ from mem0.vector_stores.base import VectorStoreBase
 
 logger = logging.getLogger(__name__)
 
-_SAFE_IDENTIFIER_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]{0,127}$')
+_SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,127}$")
 
 
 def _validate_identifier(name: str, label: str = "identifier") -> str:
@@ -94,30 +94,29 @@ class CassandraDB(VectorStoreBase):
             auth_provider = None
             if self.username and self.password:
                 auth_provider = PlainTextAuthProvider(
-                    username=self.username,
-                    password=self.password
+                    username=self.username, password=self.password
                 )
 
             # Connect to Astra DB using secure connect bundle
             if self.secure_connect_bundle:
                 self.cluster = Cluster(
-                    cloud={'secure_connect_bundle': self.secure_connect_bundle},
+                    cloud={"secure_connect_bundle": self.secure_connect_bundle},
                     auth_provider=auth_provider,
-                    protocol_version=self.protocol_version
+                    protocol_version=self.protocol_version,
                 )
             else:
                 # Connect to standard Cassandra cluster
                 cluster_kwargs = {
-                    'contact_points': self.contact_points,
-                    'port': self.port,
-                    'protocol_version': self.protocol_version
+                    "contact_points": self.contact_points,
+                    "port": self.port,
+                    "protocol_version": self.protocol_version,
                 }
 
                 if auth_provider:
-                    cluster_kwargs['auth_provider'] = auth_provider
+                    cluster_kwargs["auth_provider"] = auth_provider
 
                 if self.load_balancing_policy:
-                    cluster_kwargs['load_balancing_policy'] = self.load_balancing_policy
+                    cluster_kwargs["load_balancing_policy"] = self.load_balancing_policy
 
                 self.cluster = Cluster(**cluster_kwargs)
 
@@ -189,7 +188,7 @@ class CassandraDB(VectorStoreBase):
         self,
         vectors: List[List[float]],
         payloads: Optional[List[Dict]] = None,
-        ids: Optional[List[str]] = None
+        ids: Optional[List[str]] = None,
     ):
         """
         Insert vectors into the collection.
@@ -214,10 +213,7 @@ class CassandraDB(VectorStoreBase):
             prepared = self.session.prepare(query)
 
             for vector, payload, vec_id in zip(vectors, payloads, ids):
-                self.session.execute(
-                    prepared,
-                    (vec_id, vector, json.dumps(payload))
-                )
+                self.session.execute(prepared, (vec_id, vector, json.dumps(payload)))
         except Exception as e:
             logger.error(f"Failed to insert vectors: {e}")
             raise
@@ -259,7 +255,9 @@ class CassandraDB(VectorStoreBase):
 
                 vec = np.array(row.vector)
 
-                similarity = float(np.dot(query_vec, vec) / (np.linalg.norm(query_vec) * np.linalg.norm(vec)))
+                similarity = float(
+                    np.dot(query_vec, vec) / (np.linalg.norm(query_vec) * np.linalg.norm(vec))
+                )
 
                 # Apply filters if provided
                 if filters:
@@ -277,11 +275,7 @@ class CassandraDB(VectorStoreBase):
             scored_results = scored_results[:top_k]
 
             return [
-                OutputData(
-                    id=r[0],
-                    score=float(r[1]),
-                    payload=json.loads(r[2]) if r[2] else {}
-                )
+                OutputData(id=r[0], score=float(r[1]), payload=json.loads(r[2]) if r[2] else {})
                 for r in scored_results
             ]
         except Exception as e:
@@ -368,9 +362,7 @@ class CassandraDB(VectorStoreBase):
                 return None
 
             return OutputData(
-                id=row.id,
-                score=None,
-                payload=json.loads(row.payload) if row.payload else {}
+                id=row.id, score=None, payload=json.loads(row.payload) if row.payload else {}
             )
         except Exception as e:
             logger.error(f"Failed to get vector: {e}")
@@ -425,17 +417,13 @@ class CassandraDB(VectorStoreBase):
                 "name": self.collection_name,
                 "keyspace": self.keyspace,
                 "count": count,
-                "vector_dims": self.embedding_model_dims
+                "vector_dims": self.embedding_model_dims,
             }
         except Exception as e:
             logger.error(f"Failed to get collection info: {e}")
             return {}
 
-    def list(
-        self,
-        filters: Optional[Dict] = None,
-        top_k: int = 100
-    ) -> List[List[OutputData]]:
+    def list(self, filters: Optional[Dict] = None, top_k: int = 100) -> List[List[OutputData]]:
         """
         List all vectors in the collection.
 
@@ -470,7 +458,7 @@ class CassandraDB(VectorStoreBase):
                     OutputData(
                         id=row.id,
                         score=None,
-                        payload=json.loads(row.payload) if row.payload else {}
+                        payload=json.loads(row.payload) if row.payload else {},
                     )
                 )
 

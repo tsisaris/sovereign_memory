@@ -7,10 +7,12 @@ class FAISSConfig(BaseModel):
     collection_name: str = Field("mem0", description="Default name for the collection")
     path: Optional[str] = Field(None, description="Path to store FAISS index and metadata")
     distance_strategy: str = Field(
-        "euclidean", description="Distance strategy to use. Options: 'euclidean', 'inner_product', 'cosine'"
+        "euclidean",
+        description="Distance strategy to use. Options: 'euclidean', 'inner_product', 'cosine'",
     )
     normalize_L2: bool = Field(
-        False, description="Whether to normalize L2 vectors (only applicable for euclidean distance)"
+        False,
+        description="Whether to normalize L2 vectors (only applicable for euclidean distance)",
     )
     embedding_model_dims: int = Field(1536, description="Dimension of the embedding vector")
 
@@ -19,7 +21,9 @@ class FAISSConfig(BaseModel):
     def validate_distance_strategy(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         distance_strategy = values.get("distance_strategy")
         if distance_strategy and distance_strategy not in ["euclidean", "inner_product", "cosine"]:
-            raise ValueError("Invalid distance_strategy. Must be one of: 'euclidean', 'inner_product', 'cosine'")
+            raise ValueError(
+                "Invalid distance_strategy. Must be one of: 'euclidean', 'inner_product', 'cosine'"
+            )
         return values
 
     @model_validator(mode="before")

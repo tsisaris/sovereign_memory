@@ -15,9 +15,15 @@ class AzureOpenAIEmbedding(EmbeddingBase):
         super().__init__(config)
 
         api_key = self.config.azure_kwargs.api_key or os.getenv("EMBEDDING_AZURE_OPENAI_API_KEY")
-        azure_deployment = self.config.azure_kwargs.azure_deployment or os.getenv("EMBEDDING_AZURE_DEPLOYMENT")
-        azure_endpoint = self.config.azure_kwargs.azure_endpoint or os.getenv("EMBEDDING_AZURE_ENDPOINT")
-        api_version = self.config.azure_kwargs.api_version or os.getenv("EMBEDDING_AZURE_API_VERSION")
+        azure_deployment = self.config.azure_kwargs.azure_deployment or os.getenv(
+            "EMBEDDING_AZURE_DEPLOYMENT"
+        )
+        azure_endpoint = self.config.azure_kwargs.azure_endpoint or os.getenv(
+            "EMBEDDING_AZURE_ENDPOINT"
+        )
+        api_version = self.config.azure_kwargs.api_version or os.getenv(
+            "EMBEDDING_AZURE_API_VERSION"
+        )
         default_headers = self.config.azure_kwargs.default_headers
 
         # If the API key is not provided or is a placeholder, use DefaultAzureCredential.
@@ -52,7 +58,9 @@ class AzureOpenAIEmbedding(EmbeddingBase):
             list: The embedding vector.
         """
         text = text.replace("\n", " ")
-        return self.client.embeddings.create(input=[text], model=self.config.model).data[0].embedding
+        return (
+            self.client.embeddings.create(input=[text], model=self.config.model).data[0].embedding
+        )
 
     def embed_batch(self, texts, memory_action="add"):
         """Embed multiple texts in a single Azure OpenAI API call.
@@ -68,7 +76,9 @@ class AzureOpenAIEmbedding(EmbeddingBase):
                 input=chunk,
                 model=self.config.model,
             )
-            all_embeddings.extend(item.embedding for item in sorted(response.data, key=lambda x: x.index))
+            all_embeddings.extend(
+                item.embedding for item in sorted(response.data, key=lambda x: x.index)
+            )
         if len(all_embeddings) != len(texts):
             raise ValueError(
                 f"Azure OpenAI embed_batch() returned {len(all_embeddings)} embeddings for {len(texts)} texts"

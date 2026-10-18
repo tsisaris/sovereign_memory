@@ -25,9 +25,9 @@ class VertexAIEmbedding(EmbeddingBase):
         # This supports multiple authentication methods while preserving environment variable support
         try:
             GCPAuthenticator.setup_vertex_ai(
-                service_account_json=getattr(self.config, 'google_service_account_json', None),
+                service_account_json=getattr(self.config, "google_service_account_json", None),
                 credentials_path=self.config.vertex_credentials_json,
-                project_id=getattr(self.config, 'google_project_id', None)
+                project_id=getattr(self.config, "google_project_id", None),
             )
         except Exception:
             # Fall back to original behavior for backward compatibility
@@ -59,7 +59,9 @@ class VertexAIEmbedding(EmbeddingBase):
             embedding_type = self.embedding_types[memory_action]
 
         text_input = TextEmbeddingInput(text=text, task_type=embedding_type)
-        embeddings = self.model.get_embeddings(texts=[text_input], output_dimensionality=self.config.embedding_dims)
+        embeddings = self.model.get_embeddings(
+            texts=[text_input], output_dimensionality=self.config.embedding_dims
+        )
 
         return embeddings[0].values
 
@@ -75,7 +77,9 @@ class VertexAIEmbedding(EmbeddingBase):
         for i in range(0, len(texts), 250):
             chunk = texts[i : i + 250]
             inputs = [TextEmbeddingInput(text=t, task_type=embedding_type) for t in chunk]
-            results = self.model.get_embeddings(texts=inputs, output_dimensionality=self.config.embedding_dims)
+            results = self.model.get_embeddings(
+                texts=inputs, output_dimensionality=self.config.embedding_dims
+            )
             all_embeddings.extend(r.values for r in results)
         if len(all_embeddings) != len(texts):
             raise ValueError(

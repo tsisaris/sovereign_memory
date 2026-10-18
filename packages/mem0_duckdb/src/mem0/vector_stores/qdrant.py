@@ -95,6 +95,7 @@ class Qdrant(VectorStoreBase):
         if self._bm25_encoder is None:
             try:
                 from fastembed import SparseTextEmbedding
+
                 self._bm25_encoder = SparseTextEmbedding(model_name="Qdrant/bm25")
                 logger.info("BM25 encoder loaded (fastembed Qdrant/bm25)")
             except ImportError:
@@ -138,7 +139,9 @@ class Qdrant(VectorStoreBase):
         response = self.list_cols()
         for collection in response.collections:
             if collection.name == self.collection_name:
-                logger.debug(f"Collection {self.collection_name} already exists. Skipping creation.")
+                logger.debug(
+                    f"Collection {self.collection_name} already exists. Skipping creation."
+                )
                 info = self.client.get_collection(self.collection_name)
                 sparse_cfg = info.config.params.sparse_vectors
                 self._has_bm25_slot = bool(sparse_cfg and "bm25" in sparse_cfg)
@@ -175,9 +178,7 @@ class Qdrant(VectorStoreBase):
         for field in common_fields:
             try:
                 self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name=field,
-                    field_schema="keyword"
+                    collection_name=self.collection_name, field_name=field, field_schema="keyword"
                 )
                 logger.info(f"Created index for {field} in collection {self.collection_name}")
             except Exception as e:
@@ -258,8 +259,7 @@ class Qdrant(VectorStoreBase):
     def _is_datetime_range(range_kwargs: dict) -> bool:
         """Check if all values in range kwargs are ISO datetime strings."""
         return all(
-            isinstance(v, str) and Qdrant._ISO_DATETIME_RE.match(v)
-            for v in range_kwargs.values()
+            isinstance(v, str) and Qdrant._ISO_DATETIME_RE.match(v) for v in range_kwargs.values()
         )
 
     def _build_field_condition(self, key: str, value) -> Optional[FieldCondition]:
@@ -449,7 +449,10 @@ class Qdrant(VectorStoreBase):
             return [r.points for r in results]
         except Exception as e:
             logger.warning(f"Batch search failed, falling back to sequential: {e}")
-            return [self.search(q, v, top_k=top_k, filters=filters) for q, v in zip(queries, vectors_list)]
+            return [
+                self.search(q, v, top_k=top_k, filters=filters)
+                for q, v in zip(queries, vectors_list)
+            ]
 
     def keyword_search(self, query, top_k=5, filters=None):
         """
@@ -545,7 +548,9 @@ class Qdrant(VectorStoreBase):
         Returns:
             dict: Retrieved vector.
         """
-        result = self.client.retrieve(collection_name=self.collection_name, ids=[vector_id], with_payload=True)
+        result = self.client.retrieve(
+            collection_name=self.collection_name, ids=[vector_id], with_payload=True
+        )
         return result[0] if result else None
 
     def list_cols(self) -> list:

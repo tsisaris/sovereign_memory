@@ -10,7 +10,9 @@ try:
     import boto3
     from botocore.exceptions import ClientError
 except ImportError:
-    raise ImportError("The 'boto3' library is required. Please install it using 'pip install boto3'.")
+    raise ImportError(
+        "The 'boto3' library is required. Please install it using 'pip install boto3'."
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +59,9 @@ class S3Vectors(VectorStoreBase):
             logger.info(f"Index '{name}' already exists in bucket '{self.vector_bucket_name}'.")
         except ClientError as e:
             if e.response["Error"]["Code"] == "NotFoundException":
-                logger.info(f"Index '{name}' not found in bucket '{self.vector_bucket_name}'. Creating it.")
+                logger.info(
+                    f"Index '{name}' not found in bucket '{self.vector_bucket_name}'. Creating it."
+                )
                 self.client.create_index(
                     vectorBucketName=self.vector_bucket_name,
                     indexName=name,
@@ -142,7 +146,9 @@ class S3Vectors(VectorStoreBase):
         if vector is None:
             existing = self.get(vector_id)
             if existing is None:
-                logger.warning(f"update called with vector=None but {vector_id} not found; skipping")
+                logger.warning(
+                    f"update called with vector=None but {vector_id} not found; skipping"
+                )
                 return
             try:
                 response = self.client.get_vectors(
@@ -185,10 +191,14 @@ class S3Vectors(VectorStoreBase):
         return [idx["indexName"] for idx in response.get("indexes", [])]
 
     def delete_col(self):
-        self.client.delete_index(vectorBucketName=self.vector_bucket_name, indexName=self.collection_name)
+        self.client.delete_index(
+            vectorBucketName=self.vector_bucket_name, indexName=self.collection_name
+        )
 
     def col_info(self):
-        response = self.client.get_index(vectorBucketName=self.vector_bucket_name, indexName=self.collection_name)
+        response = self.client.get_index(
+            vectorBucketName=self.vector_bucket_name, indexName=self.collection_name
+        )
         return response.get("index", {})
 
     def list(self, filters=None, top_k=None):

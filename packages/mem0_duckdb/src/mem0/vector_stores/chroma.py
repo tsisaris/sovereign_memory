@@ -7,7 +7,9 @@ try:
     import chromadb
     from chromadb.config import Settings
 except ImportError:
-    raise ImportError("The 'chromadb' library is required. Please install it using 'pip install chromadb'.")
+    raise ImportError(
+        "The 'chromadb' library is required. Please install it using 'pip install chromadb'."
+    )
 
 from mem0.vector_stores.base import VectorStoreBase
 
@@ -51,7 +53,7 @@ class ChromaDB(VectorStoreBase):
             self.client = chromadb.CloudClient(
                 api_key=api_key,
                 tenant=tenant,
-                database="mem0"  # Use fixed database name for cloud
+                database="mem0",  # Use fixed database name for cloud
             )
         else:
             # Initialize local or server client
@@ -97,12 +99,20 @@ class ChromaDB(VectorStoreBase):
 
         result = []
         for i in range(max_length):
-            raw_distance = distances[i] if isinstance(distances, list) and distances and i < len(distances) else None
+            raw_distance = (
+                distances[i]
+                if isinstance(distances, list) and distances and i < len(distances)
+                else None
+            )
             score = 1.0 / (1.0 + raw_distance) if raw_distance is not None else None
             entry = OutputData(
                 id=ids[i] if isinstance(ids, list) and ids and i < len(ids) else None,
                 score=score,
-                payload=(metadatas[i] if isinstance(metadatas, list) and metadatas and i < len(metadatas) else None),
+                payload=(
+                    metadatas[i]
+                    if isinstance(metadatas, list) and metadatas and i < len(metadatas)
+                    else None
+                ),
             )
             result.append(entry)
 
@@ -158,7 +168,9 @@ class ChromaDB(VectorStoreBase):
             List[OutputData]: Search results.
         """
         where_clause = self._generate_where_clause(filters) if filters else None
-        results = self.collection.query(query_embeddings=vectors, where=where_clause, n_results=top_k)
+        results = self.collection.query(
+            query_embeddings=vectors, where=where_clause, n_results=top_k
+        )
         final_results = self._parse_output(results)
         return final_results
 

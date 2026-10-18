@@ -100,6 +100,7 @@ def api_error_handler(func):
     Supports both sync and async functions.
     """
     if inspect.iscoroutinefunction(func):
+
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
             try:
@@ -113,6 +114,7 @@ def api_error_handler(func):
 
         return async_wrapper
     else:
+
         @wraps(func)
         def wrapper(*args, **kwargs):
             try:

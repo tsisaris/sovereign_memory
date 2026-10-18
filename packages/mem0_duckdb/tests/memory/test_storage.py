@@ -5,7 +5,6 @@ import uuid
 from datetime import datetime
 
 import pytest
-
 from mem0.memory.storage import SQLiteManager
 
 
@@ -114,9 +113,12 @@ class TestSQLiteManager:
         assert result[9] == sample_data["role"]
 
     @pytest.mark.parametrize(
-        "old_memory,new_memory,is_deleted", [(None, "New memory", 0), ("Old memory", None, 1), (None, None, 1)]
+        "old_memory,new_memory,is_deleted",
+        [(None, "New memory", 0), ("Old memory", None, 1), (None, None, 1)],
     )
-    def test_add_history_optional_params(self, sqlite_manager, sample_data, old_memory, new_memory, is_deleted):
+    def test_add_history_optional_params(
+        self, sqlite_manager, sample_data, old_memory, new_memory, is_deleted
+    ):
         """Test add_history with various optional parameter combinations."""
         sqlite_manager.add_history(
             memory_id=sample_data["memory_id"],
@@ -198,7 +200,7 @@ class TestSQLiteManager:
             sqlite_manager.add_history(
                 memory_id=sample_data["memory_id"],
                 old_memory=f"Memory {i}",
-                new_memory=f"Memory {i+1}",
+                new_memory=f"Memory {i + 1}",
                 event="ADD" if i == 0 else "UPDATE",
                 created_at=ts,
                 updated_at=ts if i > 0 else None,

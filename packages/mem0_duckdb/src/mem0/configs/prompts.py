@@ -403,11 +403,12 @@ You are a memory summarization system that records and preserves the complete in
 """
 
 
-def get_update_memory_messages(retrieved_old_memory_dict, response_content, custom_update_memory_prompt=None):
+def get_update_memory_messages(
+    retrieved_old_memory_dict, response_content, custom_update_memory_prompt=None
+):
     if custom_update_memory_prompt is None:
         global DEFAULT_UPDATE_MEMORY_PROMPT
         custom_update_memory_prompt = DEFAULT_UPDATE_MEMORY_PROMPT
-
 
     if retrieved_old_memory_dict:
         current_memory_part = f"""
@@ -1035,7 +1036,9 @@ def generate_additive_extraction_prompt(
     sections = []
     sections.append(f"## Summary\n{_format_summary(summary)}")
     sections.append(f"## Last k Messages\n{_format_conversation_history(last_k_messages)}")
-    sections.append(f"## Recently Extracted Memories\n{_serialize_memories(recently_extracted_memories)}")
+    sections.append(
+        f"## Recently Extracted Memories\n{_serialize_memories(recently_extracted_memories)}"
+    )
     sections.append(f"## Existing Memories\n{_serialize_memories(existing_memories)}")
     sections.append(f"## New Messages\n{_format_new_messages(new_messages)}")
     sections.append(f"## Observation Date\n{observation_date}")

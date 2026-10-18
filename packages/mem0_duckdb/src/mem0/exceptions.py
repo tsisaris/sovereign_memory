@@ -109,6 +109,7 @@ class AuthenticationError(MemoryError):
             suggestion="Please check your API key in the Mem0 dashboard"
         )
     """
+
     pass
 
 
@@ -132,6 +133,7 @@ class RateLimitError(MemoryError):
             debug_info={"retry_after": 60, "limit": 100, "remaining": 0}
         )
     """
+
     pass
 
 
@@ -156,6 +158,7 @@ class ValidationError(MemoryError):
             suggestion="User ID must be a non-empty string"
         )
     """
+
     pass
 
 
@@ -173,6 +176,7 @@ class MemoryNotFoundError(MemoryError):
             suggestion="Please check the memory ID and ensure it exists"
         )
     """
+
     pass
 
 
@@ -196,6 +200,7 @@ class NetworkError(MemoryError):
             debug_info={"timeout": 30, "endpoint": "api.mem0.ai"}
         )
     """
+
     pass
 
 
@@ -218,6 +223,7 @@ class ConfigurationError(MemoryError):
             suggestion="Set MEM0_API_KEY environment variable or pass api_key parameter"
         )
     """
+
     pass
 
 
@@ -240,6 +246,7 @@ class MemoryQuotaExceededError(MemoryError):
             debug_info={"current_usage": 1000, "quota_limit": 1000, "usage_type": "memories"}
         )
     """
+
     pass
 
 
@@ -257,6 +264,7 @@ class MemoryCorruptionError(MemoryError):
             suggestion="Please contact support for data recovery assistance"
         )
     """
+
     pass
 
 
@@ -280,6 +288,7 @@ class VectorSearchError(MemoryError):
             suggestion="Please try a simpler search query"
         )
     """
+
     pass
 
 
@@ -297,6 +306,7 @@ class CacheError(MemoryError):
             suggestion="Cache will be refreshed automatically"
         )
     """
+
     pass
 
 
@@ -315,12 +325,16 @@ class VectorStoreError(MemoryError):
             suggestion="Please check your vector store configuration and connection"
         )
     """
-    def __init__(self, message: str, error_code: str = "VECTOR_001", details: dict = None,
-                 suggestion: str = "Please check your vector store configuration and connection",
-                 debug_info: dict = None):
+
+    def __init__(
+        self,
+        message: str,
+        error_code: str = "VECTOR_001",
+        details: dict = None,
+        suggestion: str = "Please check your vector store configuration and connection",
+        debug_info: dict = None,
+    ):
         super().__init__(message, error_code, details, suggestion, debug_info)
-
-
 
 
 class EmbeddingError(MemoryError):
@@ -337,9 +351,15 @@ class EmbeddingError(MemoryError):
             suggestion="Please check your embedding model configuration"
         )
     """
-    def __init__(self, message: str, error_code: str = "EMBED_001", details: dict = None,
-                 suggestion: str = "Please check your embedding model configuration",
-                 debug_info: dict = None):
+
+    def __init__(
+        self,
+        message: str,
+        error_code: str = "EMBED_001",
+        details: dict = None,
+        suggestion: str = "Please check your embedding model configuration",
+        debug_info: dict = None,
+    ):
         super().__init__(message, error_code, details, suggestion, debug_info)
 
 
@@ -357,9 +377,15 @@ class LLMError(MemoryError):
             suggestion="Please check your LLM configuration and API key"
         )
     """
-    def __init__(self, message: str, error_code: str = "LLM_001", details: dict = None,
-                 suggestion: str = "Please check your LLM configuration and API key",
-                 debug_info: dict = None):
+
+    def __init__(
+        self,
+        message: str,
+        error_code: str = "LLM_001",
+        details: dict = None,
+        suggestion: str = "Please check your LLM configuration and API key",
+        debug_info: dict = None,
+    ):
         super().__init__(message, error_code, details, suggestion, debug_info)
 
 
@@ -377,9 +403,15 @@ class DatabaseError(MemoryError):
             suggestion="Please check your database configuration and connection"
         )
     """
-    def __init__(self, message: str, error_code: str = "DB_001", details: dict = None,
-                 suggestion: str = "Please check your database configuration and connection",
-                 debug_info: dict = None):
+
+    def __init__(
+        self,
+        message: str,
+        error_code: str = "DB_001",
+        details: dict = None,
+        suggestion: str = "Please check your database configuration and connection",
+        debug_info: dict = None,
+    ):
         super().__init__(message, error_code, details, suggestion, debug_info)
 
 
@@ -397,9 +429,15 @@ class DependencyError(MemoryError):
             suggestion="Please install the required dependencies: pip install kuzu"
         )
     """
-    def __init__(self, message: str, error_code: str = "DEPS_001", details: dict = None,
-                 suggestion: str = "Please install the required dependencies",
-                 debug_info: dict = None):
+
+    def __init__(
+        self,
+        message: str,
+        error_code: str = "DEPS_001",
+        details: dict = None,
+        suggestion: str = "Please install the required dependencies",
+        debug_info: dict = None,
+    ):
         super().__init__(message, error_code, details, suggestion, debug_info)
 
 

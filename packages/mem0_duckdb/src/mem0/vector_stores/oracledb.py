@@ -376,9 +376,13 @@ class OracleAIVectorSearch(VectorStoreBase):
         logger.info(f"Inserting {len(vectors)} vectors into collection {self.collection_name}")
 
         if payloads is not None and len(payloads) != len(vectors):
-            raise ValueError(f"Payload count must match vector count. Expected {len(vectors)} got {len(payloads)}.")
+            raise ValueError(
+                f"Payload count must match vector count. Expected {len(vectors)} got {len(payloads)}."
+            )
         if ids is not None and len(ids) != len(vectors):
-            raise ValueError(f"ID count must match vector count. Expected {len(vectors)} got {len(ids)}.")
+            raise ValueError(
+                f"ID count must match vector count. Expected {len(vectors)} got {len(ids)}."
+            )
 
         ids = ids or [str(uuid.uuid4()) for _ in vectors]
         data = [
@@ -392,7 +396,8 @@ class OracleAIVectorSearch(VectorStoreBase):
                 payload=oracledb.DB_TYPE_JSON,
             )
             cursor.executemany(
-                f"INSERT INTO {self.collection_name} (id, vector, payload) VALUES (:id, :vector, :payload)", data
+                f"INSERT INTO {self.collection_name} (id, vector, payload) VALUES (:id, :vector, :payload)",
+                data,
             )
 
     def search(
@@ -480,7 +485,9 @@ class OracleAIVectorSearch(VectorStoreBase):
                 sets.append("payload = :payload")
                 params["payload"] = payload
                 cursor.setinputsizes(payload=oracledb.DB_TYPE_JSON)
-            cursor.execute(f"UPDATE {self.collection_name} SET {', '.join(sets)} WHERE id = :vector_id", params)
+            cursor.execute(
+                f"UPDATE {self.collection_name} SET {', '.join(sets)} WHERE id = :vector_id", params
+            )
 
     def get(self, vector_id: str) -> Optional[OutputData]:
         """
@@ -559,7 +566,9 @@ class OracleAIVectorSearch(VectorStoreBase):
             return segments[-2], segments[-1]
         return None, segments[-1]
 
-    def list(self, filters: Optional[Dict[str, Any]] = None, top_k: Optional[int] = 100) -> List[List[OutputData]]:
+    def list(
+        self, filters: Optional[Dict[str, Any]] = None, top_k: Optional[int] = 100
+    ) -> List[List[OutputData]]:
         """
         List all vectors in a collection.
 
@@ -583,7 +592,9 @@ class OracleAIVectorSearch(VectorStoreBase):
             cursor.execute(sql, **params)
             rows = cursor.fetchall()
 
-        return [[OutputData(id=row[0], score=None, payload=self._load_payload(row[1])) for row in rows]]
+        return [
+            [OutputData(id=row[0], score=None, payload=self._load_payload(row[1])) for row in rows]
+        ]
 
     def reset(self) -> None:
         """Reset the index by deleting and recreating it."""

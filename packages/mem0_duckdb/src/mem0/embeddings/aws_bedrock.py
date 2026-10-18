@@ -5,7 +5,9 @@ from typing import Literal, Optional
 try:
     import boto3
 except ImportError:
-    raise ImportError("The 'boto3' library is required. Please install it using 'pip install boto3'.")
+    raise ImportError(
+        "The 'boto3' library is required. Please install it using 'pip install boto3'."
+    )
 
 import numpy as np
 

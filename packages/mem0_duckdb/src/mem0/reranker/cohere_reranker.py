@@ -6,6 +6,7 @@ from mem0.reranker.base import BaseReranker
 
 try:
     import cohere
+
     COHERE_AVAILABLE = True
 except ImportError:
     COHERE_AVAILABLE = False
@@ -24,17 +25,23 @@ class CohereReranker(BaseReranker):
             config: CohereRerankerConfig object with configuration parameters
         """
         if not COHERE_AVAILABLE:
-            raise ImportError("cohere package is required for CohereReranker. Install with: pip install cohere")
+            raise ImportError(
+                "cohere package is required for CohereReranker. Install with: pip install cohere"
+            )
 
         self.config = config
         self.api_key = config.api_key or os.getenv("COHERE_API_KEY")
         if not self.api_key:
-            raise ValueError("Cohere API key is required. Set COHERE_API_KEY environment variable or pass api_key in config.")
+            raise ValueError(
+                "Cohere API key is required. Set COHERE_API_KEY environment variable or pass api_key in config."
+            )
 
         self.model = config.model
         self.client = cohere.Client(self.api_key)
 
-    def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int = None) -> List[Dict[str, Any]]:
+    def rerank(
+        self, query: str, documents: List[Dict[str, Any]], top_k: int = None
+    ) -> List[Dict[str, Any]]:
         """
         Rerank documents using Cohere's rerank API.
 
@@ -52,12 +59,12 @@ class CohereReranker(BaseReranker):
         # Extract text content for reranking
         doc_texts = []
         for doc in documents:
-            if 'memory' in doc:
-                doc_texts.append(doc['memory'])
-            elif 'text' in doc:
-                doc_texts.append(doc['text'])
-            elif 'content' in doc:
-                doc_texts.append(doc['content'])
+            if "memory" in doc:
+                doc_texts.append(doc["memory"])
+            elif "text" in doc:
+                doc_texts.append(doc["text"])
+            elif "content" in doc:
+                doc_texts.append(doc["content"])
             else:
                 doc_texts.append(str(doc))
 
@@ -76,7 +83,7 @@ class CohereReranker(BaseReranker):
             reranked_docs = []
             for result in response.results:
                 original_doc = documents[result.index].copy()
-                original_doc['rerank_score'] = result.relevance_score
+                original_doc["rerank_score"] = result.relevance_score
                 reranked_docs.append(original_doc)
 
             return reranked_docs
@@ -87,7 +94,7 @@ class CohereReranker(BaseReranker):
             fallback_docs = []
             for doc in documents:
                 fallback_doc = doc.copy()
-                fallback_doc['rerank_score'] = 0.0
+                fallback_doc["rerank_score"] = 0.0
                 fallback_docs.append(fallback_doc)
             final_top_k = top_k or self.config.top_k
             return fallback_docs[:final_top_k] if final_top_k else fallback_docs

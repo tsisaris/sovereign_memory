@@ -7,8 +7,7 @@ class CassandraConfig(BaseModel):
     """Configuration for Apache Cassandra vector database."""
 
     contact_points: List[str] = Field(
-        ...,
-        description="List of contact point addresses (e.g., ['127.0.0.1', '127.0.0.2'])"
+        ..., description="List of contact point addresses (e.g., ['127.0.0.1', '127.0.0.2'])"
     )
     port: int = Field(9042, description="Cassandra port")
     username: Optional[str] = Field(None, description="Database username")
@@ -17,13 +16,11 @@ class CassandraConfig(BaseModel):
     collection_name: str = Field("memories", description="Table name")
     embedding_model_dims: int = Field(1536, description="Dimensions of the embedding model")
     secure_connect_bundle: Optional[str] = Field(
-        None,
-        description="Path to secure connect bundle for DataStax Astra DB"
+        None, description="Path to secure connect bundle for DataStax Astra DB"
     )
     protocol_version: int = Field(4, description="CQL protocol version")
     load_balancing_policy: Optional[Any] = Field(
-        None,
-        description="Custom load balancing policy object"
+        None, description="Custom load balancing policy object"
     )
 
     @model_validator(mode="before")
@@ -50,9 +47,7 @@ class CassandraConfig(BaseModel):
 
         # Either secure_connect_bundle or contact_points must be provided
         if not secure_connect_bundle and not contact_points:
-            raise ValueError(
-                "Either 'contact_points' or 'secure_connect_bundle' must be provided"
-            )
+            raise ValueError("Either 'contact_points' or 'secure_connect_bundle' must be provided")
 
         return values
 

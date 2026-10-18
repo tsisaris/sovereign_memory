@@ -56,8 +56,14 @@ class LLMBase(ABC):
             return explicit
 
         reasoning_models = {
-            "o1", "o1-preview", "o3-mini", "o3",
-            "gpt-5", "gpt-5o", "gpt-5o-mini", "gpt-5o-micro",
+            "o1",
+            "o1-preview",
+            "o3-mini",
+            "o3",
+            "gpt-5",
+            "gpt-5o",
+            "gpt-5o-mini",
+            "gpt-5o-micro",
         }
 
         model_lower = model.lower()
@@ -104,7 +110,7 @@ class LLMBase(ABC):
         Returns:
             Dict: Filtered parameters dictionary
         """
-        model = getattr(self.config, 'model', '')
+        model = getattr(self.config, "model", "")
 
         if self._is_reasoning_model(model):
             supported_params = {}
@@ -119,7 +125,7 @@ class LLMBase(ABC):
                 supported_params["tool_choice"] = kwargs["tool_choice"]
 
             # Add reasoning_effort if configured
-            reasoning_effort = getattr(self.config, 'reasoning_effort', None)
+            reasoning_effort = getattr(self.config, "reasoning_effort", None)
             if reasoning_effort:
                 supported_params["reasoning_effort"] = reasoning_effort
 
@@ -130,7 +136,11 @@ class LLMBase(ABC):
 
     @abstractmethod
     def generate_response(
-        self, messages: List[Dict[str, str]], tools: Optional[List[Dict]] = None, tool_choice: str = "auto", **kwargs
+        self,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[Dict]] = None,
+        tool_choice: str = "auto",
+        **kwargs,
     ):
         """
         Generate a response based on the given messages.

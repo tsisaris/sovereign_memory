@@ -26,7 +26,9 @@ class HuggingFaceEmbedding(EmbeddingBase):
 
             self.model = SentenceTransformer(self.config.model, **self.config.model_kwargs)
 
-            self.config.embedding_dims = self.config.embedding_dims or self.model.get_sentence_embedding_dimension()
+            self.config.embedding_dims = (
+                self.config.embedding_dims or self.model.get_sentence_embedding_dimension()
+            )
 
     def embed(self, text, memory_action: Optional[Literal["add", "search", "update"]] = None):
         """
@@ -39,9 +41,13 @@ class HuggingFaceEmbedding(EmbeddingBase):
             list: The embedding vector.
         """
         if self.config.huggingface_base_url:
-            return self.client.embeddings.create(
-                input=text, model=self.config.model, **self.config.model_kwargs
-            ).data[0].embedding
+            return (
+                self.client.embeddings.create(
+                    input=text, model=self.config.model, **self.config.model_kwargs
+                )
+                .data[0]
+                .embedding
+            )
         else:
             return self.model.encode(text, convert_to_numpy=True).tolist()
 
@@ -49,7 +55,9 @@ class HuggingFaceEmbedding(EmbeddingBase):
         if not texts:
             return []
         if self.config.huggingface_base_url:
-            response = self.client.embeddings.create(input=texts, model=self.config.model, **self.config.model_kwargs)
+            response = self.client.embeddings.create(
+                input=texts, model=self.config.model, **self.config.model_kwargs
+            )
             sorted_data = sorted(response.data, key=lambda x: x.index)
             embeddings = [item.embedding for item in sorted_data]
             if len(embeddings) != len(texts):

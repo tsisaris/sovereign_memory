@@ -11,8 +11,12 @@ class WeaviateConfig(BaseModel):
     collection_name: str = Field("mem0", description="Name of the collection")
     embedding_model_dims: int = Field(1536, description="Dimensions of the embedding model")
     cluster_url: Optional[str] = Field(None, description="URL for Weaviate server")
-    auth_client_secret: Optional[str] = Field(None, description="API key for Weaviate authentication")
-    additional_headers: Optional[Dict[str, str]] = Field(None, description="Additional headers for requests")
+    auth_client_secret: Optional[str] = Field(
+        None, description="API key for Weaviate authentication"
+    )
+    additional_headers: Optional[Dict[str, str]] = Field(
+        None, description="Additional headers for requests"
+    )
 
     @model_validator(mode="before")
     @classmethod

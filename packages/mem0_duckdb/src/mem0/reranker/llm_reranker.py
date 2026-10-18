@@ -26,12 +26,12 @@ class LLMReranker(BaseReranker):
         elif isinstance(config, BaseRerankerConfig) and not isinstance(config, LLMRerankerConfig):
             # Convert BaseRerankerConfig to LLMRerankerConfig with defaults
             config = LLMRerankerConfig(
-                provider=getattr(config, 'provider', 'openai'),
-                model=getattr(config, 'model', 'gpt-5-mini'),
-                api_key=getattr(config, 'api_key', None),
-                top_k=getattr(config, 'top_k', None),
+                provider=getattr(config, "provider", "openai"),
+                model=getattr(config, "model", "gpt-5-mini"),
+                api_key=getattr(config, "api_key", None),
+                top_k=getattr(config, "top_k", None),
                 temperature=0.0,  # Default for reranking
-                max_tokens=100,   # Default for reranking
+                max_tokens=100,  # Default for reranking
             )
 
         self.config = config
@@ -62,9 +62,10 @@ class LLMReranker(BaseReranker):
         self.llm = LlmFactory.create(llm_provider, llm_config)
 
         # Honor custom scoring_prompt from config if provided
-        custom_prompt = getattr(self.config, 'scoring_prompt', None)
+        custom_prompt = getattr(self.config, "scoring_prompt", None)
         if custom_prompt:
             import warnings
+
             warnings.warn(
                 "LLMRerankerConfig.scoring_prompt is deprecated and will be removed in a future version. "
                 "The prompt is now used as the system message.",
@@ -95,7 +96,7 @@ class LLMReranker(BaseReranker):
         """Extract numerical score from LLM response."""
         # Prefer a decimal, fall back to an integer, then clamp: out-of-range outputs
         # like "2.0"/"5" become 1.0 instead of being mis-parsed into a stray 0/1 digit.
-        matches = re.findall(r'-?\d+\.\d+', response_text) or re.findall(r'-?\d+', response_text)
+        matches = re.findall(r"-?\d+\.\d+", response_text) or re.findall(r"-?\d+", response_text)
 
         if matches:
             score = float(matches[0])
@@ -104,7 +105,9 @@ class LLMReranker(BaseReranker):
         # Fallback: return 0.5 if no valid score found
         return 0.5
 
-    def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int = None) -> List[Dict[str, Any]]:
+    def rerank(
+        self, query: str, documents: List[Dict[str, Any]], top_k: int = None
+    ) -> List[Dict[str, Any]]:
         """
         Rerank documents using LLM scoring.
 
@@ -123,12 +126,12 @@ class LLMReranker(BaseReranker):
 
         for doc in documents:
             # Extract text content
-            if 'memory' in doc:
-                doc_text = doc['memory']
-            elif 'text' in doc:
-                doc_text = doc['text']
-            elif 'content' in doc:
-                doc_text = doc['content']
+            if "memory" in doc:
+                doc_text = doc["memory"]
+            elif "text" in doc:
+                doc_text = doc["text"]
+            elif "content" in doc:
+                doc_text = doc["content"]
             else:
                 doc_text = str(doc)
 
@@ -151,23 +154,25 @@ class LLMReranker(BaseReranker):
 
                 # Create scored document
                 scored_doc = doc.copy()
-                scored_doc['rerank_score'] = score
+                scored_doc["rerank_score"] = score
                 scored_docs.append(scored_doc)
 
             except Exception as e:
                 # Fallback: assign neutral score if scoring fails
-                logger.warning("LLM reranking failed for a document, assigning neutral score: %s", e)
+                logger.warning(
+                    "LLM reranking failed for a document, assigning neutral score: %s", e
+                )
                 scored_doc = doc.copy()
-                scored_doc['rerank_score'] = 0.5
+                scored_doc["rerank_score"] = 0.5
                 scored_docs.append(scored_doc)
 
         # Sort by relevance score in descending order
-        scored_docs.sort(key=lambda x: x['rerank_score'], reverse=True)
+        scored_docs.sort(key=lambda x: x["rerank_score"], reverse=True)
 
         # Apply top_k limit
         if top_k:
             scored_docs = scored_docs[:top_k]
         elif self.config.top_k:
-            scored_docs = scored_docs[:self.config.top_k]
+            scored_docs = scored_docs[: self.config.top_k]
 
         return scored_docs

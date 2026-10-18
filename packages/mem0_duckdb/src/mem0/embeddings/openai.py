@@ -72,7 +72,9 @@ class OpenAIEmbedding(EmbeddingBase):
             if self._pass_dimensions_to_api:
                 kwargs["dimensions"] = self.config.embedding_dims
             response = self.client.embeddings.create(**kwargs)
-            all_embeddings.extend(item.embedding for item in sorted(response.data, key=lambda x: x.index))
+            all_embeddings.extend(
+                item.embedding for item in sorted(response.data, key=lambda x: x.index)
+            )
         if len(all_embeddings) != len(texts):
             raise ValueError(
                 f"OpenAI embed_batch() returned {len(all_embeddings)} embeddings for {len(texts)} texts"

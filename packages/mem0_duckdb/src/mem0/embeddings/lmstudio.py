@@ -10,7 +10,10 @@ class LMStudioEmbedding(EmbeddingBase):
     def __init__(self, config: Optional[BaseEmbedderConfig] = None):
         super().__init__(config)
 
-        self.config.model = self.config.model or "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.f16.gguf"
+        self.config.model = (
+            self.config.model
+            or "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.f16.gguf"
+        )
         self.config.embedding_dims = self.config.embedding_dims or 1536
         self.config.api_key = self.config.api_key or "lm-studio"
 
@@ -26,7 +29,9 @@ class LMStudioEmbedding(EmbeddingBase):
             list: The embedding vector.
         """
         text = text.replace("\n", " ")
-        return self.client.embeddings.create(input=[text], model=self.config.model).data[0].embedding
+        return (
+            self.client.embeddings.create(input=[text], model=self.config.model).data[0].embedding
+        )
 
     def embed_batch(self, texts, memory_action="add"):
         if not texts:

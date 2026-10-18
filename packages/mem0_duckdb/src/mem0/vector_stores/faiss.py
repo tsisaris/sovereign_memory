@@ -42,7 +42,9 @@ class SafeUnpickler(pickle.Unpickler):
     # Only allow builtins module
     SAFE_MODULES = frozenset({"builtins", "__builtin__"})
     # Only allow safe basic types
-    SAFE_NAMES = frozenset({"dict", "list", "str", "int", "float", "bool", "tuple", "set", "frozenset", "NoneType"})
+    SAFE_NAMES = frozenset(
+        {"dict", "list", "str", "int", "float", "bool", "tuple", "set", "frozenset", "NoneType"}
+    )
 
     def find_class(self, module: str, name: str) -> Any:
         """Override find_class to only allow safe types."""
@@ -165,7 +167,9 @@ class FAISS(VectorStoreBase):
             pkl_docstore_path = f"{self.path}/{collection_name}.pkl"
 
             # Check for index file and either JSON (preferred) or legacy pickle docstore
-            if os.path.exists(index_path) and (os.path.exists(json_docstore_path) or os.path.exists(pkl_docstore_path)):
+            if os.path.exists(index_path) and (
+                os.path.exists(json_docstore_path) or os.path.exists(pkl_docstore_path)
+            ):
                 # _load will prefer JSON over pickle and auto-migrate
                 self._load(index_path, pkl_docstore_path)
             else:
@@ -196,7 +200,9 @@ class FAISS(VectorStoreBase):
                 self.docstore = data.get("docstore", {})
                 # JSON keys are always strings, convert back to int
                 self.index_to_id = {int(k): v for k, v in data.get("index_to_id", {}).items()}
-                logger.info(f"Loaded FAISS index from {index_path} with {self.index.ntotal} vectors (JSON format)")
+                logger.info(
+                    f"Loaded FAISS index from {index_path} with {self.index.ntotal} vectors (JSON format)"
+                )
 
             elif os.path.exists(docstore_path):
                 # Load from legacy pickle using safe unpickler
@@ -207,18 +213,24 @@ class FAISS(VectorStoreBase):
                 )
                 data = _safe_pickle_load(docstore_path)
                 self.docstore, self.index_to_id = _validate_docstore_structure(data)
-                logger.info(f"Loaded FAISS index from {index_path} with {self.index.ntotal} vectors (pickle format)")
+                logger.info(
+                    f"Loaded FAISS index from {index_path} with {self.index.ntotal} vectors (pickle format)"
+                )
 
                 # Auto-migrate to JSON format
                 self._save()
                 logger.info(f"Migrated docstore to JSON format: {json_docstore_path}")
 
             else:
-                raise FileNotFoundError(f"No docstore found at {docstore_path} or {json_docstore_path}")
+                raise FileNotFoundError(
+                    f"No docstore found at {docstore_path} or {json_docstore_path}"
+                )
 
         except pickle.UnpicklingError as e:
             logger.error(f"Security error loading FAISS docstore: {e}")
-            raise ValueError(f"Failed to load FAISS docstore: potentially malicious pickle file. {e}") from e
+            raise ValueError(
+                f"Failed to load FAISS docstore: potentially malicious pickle file. {e}"
+            ) from e
         except Exception as e:
             logger.warning(f"Failed to load FAISS index: {e}")
             self.docstore = {}

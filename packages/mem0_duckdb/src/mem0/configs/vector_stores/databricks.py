@@ -1,18 +1,23 @@
 from typing import Any, Dict, Optional
 
+from databricks.sdk.service.vectorsearch import EndpointType, PipelineType, VectorIndexType
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-from databricks.sdk.service.vectorsearch import EndpointType, VectorIndexType, PipelineType
 
 
 class DatabricksConfig(BaseModel):
     """Configuration for Databricks Vector Search vector store."""
 
     workspace_url: str = Field(..., description="Databricks workspace URL")
-    access_token: Optional[str] = Field(None, description="Personal access token for authentication")
+    access_token: Optional[str] = Field(
+        None, description="Personal access token for authentication"
+    )
     client_id: Optional[str] = Field(None, description="Databricks Service principal client ID")
-    client_secret: Optional[str] = Field(None, description="Databricks Service principal client secret")
-    azure_client_id: Optional[str] = Field(None, description="Azure AD application client ID (for Azure Databricks)")
+    client_secret: Optional[str] = Field(
+        None, description="Databricks Service principal client secret"
+    )
+    azure_client_id: Optional[str] = Field(
+        None, description="Azure AD application client ID (for Azure Databricks)"
+    )
     azure_client_secret: Optional[str] = Field(
         None, description="Azure AD application client secret (for Azure Databricks)"
     )
@@ -21,13 +26,19 @@ class DatabricksConfig(BaseModel):
     schema: str = Field(..., description="The Unity Catalog schama name")
     table_name: str = Field(..., description="Source Delta table name")
     collection_name: str = Field("mem0", description="Vector search index name")
-    index_type: VectorIndexType = Field("DELTA_SYNC", description="Index type: DELTA_SYNC or DIRECT_ACCESS")
+    index_type: VectorIndexType = Field(
+        "DELTA_SYNC", description="Index type: DELTA_SYNC or DIRECT_ACCESS"
+    )
     embedding_model_endpoint_name: Optional[str] = Field(
         None, description="Embedding model endpoint for Databricks-computed embeddings"
     )
     embedding_dimension: int = Field(1536, description="Vector embedding dimensions")
-    endpoint_type: EndpointType = Field("STANDARD", description="Endpoint type: STANDARD or STORAGE_OPTIMIZED")
-    pipeline_type: PipelineType = Field("TRIGGERED", description="Sync pipeline type: TRIGGERED or CONTINUOUS")
+    endpoint_type: EndpointType = Field(
+        "STANDARD", description="Endpoint type: STANDARD or STORAGE_OPTIMIZED"
+    )
+    pipeline_type: PipelineType = Field(
+        "TRIGGERED", description="Sync pipeline type: TRIGGERED or CONTINUOUS"
+    )
     warehouse_name: Optional[str] = Field(None, description="Databricks SQL warehouse Name")
     query_type: str = Field("ANN", description="Query type: `ANN` and `HYBRID`")
 

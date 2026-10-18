@@ -25,6 +25,7 @@ class NeptuneAnalyticsConfig(BaseModel):
         collection_name (str): Name of the collection to store vectors. Defaults to "mem0".
         endpoint (str): Neptune Analytics graph endpoint URL or Graph ID for the runtime.
     """
+
     collection_name: str = Field("mem0", description="Default name for the collection")
     endpoint: str = Field("endpoint", description="Graph ID for the runtime")
 

@@ -3,7 +3,9 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
+
 from mem0_duckdb_history import DuckDBManager as SQLiteManager
+
 
 @pytest.fixture
 def temp_db_path(tmp_path):
@@ -11,11 +13,13 @@ def temp_db_path(tmp_path):
     # but the tests just check duckdb creation and usage
     return str(tmp_path / "test_history.duckdb")
 
+
 @pytest.fixture
 def sqlite_manager(temp_db_path):
     manager = SQLiteManager(temp_db_path)
     yield manager
     manager.close()
+
 
 @pytest.fixture
 def sample_data():
@@ -27,8 +31,9 @@ def sample_data():
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "actor_id": "user123",
-        "role": "user"
+        "role": "user",
     }
+
 
 class TestSQLiteManager:
     @pytest.mark.parametrize("db_type,path", [("file", "temp_db_path"), ("memory", ":memory:")])
@@ -86,9 +91,12 @@ class TestSQLiteManager:
         assert result[9] == sample_data["role"]
 
     @pytest.mark.parametrize(
-        "old_memory,new_memory,is_deleted", [(None, "New memory", 0), ("Old memory", None, 1), (None, None, 1)]
+        "old_memory,new_memory,is_deleted",
+        [(None, "New memory", 0), ("Old memory", None, 1), (None, None, 1)],
     )
-    def test_add_history_optional_params(self, sqlite_manager, sample_data, old_memory, new_memory, is_deleted):
+    def test_add_history_optional_params(
+        self, sqlite_manager, sample_data, old_memory, new_memory, is_deleted
+    ):
         sqlite_manager.add_history(
             memory_id=sample_data["memory_id"],
             old_memory=old_memory,
@@ -163,7 +171,7 @@ class TestSQLiteManager:
             sqlite_manager.add_history(
                 memory_id=sample_data["memory_id"],
                 old_memory=f"Memory {i}",
-                new_memory=f"Memory {i+1}",
+                new_memory=f"Memory {i + 1}",
                 event="ADD" if i == 0 else "UPDATE",
                 created_at=ts,
                 updated_at=ts if i > 0 else None,
@@ -200,12 +208,14 @@ class TestSQLiteManager:
 
         records = []
         for i, memory_id in enumerate(memory_ids):
-            records.append({
-                "memory_id": memory_id,
-                "old_memory": None,
-                "new_memory": f"Batch memory {i}",
-                "event": "ADD"
-            })
+            records.append(
+                {
+                    "memory_id": memory_id,
+                    "old_memory": None,
+                    "new_memory": f"Batch memory {i}",
+                    "event": "ADD",
+                }
+            )
 
         sqlite_manager.batch_add_history(records)
 
@@ -220,6 +230,7 @@ class TestSQLiteManager:
 
     def test_explicit_old_schema_migration(self, temp_db_path):
         import duckdb
+
         legacy_conn = duckdb.connect(temp_db_path)
         legacy_conn.execute("""
             CREATE TABLE history (

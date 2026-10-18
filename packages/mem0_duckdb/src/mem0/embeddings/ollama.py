@@ -6,7 +6,9 @@ from mem0.embeddings.base import EmbeddingBase
 try:
     from ollama import Client
 except ImportError:
-    raise ImportError("The 'ollama' library is required. Please install it using 'pip install ollama'.")
+    raise ImportError(
+        "The 'ollama' library is required. Please install it using 'pip install ollama'."
+    )
 
 
 class OllamaEmbedding(EmbeddingBase):
@@ -49,7 +51,9 @@ class OllamaEmbedding(EmbeddingBase):
         response = self.client.embed(model=self.config.model, input=text)
         embeddings = response.get("embeddings") or []
         if not embeddings:
-            raise ValueError(f"Ollama embed() returned no embeddings for model '{self.config.model}'")
+            raise ValueError(
+                f"Ollama embed() returned no embeddings for model '{self.config.model}'"
+            )
         return embeddings[0]
 
     def embed_batch(self, texts, memory_action="add"):
@@ -59,5 +63,7 @@ class OllamaEmbedding(EmbeddingBase):
         response = self.client.embed(model=self.config.model, input=texts)
         embeddings = response.get("embeddings") or []
         if len(embeddings) != len(texts):
-            raise ValueError(f"Ollama embed() returned {len(embeddings)} embeddings for {len(texts)} texts using model '{self.config.model}'")
+            raise ValueError(
+                f"Ollama embed() returned {len(embeddings)} embeddings for {len(texts)} texts using model '{self.config.model}'"
+            )
         return embeddings

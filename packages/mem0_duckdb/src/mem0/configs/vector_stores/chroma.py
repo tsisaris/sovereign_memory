@@ -7,7 +7,9 @@ class ChromaDbConfig(BaseModel):
     try:
         from chromadb.api.client import Client
     except ImportError:
-        raise ImportError("The 'chromadb' library is required. Please install it using 'pip install chromadb'.")
+        raise ImportError(
+            "The 'chromadb' library is required. Please install it using 'pip install chromadb'."
+        )
     Client: ClassVar[type] = Client
 
     collection_name: str = Field("mem0", description="Default name for the collection/database")
@@ -36,10 +38,14 @@ class ChromaDbConfig(BaseModel):
         local_config = bool(path) or bool(host and port)
 
         if not cloud_config and not local_config:
-            raise ValueError("Either ChromaDB Cloud configuration (api_key, tenant) or local configuration (path or host/port) must be provided.")
+            raise ValueError(
+                "Either ChromaDB Cloud configuration (api_key, tenant) or local configuration (path or host/port) must be provided."
+            )
 
         if cloud_config and local_config:
-            raise ValueError("Cannot specify both cloud configuration and local configuration. Choose one.")
+            raise ValueError(
+                "Cannot specify both cloud configuration and local configuration. Choose one."
+            )
 
         return values
 

@@ -49,7 +49,10 @@ class LlmFactory:
         "azure_openai": ("mem0.llms.azure_openai.AzureOpenAILLM", AzureOpenAIConfig),
         "openai_structured": ("mem0.llms.openai_structured.OpenAIStructuredLLM", OpenAIConfig),
         "anthropic": ("mem0.llms.anthropic.AnthropicLLM", AnthropicConfig),
-        "azure_openai_structured": ("mem0.llms.azure_openai_structured.AzureOpenAIStructuredLLM", AzureOpenAIConfig),
+        "azure_openai_structured": (
+            "mem0.llms.azure_openai_structured.AzureOpenAIStructuredLLM",
+            AzureOpenAIConfig,
+        ),
         "gemini": ("mem0.llms.gemini.GeminiLLM", GeminiConfig),
         "deepseek": ("mem0.llms.deepseek.DeepSeekLLM", DeepSeekConfig),
         "minimax": ("mem0.llms.minimax.MiniMaxLLM", MinimaxConfig),
@@ -61,7 +64,9 @@ class LlmFactory:
     }
 
     @classmethod
-    def create(cls, provider_name: str, config: Optional[Union[BaseLlmConfig, Dict]] = None, **kwargs):
+    def create(
+        cls, provider_name: str, config: Optional[Union[BaseLlmConfig, Dict]] = None, **kwargs
+    ):
         """
         Create an LLM instance with the appropriate configuration.
 
@@ -236,13 +241,21 @@ class RerankerFactory:
             "mem0.reranker.sentence_transformer_reranker.SentenceTransformerReranker",
             SentenceTransformerRerankerConfig,
         ),
-        "zero_entropy": ("mem0.reranker.zero_entropy_reranker.ZeroEntropyReranker", ZeroEntropyRerankerConfig),
+        "zero_entropy": (
+            "mem0.reranker.zero_entropy_reranker.ZeroEntropyReranker",
+            ZeroEntropyRerankerConfig,
+        ),
         "llm_reranker": ("mem0.reranker.llm_reranker.LLMReranker", LLMRerankerConfig),
-        "huggingface": ("mem0.reranker.huggingface_reranker.HuggingFaceReranker", HuggingFaceRerankerConfig),
+        "huggingface": (
+            "mem0.reranker.huggingface_reranker.HuggingFaceReranker",
+            HuggingFaceRerankerConfig,
+        ),
     }
 
     @classmethod
-    def create(cls, provider_name: str, config: Optional[Union[BaseRerankerConfig, Dict]] = None, **kwargs):
+    def create(
+        cls, provider_name: str, config: Optional[Union[BaseRerankerConfig, Dict]] = None, **kwargs
+    ):
         """
         Create a reranker instance based on the provider and configuration.
 

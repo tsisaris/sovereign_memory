@@ -17,8 +17,8 @@ Returns:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -570,7 +570,8 @@ def _add_proper_name_candidates(tokens: list, candidates: list[_EntityCandidate]
         name_tokens = [
             t
             for t in span_tokens
-            if _is_name_like_token(t, tokens, t.i) or (0 <= t.i < len(tokens) and _is_list_item_name_token(tokens, t.i))
+            if _is_name_like_token(t, tokens, t.i)
+            or (0 <= t.i < len(tokens) and _is_list_item_name_token(tokens, t.i))
         ]
         if len(name_tokens) > 1 or not _is_bad_single_name_token(name_tokens[0]):
             text = "".join(t.text_with_ws for t in span_tokens).strip()
@@ -596,7 +597,14 @@ def _add_topic_phrase_candidates(doc, candidates: list[_EntityCandidate]) -> Non
             if tok.dep_ == "case" and tok.text in {"'s", "\u2019s", "'"}:
                 split_indices.append(idx)
                 poss_splits.append(idx)
-            elif tok.pos_ == "PUNCT" and tok.text in {"'", '"', "\u2018", "\u2019", "\u201c", "\u201d"}:
+            elif tok.pos_ == "PUNCT" and tok.text in {
+                "'",
+                '"',
+                "\u2018",
+                "\u2019",
+                "\u201c",
+                "\u201d",
+            }:
                 split_indices.append(idx)
 
         if split_indices:
@@ -607,10 +615,16 @@ def _add_topic_phrase_candidates(doc, candidates: list[_EntityCandidate]) -> Non
                     groups.append(chunk_tokens[prev:split_idx])
                 if split_idx in poss_splits:
                     next_split = next((s for s in split_indices if s > split_idx), None)
-                    owned = chunk_tokens[split_idx + 1 : next_split if next_split else len(chunk_tokens)]
+                    owned = chunk_tokens[
+                        split_idx + 1 : next_split if next_split else len(chunk_tokens)
+                    ]
                     if owned:
-                        first_content = next((t for t in owned if t.pos_ not in {"PUNCT", "PART"}), None)
-                        if not (first_content and first_content.text and first_content.text[0].isupper()):
+                        first_content = next(
+                            (t for t in owned if t.pos_ not in {"PUNCT", "PART"}), None
+                        )
+                        if not (
+                            first_content and first_content.text and first_content.text[0].isupper()
+                        ):
                             prev = next_split if next_split else len(chunk_tokens)
                             continue
                 prev = split_idx + 1
@@ -658,7 +672,11 @@ def _add_topic_phrase_candidates(doc, candidates: list[_EntityCandidate]) -> Non
                         )
                 else:
                     filtered = _strip_generic_ending(
-                        [t for t in content if not (t.pos_ == "ADJ" and t.lemma_.lower() in _NON_SPECIFIC_ADJ)]
+                        [
+                            t
+                            for t in content
+                            if not (t.pos_ == "ADJ" and t.lemma_.lower() in _NON_SPECIFIC_ADJ)
+                        ]
                     )
                     if filtered:
                         phrase = " ".join(t.text for t in filtered)
@@ -678,7 +696,10 @@ def _add_topic_phrase_candidates(doc, candidates: list[_EntityCandidate]) -> Non
                     [
                         t
                         for t in content
-                        if not ((t.pos_ == "ADJ" or t.dep_ == "amod") and t.lemma_.lower() in _NON_SPECIFIC_ADJ)
+                        if not (
+                            (t.pos_ == "ADJ" or t.dep_ == "amod")
+                            and t.lemma_.lower() in _NON_SPECIFIC_ADJ
+                        )
                     ]
                 )
                 if filtered:
@@ -707,7 +728,10 @@ def _resolve_candidates(candidates: list[_EntityCandidate]) -> list[tuple[str, s
     for candidate in candidates:
         key = _norm_text(candidate.text)
         current = deduped_by_text.get(key)
-        if current is None or (candidate.priority, -candidate.confidence) < (current.priority, -current.confidence):
+        if current is None or (candidate.priority, -candidate.confidence) < (
+            current.priority,
+            -current.confidence,
+        ):
             deduped_by_text[key] = candidate
 
     ordered = sorted(
@@ -718,7 +742,11 @@ def _resolve_candidates(candidates: list[_EntityCandidate]) -> list[tuple[str, s
     for candidate in ordered:
         if any(
             _spans_overlap(candidate, existing)
-            and not (candidate.entity_type == "TOPIC" and " " in candidate.text and existing.entity_type == "PROPER")
+            and not (
+                candidate.entity_type == "TOPIC"
+                and " " in candidate.text
+                and existing.entity_type == "PROPER"
+            )
             for existing in accepted
         ):
             continue

@@ -96,6 +96,7 @@ def _evaluate_notice_flags(user_id):
     payload = {"notices": config.get("notices", {})}
     return StaticFlagResult(variant, payload)
 
+
 NOTICE_ID = "first_run"
 TEMPORAL_FEATURE_NOTICE_ID = "temporal_stub"
 TEMPORAL_USAGE_NOTICE_ID = "temporal_usage"
@@ -231,7 +232,9 @@ def display_first_run_notice(memory_instance, sync_type: str, trigger_function: 
             _update_first_run_variant(variant)
 
 
-async def display_first_run_notice_async(memory_instance, sync_type: str, trigger_function: str) -> None:
+async def display_first_run_notice_async(
+    memory_instance, sync_type: str, trigger_function: str
+) -> None:
     if not telemetry_module.MEM0_TELEMETRY or _first_run_claimed_in_process:
         return
     await asyncio.to_thread(display_first_run_notice, memory_instance, sync_type, trigger_function)
@@ -358,7 +361,9 @@ def detect_decay_usage_from_delete() -> Optional[Tuple[str, str, Optional[int], 
     return None
 
 
-def detect_decay_usage_from_delete_all(deleted_count: Any) -> Optional[Tuple[str, str, Optional[int], Optional[int]]]:
+def detect_decay_usage_from_delete_all(
+    deleted_count: Any,
+) -> Optional[Tuple[str, str, Optional[int], Optional[int]]]:
     if not telemetry_module.MEM0_TELEMETRY:
         return None
 
@@ -480,7 +485,9 @@ async def display_decay_usage_notice_async(
     )
 
 
-def detect_scale_threshold_from_top_k(top_k: Any) -> Optional[Tuple[str, str, Optional[int], Optional[int], int]]:
+def detect_scale_threshold_from_top_k(
+    top_k: Any,
+) -> Optional[Tuple[str, str, Optional[int], Optional[int], int]]:
     try:
         top_k_value = int(top_k)
     except (TypeError, ValueError):
@@ -771,7 +778,9 @@ async def display_performance_slow_query_notice_async(
     )
 
 
-def get_temporal_feature_error_message(sync_type: str, trigger_function: str, trigger_parameter: str) -> str:
+def get_temporal_feature_error_message(
+    sync_type: str, trigger_function: str, trigger_parameter: str
+) -> str:
     """Return the temporal feature error copy and capture event when available."""
     return _get_feature_error_message(
         TEMPORAL_FEATURE_NOTICE_ID,
@@ -795,7 +804,9 @@ async def get_temporal_feature_error_message_async(
     )
 
 
-def get_decay_feature_error_message(sync_type: str, trigger_function: str, trigger_parameter: str) -> str:
+def get_decay_feature_error_message(
+    sync_type: str, trigger_function: str, trigger_parameter: str
+) -> str:
     """Return the decay feature error copy and capture event when available."""
     return _get_feature_error_message(
         DECAY_FEATURE_NOTICE_ID,
@@ -844,9 +855,7 @@ def _get_feature_error_message(
 
         payload = _coerce_mapping(flags.get_flag_payload(FLAG_KEY))
         notices = payload.get("notices", {})
-        notice_config = _coerce_mapping(
-            notices.get(notice_id) if isinstance(notices, dict) else {}
-        )
+        notice_config = _coerce_mapping(notices.get(notice_id) if isinstance(notices, dict) else {})
         notice_config_found = bool(notice_config)
 
         copy = notice_config.get("copy")
@@ -903,7 +912,9 @@ def _get_feature_error_message(
     return plain_error
 
 
-def detect_temporal_usage_from_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[Tuple[str, str]]:
+def detect_temporal_usage_from_metadata(
+    metadata: Optional[Dict[str, Any]],
+) -> Optional[Tuple[str, str]]:
     try:
         if not isinstance(metadata, dict):
             return None
@@ -1523,7 +1534,9 @@ def _get_provider_memory_count(memory_instance) -> Optional[int]:
 
             client = getattr(vector_store, "client", None)
             client_count = (
-                getattr(client, "count", None) if client is not None and collection_name is not None else None
+                getattr(client, "count", None)
+                if client is not None and collection_name is not None
+                else None
             )
             if callable(client_count):
                 return _extract_count(client_count(index=collection_name))
@@ -1561,7 +1574,9 @@ def _extract_count(info: Any) -> Optional[int]:
     return None
 
 
-def _render_scale_copy(copy_template: Any, *, top_k: Optional[int], memory_count: Optional[int]) -> Optional[str]:
+def _render_scale_copy(
+    copy_template: Any, *, top_k: Optional[int], memory_count: Optional[int]
+) -> Optional[str]:
     if not isinstance(copy_template, str) or not copy_template.strip():
         return None
     try:
@@ -1656,7 +1671,9 @@ def _has_temporal_filter(filters: Any) -> bool:
             range_values = [item for op, item in value.items() if op in _RANGE_OPERATORS]
             if range_values and (
                 temporal_key
-                or any(_looks_temporal_value(item, allow_epoch=temporal_key) for item in range_values)
+                or any(
+                    _looks_temporal_value(item, allow_epoch=temporal_key) for item in range_values
+                )
             ):
                 return True
             if _has_temporal_filter(value):
