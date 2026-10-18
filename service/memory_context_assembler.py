@@ -4,6 +4,7 @@ Builds context blocks according to the Zep paper (Section 3).
 Handles decay scaling and factual consolidation bounds.
 """
 
+import math
 from typing import Any, Dict, List
 
 
@@ -56,7 +57,7 @@ class ContextAssembler:
         self, base_score: float, time_diff_seconds: float, tau: float = 86400.0
     ) -> float:
         """
-        Calculate an exponential decay score bounded between the configured limits.
+        Scale relevance by an exponential multiplier within the configured bounds.
 
         Args:
             base_score: The original relevance score.
@@ -64,13 +65,7 @@ class ContextAssembler:
             tau: Time constant for decay scaling (default 1 day).
 
         Returns:
-            The decayed score within bounds.
+            The original score multiplied by the bounded decay factor.
         """
-        import math
-
-        # Simple exponential decay modeled roughly on typical forgetting curves
         decay_factor = math.exp(-time_diff_seconds / tau)
-        raw_score = base_score * decay_factor
-
-        # Bound the score
-        return max(self.lower_bound, min(raw_score, self.upper_bound))
+        return base_score * max(self.lower_bound, min(decay_factor, self.upper_bound))
