@@ -8,8 +8,6 @@ from .duckdb_adapter import DuckDBAdapter
 use_vector_adapter("duckdb", DuckDBAdapter)
 use_graph_adapter("duckdb", DuckDBAdapter)
 
-from cognee.infrastructure.databases.dataset_database_handler import use_dataset_database_handler
-
 
 class DuckDBDatasetHandler:
     """DuckDB Dataset Handler."""
@@ -19,4 +17,15 @@ class DuckDBDatasetHandler:
         return dataset_name
 
 
-use_dataset_database_handler("duckdb", DuckDBDatasetHandler, "duckdb")
+# Add compatibility
+try:
+    from cognee.infrastructure.databases.dataset_database_handler import (
+        supported_dataset_database_handlers,
+    )
+
+    supported_dataset_database_handlers["duckdb"] = {
+        "handler_instance": DuckDBDatasetHandler,
+        "handler_provider": ("duckdb",),
+    }
+except ImportError:
+    pass

@@ -332,7 +332,10 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
             # Execute vector similarity search using cosine similarity
 
-            select_fields = ["id", f"array_cosine_distance(vector, {vector_str}) as distance"]
+            select_fields = [
+                "id",
+                f"array_cosine_distance(vector, {vector_str}) as distance",
+            ]
             if with_vector:
                 select_fields.append("vector")
             if include_payload:
@@ -528,7 +531,11 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         )
         """
         await self._execute_transaction(
-            [(create_node_table, None), (create_edge_table, None), (create_metadata_table, None)]
+            [
+                (create_node_table, None),
+                (create_edge_table, None),
+                (create_metadata_table, None),
+            ]
         )
 
     def _parse_node_row(self, row) -> dict[str, Any]:
@@ -641,7 +648,10 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
     ) -> None:
         """Documentation."""
         await self.add_nodes(
-            [node], [properties] if properties else None, source_ref_key, pipeline_run_id
+            [node],
+            [properties] if properties else None,
+            source_ref_key,
+            pipeline_run_id,
         )
 
     async def delete_node(self, node_id: str) -> None:
@@ -754,7 +764,9 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
     ) -> None:
         """Add a single edge."""
         await self.add_edges(
-            [(node1, node2, relationship_name, properties)], source_ref_key, pipeline_run_id
+            [(node1, node2, relationship_name, properties)],
+            source_ref_key,
+            pipeline_run_id,
         )
 
     async def delete_graph(self) -> None:
@@ -792,7 +804,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         p1 = ", ".join([f"${i + 1}" for i in range(len(target_ids))])
         p2 = ", ".join([f"${i + 1 + len(target_ids)}" for i in range(len(target_ids))])
         nodes_raw = await self._execute_query(
-            f"SELECT id, name, type, properties FROM graph_node WHERE id IN ({p1})", target_ids
+            f"SELECT id, name, type, properties FROM graph_node WHERE id IN ({p1})",
+            target_ids,
         )
         edges_raw = await self._execute_query(
             f"SELECT source_id, target_id, relationship_name, properties FROM graph_edge WHERE source_id IN ({p1}) AND target_id IN ({p2})",
@@ -962,7 +975,10 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         return nodes, edges
 
     async def get_nodeset_subgraph(
-        self, node_type: type[Any], node_name: list[str], node_name_filter_operator: str = "OR"
+        self,
+        node_type: type[Any],
+        node_name: list[str],
+        node_name_filter_operator: str = "OR",
     ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
         """Documentation."""
         if not node_name:
@@ -1072,7 +1088,10 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         pass
 
     async def attach_node_source_refs(
-        self, node_ids: list[str], source_ref_keys: list[str], pipeline_run_id: str | None = None
+        self,
+        node_ids: list[str],
+        source_ref_keys: list[str],
+        pipeline_run_id: str | None = None,
     ) -> None:
         """Documentation."""
         if not source_ref_keys:
@@ -1084,7 +1103,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
         for node_id in sorted({str(node_id) for node_id in node_ids}):
             existing = await self._execute_query_one(
-                "SELECT source_ref_keys, source_run_refs FROM graph_node WHERE id = $1", [node_id]
+                "SELECT source_ref_keys, source_run_refs FROM graph_node WHERE id = $1",
+                [node_id],
             )
             if existing is None:
                 continue
@@ -1109,7 +1129,10 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         await self._execute_transaction(queries)
 
     async def attach_edge_source_refs(
-        self, edges: list[Any], source_ref_keys: list[str], pipeline_run_id: str | None = None
+        self,
+        edges: list[Any],
+        source_ref_keys: list[str],
+        pipeline_run_id: str | None = None,
     ) -> None:
         """Documentation."""
         if not source_ref_keys:
@@ -1163,7 +1186,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
         for node_id in sorted({str(node_id) for node_id in node_ids}):
             existing = await self._execute_query_one(
-                "SELECT source_ref_keys, source_run_refs FROM graph_node WHERE id = $1", [node_id]
+                "SELECT source_ref_keys, source_run_refs FROM graph_node WHERE id = $1",
+                [node_id],
             )
             if existing is None:
                 continue
@@ -1242,7 +1266,9 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
     async def get_node_delete_data(self, node_ids: list[str]) -> dict[str, Any]:
         """Documentation."""
-        from cognee.infrastructure.databases.provenance.delete_data import NodeDeleteData
+        from cognee.infrastructure.databases.provenance.delete_data import (
+            NodeDeleteData,
+        )
 
         q = "SELECT id, name, type, properties, source_ref_keys, source_dataset_ids, source_run_ids, source_run_refs FROM graph_node WHERE id = $1"
         res = {}
@@ -1253,10 +1279,15 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
                     (json.loads(row[3]) if isinstance(row[3], str) else row[3]) if row[3] else {}
                 )
                 res[nid] = NodeDeleteData(
-                    node_id=row[0],
-                    node_type=row[2],
+                    id=row[0],
+                    type=row[2],
                     indexed_fields=["name"] if row[1] else [],
-                    node_properties={**props, "id": row[0], "name": row[1], "type": row[2]},
+                    node_properties={
+                        **props,
+                        "id": row[0],
+                        "name": row[1],
+                        "type": row[2],
+                    },
                     source_ref_keys=list(row[4]) if row[4] else [],
                     source_dataset_ids=list(row[5]) if row[5] else [],
                     source_run_ids=list(row[6]) if row[6] else [],
@@ -1289,6 +1320,90 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
                     source_run_refs=list(row[7]) if row[7] else [],
                 )
         return res
+
+    async def find_node_source_refs_by_dataset(self, dataset_id: str) -> dict[str, list[str]]:
+        """Documentation."""
+        from cognee.infrastructure.databases.provenance.source_refs import (
+            get_dataset_id_from_source_ref_key,
+        )
+
+        q = "SELECT id, source_ref_keys FROM graph_node WHERE list_contains(source_dataset_ids, $1)"
+        res = await self._execute_query(q, [dataset_id])
+        out = {}
+        for r in res:
+            owned = [
+                key
+                for key in (r[1] or [])
+                if str(get_dataset_id_from_source_ref_key(key)) == dataset_id
+            ]
+            if owned:
+                out[r[0]] = owned
+        return out
+
+    async def find_edge_source_refs_by_dataset(self, dataset_id: str) -> dict[Any, list[str]]:
+        """Documentation."""
+        from cognee.infrastructure.databases.provenance.delete_data import EdgeIdentity
+        from cognee.infrastructure.databases.provenance.source_refs import (
+            get_dataset_id_from_source_ref_key,
+        )
+
+        q = "SELECT source_id, target_id, relationship_name, source_ref_keys FROM graph_edge WHERE list_contains(source_dataset_ids, $1)"
+        res = await self._execute_query(q, [dataset_id])
+        out = {}
+        for r in res:
+            owned = [
+                key
+                for key in (r[3] or [])
+                if str(get_dataset_id_from_source_ref_key(key)) == dataset_id
+            ]
+            if owned:
+                out[EdgeIdentity(r[0], r[1], r[2])] = owned
+        return out
+
+    async def find_node_source_refs_by_pipeline_run(
+        self, pipeline_run_id: str
+    ) -> dict[str, list[str]]:
+        """Documentation."""
+        from cognee.infrastructure.databases.provenance.source_refs import (
+            get_pipeline_run_id_from_source_run_ref,
+            get_source_ref_key_from_source_run_ref,
+        )
+
+        q = "SELECT id, source_run_refs FROM graph_node WHERE list_contains(source_run_ids, $1)"
+        res = await self._execute_query(q, [pipeline_run_id])
+        out = {}
+        for r in res:
+            contributed = [
+                get_source_ref_key_from_source_run_ref(ref)
+                for ref in (r[1] or [])
+                if str(get_pipeline_run_id_from_source_run_ref(ref)) == pipeline_run_id
+            ]
+            if contributed:
+                out[r[0]] = contributed
+        return out
+
+    async def find_edge_source_refs_by_pipeline_run(
+        self, pipeline_run_id: str
+    ) -> dict[Any, list[str]]:
+        """Documentation."""
+        from cognee.infrastructure.databases.provenance.delete_data import EdgeIdentity
+        from cognee.infrastructure.databases.provenance.source_refs import (
+            get_pipeline_run_id_from_source_run_ref,
+            get_source_ref_key_from_source_run_ref,
+        )
+
+        q = "SELECT source_id, target_id, relationship_name, source_run_refs FROM graph_edge WHERE list_contains(source_run_ids, $1)"
+        res = await self._execute_query(q, [pipeline_run_id])
+        out = {}
+        for r in res:
+            contributed = [
+                get_source_ref_key_from_source_run_ref(ref)
+                for ref in (r[3] or [])
+                if str(get_pipeline_run_id_from_source_run_ref(ref)) == pipeline_run_id
+            ]
+            if contributed:
+                out[EdgeIdentity(r[0], r[1], r[2])] = contributed
+        return out
 
     async def find_nodes_by_source_ref(self, source_ref_key: str) -> list[str]:
         """Documentation."""
@@ -1324,38 +1439,3 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             """
             queries.append((q, [str(k), str(v)]))
         await self._execute_transaction(queries)
-
-    async def find_node_source_refs_by_dataset(self, dataset_id: str) -> dict[str, list[str]]:
-        """Documentation."""
-        q = "SELECT id, source_ref_keys FROM graph_node WHERE list_contains(source_dataset_ids, $1)"
-        res = await self._execute_query(q, [dataset_id])
-        return {r[0]: list(r[1]) if r[1] else [] for r in res}
-
-    async def find_edge_source_refs_by_dataset(self, dataset_id: str) -> dict[Any, list[str]]:
-        """Documentation."""
-        from cognee.infrastructure.databases.provenance.delete_data import EdgeIdentity
-
-        q = "SELECT source_id, target_id, relationship_name, source_ref_keys FROM graph_edge WHERE list_contains(source_dataset_ids, $1)"
-        res = await self._execute_query(q, [dataset_id])
-        return {EdgeIdentity(r[0], r[1], r[2]): list(r[3]) if r[3] else [] for r in res}
-
-    async def find_node_source_refs_by_pipeline_run(
-        self, pipeline_run_id: str
-    ) -> dict[str, list[str]]:
-        """Documentation."""
-        q = "SELECT id, source_run_refs FROM graph_node WHERE list_contains(source_run_ids, $1)"
-        res = await self._execute_query(q, [pipeline_run_id])
-        # Returns source_run_refs mapping according to Postgres implementation logic?
-        # Actually it's find_node_source_refs_by_pipeline_run, so we return the source_run_refs! Or source_ref_keys?
-        # Let's check Postgres adapter. Let's just assume source_run_refs.
-        return {r[0]: list(r[1]) if r[1] else [] for r in res}
-
-    async def find_edge_source_refs_by_pipeline_run(
-        self, pipeline_run_id: str
-    ) -> dict[Any, list[str]]:
-        """Documentation."""
-        from cognee.infrastructure.databases.provenance.delete_data import EdgeIdentity
-
-        q = "SELECT source_id, target_id, relationship_name, source_run_refs FROM graph_edge WHERE list_contains(source_run_ids, $1)"
-        res = await self._execute_query(q, [pipeline_run_id])
-        return {EdgeIdentity(r[0], r[1], r[2]): list(r[3]) if r[3] else [] for r in res}
