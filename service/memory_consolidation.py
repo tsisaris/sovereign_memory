@@ -61,7 +61,7 @@ class MemoryConsolidator:
                 ),
             )
             await self.conn.commit()
-        except Exception:
+        except (RuntimeError, ValueError):
             await self.conn.rollback()
             raise
 
@@ -76,7 +76,7 @@ class MemoryConsolidator:
                 """,
             )
             await self.conn.commit()
-        except Exception:
+        except (RuntimeError, ValueError):
             await self.conn.rollback()
             raise
 
@@ -103,16 +103,31 @@ class MemoryConsolidator:
                 await self.conn.commit()
                 return
 
-            # 2. Coordinate explicit projection removal via trusted registered tier processors
+            await self.conn.commit()
+
+            # 2. Coordinate explicit projection removal via trusted registered tier processors.
+            # We explicitly await providers to define the preparation format for expiration.
             for event_id in expired_ids:
                 for tier_name, processor in self.registry.items():
-                    deletion_work = {"action": "delete", "event_id": event_id}
-
-                    def _apply_deletion(proc=processor, work=deletion_work):
-                        return proc.apply(self.conn.native, work)
-
+                    # We prepare an event envelope mapping to the delete action format defined by the processor.
+                    # As providers have not yet standardized expiration inputs, this remains an explicit dependency blocker.
+                    # In a real environment, prepare(...) must yield valid `work` corresponding to expiration.
+                    envelope_stub = {"event_id": event_id, "event_type": "system.expire"}
                     try:
+                        work = await processor.prepare(envelope_stub, None)
+                    except (RuntimeError, ValueError):
+                        continue  # If provider rejects preparation, skip.
+
+                    # Each tier's projection deletion MUST execute within its own atomic native transaction.
+                    await self.conn.begin()
+                    try:
+
+                        def _apply_deletion(proc=processor, w=work):
+                            return proc.apply(self.conn.native, w)
+
                         result = await self.conn.run(_apply_deletion)
+
+                        cursor = await self.conn.cursor()
                         await cursor.execute(
                             """
                             UPDATE memory_receipts
@@ -120,7 +135,7 @@ class MemoryConsolidator:
                             WHERE event_id = ? AND tier = ?
                             """,
                             (
-                                "processed_no_new_fact",
+                                result.status,
                                 result.processor_id,
                                 result.processor_version,
                                 result.projection_version,
@@ -129,8 +144,14 @@ class MemoryConsolidator:
                                 tier_name,
                             ),
                         )
-                    except (RuntimeError, ValueError) as e:
-                        await cursor.execute(
+                        await self.conn.commit()
+                    except (RuntimeError, ValueError, ConnectionError) as e:
+                        await self.conn.rollback()
+
+                        # Register the failure in an independent transaction to preserve atomicity of the error receipt.
+                        await self.conn.begin()
+                        err_cursor = await self.conn.cursor()
+                        await err_cursor.execute(
                             """
                             UPDATE memory_receipts
                             SET status = 'terminal_failure', error_ref = ?
@@ -138,8 +159,10 @@ class MemoryConsolidator:
                             """,
                             (str(e)[:255], event_id, tier_name),
                         )
+                        await self.conn.commit()
 
-            await self.conn.commit()
-        except Exception:
-            await self.conn.rollback()
+        except (RuntimeError, ValueError):
+            # We trap and rollback any outer scope errors that happened before the per-tier loops.
+            if self.conn._in_transaction:
+                await self.conn.rollback()
             raise

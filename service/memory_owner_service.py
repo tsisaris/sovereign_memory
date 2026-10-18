@@ -59,6 +59,8 @@ class OwnerService:
             _, pending = await asyncio.wait(self.active_tasks, timeout=5.0)
             for t in pending:
                 t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
         if hasattr(self, "lifetime_conn") and self.lifetime_conn:
             await self.lifetime_conn.close()
