@@ -113,6 +113,26 @@ class OwnerService:
                 self._send_error(writer, "Missing 'event' in payload", "")
                 return
 
+            # 1. Enforce transport-layer authentication rather than trusting JSON actor claims
+            # Platform blocker: We cannot securely extract SO_PEERCRED using standard asyncio.
+            # Thus, we MUST rely on an injected authenticator, otherwise refuse the connection.
+            if not self.authenticator:
+                self._send_error(
+                    writer, "Configuration Error", "No authenticator registered to verify principal"
+                )
+                return
+
+            try:
+                principal = await self.authenticator.authenticate_stream(reader, writer)
+            except (RuntimeError, ValueError, ConnectionError) as e:
+                self._send_error(
+                    writer, "Authentication Error", f"Failed to authenticate connection: {e}"
+                )
+                return
+
+            # Bind the authenticated principal to the event explicitly
+            event_data["actor_agent_id"] = principal.agent_id
+
             try:
                 # Instantiate per-request independent connection per the concurrency rule
                 conn = await duckdb_connect(str(self.db_path))

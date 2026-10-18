@@ -79,3 +79,20 @@ class MemoryProcessor(Protocol):
             current owner transaction encompassing both the projection and receipt.
         """
         ...
+
+
+class AuthenticatedPrincipal:
+    """Represents a trusted actor authenticated at the transport layer."""
+
+    def __init__(self, agent_id: str, scope: str):
+        """Initialize authenticated principal."""
+        self.agent_id = agent_id
+        self.scope = scope
+
+
+class ConnectionAuthenticator(Protocol):
+    """A platform-specific seam for extracting trusted peer credentials from a socket."""
+
+    async def authenticate_stream(self, reader: Any, writer: Any) -> AuthenticatedPrincipal:
+        """Extract and verify the principal from the transport layer securely."""
+        ...
