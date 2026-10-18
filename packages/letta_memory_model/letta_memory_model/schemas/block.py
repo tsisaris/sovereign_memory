@@ -9,7 +9,7 @@ from pydantic import ConfigDict, Field
 class Block:
     """Class docstring."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
     id: Optional[str] = None
     label: str
     value: str
@@ -30,3 +30,9 @@ class Persona(Block):
     """Persona."""
 
     label: str = "persona"
+
+
+class FileBlock(Block):
+    file_id: str
+    source_id: str
+    is_open: bool = False

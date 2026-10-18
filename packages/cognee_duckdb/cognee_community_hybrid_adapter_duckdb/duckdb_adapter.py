@@ -865,14 +865,40 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
     async def get_graph_metrics(self, include_optional: bool = False) -> dict[str, Any]:
         """Documentation."""
-        node_res = await self._execute_query_one("SELECT COUNT(*) FROM graph_node")
-        edge_res = await self._execute_query_one("SELECT COUNT(*) FROM graph_edge")
+        nodes_raw = await self._execute_query("SELECT id FROM graph_node")
+        edges_raw = await self._execute_query("SELECT source_id, target_id FROM graph_edge")
+        node_count = len(nodes_raw)
+        edge_count = len(edges_raw)
+
+        from collections import defaultdict
+
+        graph = defaultdict(list)
+        for e in edges_raw:
+            graph[e[0]].append(e[1])
+            graph[e[1]].append(e[0])
+
+        visited = set()
+        components = 0
+        for node in nodes_raw:
+            nid = node[0]
+            if nid not in visited:
+                components += 1
+                queue = [nid]
+                while queue:
+                    curr = queue.pop(0)
+                    if curr not in visited:
+                        visited.add(curr)
+                        queue.extend(graph[curr])
+
+        density = (edge_count / (node_count * (node_count - 1))) if node_count > 1 else 0.0
+        average_degree = (2 * edge_count / node_count) if node_count > 0 else 0.0
+
         return {
-            "node_count": node_res[0] if node_res else 0,
-            "edge_count": edge_res[0] if edge_res else 0,
-            "density": 0.0,
-            "number_of_connected_components": 0,
-            "average_degree": 0.0,
+            "node_count": node_count,
+            "edge_count": edge_count,
+            "density": density,
+            "number_of_connected_components": components,
+            "average_degree": average_degree,
         }
 
     async def get_graph_counts(self) -> tuple[int, int]:
@@ -1083,9 +1109,41 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             queries.append((q, [edge.source_id, edge.target_id, edge.relationship_name]))
         await self._execute_transaction(queries)
 
-    async def remove_belongs_to_set_tags(self, tags: list[str], node_ids: list[str]) -> None:
-        """Documentation."""
-        pass
+    async def remove_belongs_to_set_tags(
+        self, tags: list[str], node_ids: list[str] | None = None
+    ) -> None:
+        """Remove tags from belongs_to_set property array."""
+        if not tags:
+            return
+        if node_ids is not None and not node_ids:
+            return
+
+        tags_to_remove = set(tags)
+        if node_ids is None:
+            q = "SELECT id, properties FROM graph_node"
+            res = await self._execute_query(q)
+        else:
+            p1 = ", ".join([f"${i + 1}" for i in range(len(node_ids))])
+            q = f"SELECT id, properties FROM graph_node WHERE id IN ({p1})"
+            res = await self._execute_query(q, node_ids)
+
+        queries = []
+        for r in res:
+            props = json.loads(r[1]) if isinstance(r[1], str) else r[1]
+            if not props or "belongs_to_set" not in props:
+                continue
+            belongs_to = props["belongs_to_set"]
+            if isinstance(belongs_to, list):
+                remaining = [t for t in belongs_to if t not in tags_to_remove]
+                if len(remaining) != len(belongs_to):
+                    props["belongs_to_set"] = remaining
+                    props_json = json.dumps(serialize_for_json(props))
+                    queries.append(
+                        ("UPDATE graph_node SET properties = $1 WHERE id = $2", [props_json, r[0]])
+                    )
+
+        if queries:
+            await self._execute_transaction(queries)
 
     async def attach_node_source_refs(
         self,
@@ -1279,8 +1337,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
                     (json.loads(row[3]) if isinstance(row[3], str) else row[3]) if row[3] else {}
                 )
                 res[nid] = NodeDeleteData(
-                    id=row[0],
-                    type=row[2],
+                    node_id=row[0],
+                    node_type=row[2],
                     indexed_fields=["name"] if row[1] else [],
                     node_properties={
                         **props,
