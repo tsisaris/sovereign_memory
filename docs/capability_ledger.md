@@ -20,10 +20,10 @@
 | Zep Cloud | Thread and user summaries, summary instructions | Docs (thin); Mem0 paper §2.1 describes the same asynchronous summary pattern | — | Paper/docs, under-documented | unproven |
 | Zep Cloud | Observations (pattern detection over the graph) | Docs give behaviour and API only; method described as "clusters of facts and entities" | — | **Opaque** | unproven |
 | Zep Cloud | Proprietary extraction LLM, reranker, embedder; Konig; dashboards; SOC 2 | — | — | Opaque but substitutable (any local model slots into Graphiti) | unproven |
-| Cognee | `add/cognify/search` and `remember/recall/improve/forget`, 21 search types, OWL/RDF ontology, loaders for text/CSV/code/image/audio/video/PDF/Office | cognee | 1.6.5, Apache-2.0 | Open | tests/test_duckdb_sqlalchemy_async_dialect.py |
+| Cognee | `add/cognify/search` and `remember/recall/improve/forget`, 21 search types, OWL/RDF ontology, loaders for text/CSV/code/image/audio/video/PDF/Office | cognee | 1.6.5, Apache-2.0 | Open | unproven |
 | Cognee | Feedback weights, truth state, conflict review, entity consolidation, cross-connecting, session-to-graph promotion | cognee `tasks/memify/`, graph interface | Apache-2.0 | Open | unproven |
 | Cognee | Temporal search, timestamps-in-range, temporal anchors | cognee | Apache-2.0 | Open | unproven |
-| Cognee | Users, roles, tenants, dataset permissions, per-dataset database isolation | cognee relational layer | Apache-2.0 | Open | tests/test_duckdb_sqlalchemy_async_dialect.py |
+| Cognee | Users, roles, tenants, dataset permissions, per-dataset database isolation | cognee relational layer | Apache-2.0 | Open | unproven |
 | Cognee | MCP server, REST, UI, visualiser, importers from Mem0/Zep/Graphiti/Letta, eval framework (LoCoMo, BEAM) | cognee | Apache-2.0 | Open | unproven |
 | Mem0 | Scoped memories (`user_id/agent_id/run_id`), `add/get/get_all/search/update/delete/history`, metadata filters with ten operators, reranking, async, vision input, OpenAI-compatible chat endpoint, self-hosted REST server | mem0ai | 2.2.1, Apache-2.0 | Open | unproven |
 | Mem0 | ADD/UPDATE/DELETE/NONE consolidation on `add()` | mem0ai 1.0.11 sdist: `mem0/configs/prompts.py` line 443, `mem0/memory/main.py` lines 591–660; paper §2.1 | 1.0.11, Apache-2.0 | Open (removed from current OSS) | unproven |
