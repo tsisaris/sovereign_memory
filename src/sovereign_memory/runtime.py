@@ -16,17 +16,10 @@ import logging
 import os
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
-from cognee.infrastructure.databases.vector.embeddings.LiteLLMEmbeddingEngine import (
-    LiteLLMEmbeddingEngine,
-)
-from mem0.memory.owner_tier import Mem0Tier
-from service.memory_cognee_chunks import CogneeChunkTier
 from service.memory_dispatcher import ProcessorRegistry
-from service.memory_graphiti_episodes import GraphitiEpisodeTier
-from service.memory_letta_recall import LettaRecallTier
 from service.memory_owner_service import OwnerService
 from service.memory_processor_seam import TerminalProcessingError
 from service.memory_visibility import RestrictedPolicy, ScopeLabelPolicy
@@ -37,20 +30,44 @@ CONFIG_ENVIRONMENT_VARIABLE = "SOVEREIGN_MEMORY_CONFIG"
 logger = logging.getLogger(__name__)
 
 
+def _built(tier: str, make: Callable[[], Any]) -> Any:
+    """Return make(), turning a failure to build the engine into a named ConfigurationError."""
+    try:
+        return make()
+    except (ValueError, ImportError, OSError) as error:
+        raise ConfigurationError(f"tiers.{tier} cannot be built: {error}") from error
+
+
 def build_tiers(config: RuntimeConfig) -> list[Any]:
     """Build one engine object per configured tier; each is both processor and retriever.
 
-    Raises ConfigurationError when an engine cannot be built from its settings.
-    It opens no database.
+    An engine's package is imported only when its tier is configured, so a
+    deployment without a tier (or one whose configuration is invalid) never
+    initializes that engine's SDK, logging or telemetry. Raises ConfigurationError
+    naming the tier when an engine cannot be built from its settings. It opens no
+    database.
     """
     tiers: list[Any] = []
     if config.episodic_organization is not None:
-        tiers.append(LettaRecallTier(config.episodic_organization))
+        from service.memory_letta_recall import LettaRecallTier
+
+        organization = config.episodic_organization
+        tiers.append(_built("episodic", lambda: LettaRecallTier(organization)))
     if config.temporal_enabled:
-        tiers.append(GraphitiEpisodeTier())
+        from service.memory_graphiti_episodes import GraphitiEpisodeTier
+
+        tiers.append(_built("temporal", GraphitiEpisodeTier))
     if config.relational_embedding is not None and config.relational_database_name is not None:
         settings = config.relational_embedding
-        try:
+        database_name = config.relational_database_name
+
+        def relational() -> Any:
+            """Build the Cognee embedding engine from the configured model and the chunk tier."""
+            from cognee.infrastructure.databases.vector.embeddings.LiteLLMEmbeddingEngine import (
+                LiteLLMEmbeddingEngine,
+            )
+            from service.memory_cognee_chunks import CogneeChunkTier
+
             engine = LiteLLMEmbeddingEngine(
                 model=settings.model,
                 provider=settings.provider,
@@ -58,13 +75,19 @@ def build_tiers(config: RuntimeConfig) -> list[Any]:
                 api_key=settings.api_key,
                 endpoint=settings.endpoint,
             )
-        except (ValueError, ImportError, OSError) as error:
-            raise ConfigurationError(
-                f"tiers.relational.embedding cannot be built: {error}"
-            ) from error
-        tiers.append(CogneeChunkTier(engine, config.relational_database_name))
+            return CogneeChunkTier(engine, database_name)
+
+        tiers.append(_built("relational.embedding", relational))
     if config.personalization is not None:
-        tiers.append(Mem0Tier(config.personalization, terminal_error=TerminalProcessingError))
+        from mem0.memory.owner_tier import Mem0Tier
+
+        memory = config.personalization
+        tiers.append(
+            _built(
+                "personalization",
+                lambda: Mem0Tier(memory, terminal_error=TerminalProcessingError),
+            )
+        )
     return tiers
 
 
@@ -109,18 +132,31 @@ async def maintain(service: OwnerService, interval: float, stop: asyncio.Event) 
 
 
 async def run(service: OwnerService, maintenance_interval_seconds: float) -> None:
-    """Start the service and serve until SIGINT or SIGTERM, then stop it cleanly."""
+    """Start the service and serve until SIGINT or SIGTERM, then stop it cleanly.
+
+    Whatever ends the wait (a signal, a failed start, cancellation), the
+    maintenance task is told to stop and awaited, and the service is stopped, so no
+    task or owner connection outlives the call. A failure of maintenance itself
+    is logged by it, never lost.
+    """
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(signum, stop.set)
-    await service.start()
-    maintenance = asyncio.create_task(maintain(service, maintenance_interval_seconds, stop))
     try:
-        await stop.wait()
+        await service.start()
+        maintenance = asyncio.create_task(maintain(service, maintenance_interval_seconds, stop))
+        try:
+            await stop.wait()
+        finally:
+            stop.set()
+            try:
+                await maintenance
+            finally:
+                await service.stop()
     finally:
-        await maintenance
-        await service.stop()
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(signum)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

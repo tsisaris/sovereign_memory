@@ -34,7 +34,8 @@ from mem0.memory.main import (
 
 TIER_NAME = "personalization"
 PROJECTION_VERSION = "mem0-history-vector-1"
-EXPIRE_EVENT_TYPE = "system.expire"
+# Owner-authored removal events and the operation each one carries in its payload.
+REMOVAL_OPERATIONS = {"system.expire": "expire", "system.forget": "forget"}
 PROVENANCE_FIELDS = (
     "event_id",
     "source_revision",
@@ -171,8 +172,11 @@ class Mem0Tier:
         memory = await self._read(lambda m: m)
         event_id = event_envelope["event_id"]
         actor = event_envelope.get("actor_agent_id", event_envelope.get("agent_id"))
-        if event_envelope.get("event_type") == EXPIRE_EVENT_TYPE:
-            return await self._prepare_expiry(event_id, event_envelope, verified_payload_bytes)
+        operation = REMOVAL_OPERATIONS.get(event_envelope.get("event_type"))
+        if operation is not None:
+            return self._prepare_removal(
+                event_id, event_envelope, verified_payload_bytes, operation
+            )
         scope_id = self.scope_of(actor)
 
         messages, infer = self._messages_of(event_envelope, verified_payload_bytes)
@@ -233,29 +237,40 @@ class Mem0Tier:
             for key in dict.fromkeys(needed)
         }
 
-    async def _prepare_expiry(
-        self, event_id: str, envelope: Dict[str, Any], payload: Optional[bytes]
+    def _prepare_removal(
+        self, event_id: str, envelope: Dict[str, Any], payload: Optional[bytes], operation: str
     ) -> PreparedWork:
-        """Validate an owner-authored expiry event and prepare its removal.
+        """Validate an owner-authored expire or forget event and prepare its removal.
 
-        apply re-reads the memories derived from the target event on the owner's
-        handle; removing them and unlinking their entities needs no model call.
+        The payload must be a JSON object whose operation is the one the event type
+        names and whose target_event_id equals the envelope's causation_event_id;
+        the target event id and its actor must be non-empty strings. Anything else
+        is a terminal failure and nothing is prepared, so a malformed removal can
+        never widen what is deleted. apply re-reads the memories derived from the
+        target event by that actor on the owner's handle; removing them and
+        unlinking their entities needs no model call.
         """
         if payload is None:
-            raise self.terminal_error("Expiry event has no payload bytes")
-        body = json.loads(payload.decode("utf-8"))
-        target = body.get("target_event_id")
-        owner_of_target = body.get("target_actor_agent_id")
+            raise self.terminal_error(f"The {operation} event has no payload bytes")
+        try:
+            body = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise self.terminal_error(f"The {operation} payload is not JSON: {error}") from error
+        target = body.get("target_event_id") if isinstance(body, dict) else None
+        target_actor = body.get("target_actor_agent_id") if isinstance(body, dict) else None
         if (
-            body.get("operation") != "expire"
+            not isinstance(body, dict)
+            or body.get("operation") != operation
+            or not isinstance(target, str)
+            or not target
             or target != envelope.get("causation_event_id")
-            or not isinstance(owner_of_target, str)
-            or not owner_of_target
+            or not isinstance(target_actor, str)
+            or not target_actor
         ):
-            raise self.terminal_error("Expiry payload does not match its causation event")
+            raise self.terminal_error(f"The {operation} payload does not match its causation event")
         return PreparedWork(
-            kind="expire",
-            scope_id=owner_of_target,
+            kind="remove",
+            scope_id=target_actor,
             event_id=event_id,
             messages=[],
             metadata={},
@@ -265,7 +280,7 @@ class Mem0Tier:
             mapping={},
             raw_embeddings=[],
             target_event_id=target,
-            target_actor=owner_of_target,
+            target_actor=target_actor,
             actor=envelope.get("actor_agent_id"),
         )
 
@@ -320,8 +335,8 @@ class Mem0Tier:
         memory = self._memory_for(native_tx_handle)
         work = prepared_work
         with memory.use_planned_embeddings(work.entity_embeddings):
-            if work.kind == "expire":
-                removed = self._expire(memory, work)
+            if work.kind == "remove":
+                removed = self._remove(memory, work)
                 status = "processed" if removed else "processed_no_new_fact"
             elif work.kind == "raw":
                 texts = [m for m in work.messages if m.get("role") != "system"]
@@ -366,8 +381,12 @@ class Mem0Tier:
                     f"Actor {work.actor!r} may not change a memory authored by {author!r}"
                 )
 
-    def _expire(self, memory: Memory, work: PreparedWork) -> int:
-        """Delete every memory derived from the expired event; return how many were removed."""
+    def _remove(self, memory: Memory, work: PreparedWork) -> int:
+        """Delete every memory derived from the removed event; return how many were removed.
+
+        Each deletion goes through Mem0's own delete, so history records it and the
+        entity links are updated. Messages the source ledger holds are not touched.
+        """
         rows = self._derived(memory, work.target_event_id, work.target_actor or "")
         for row in rows:
             memory._delete_memory(row.id, existing_memory=row)

@@ -11,7 +11,9 @@ from the transport, never from the request body.
 import asyncio
 import json
 import logging
+import os
 import socket
+import stat
 import struct
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -30,6 +32,39 @@ from service.memory_retrieval import MemoryRetrievalService
 
 logger = logging.getLogger(__name__)
 OPERATIONS = ("capture", "retrieve", "forget", "status")
+
+
+def _same_file(first: Path, second: Path) -> bool:
+    """Say whether two paths name one file: the same resolved path, or the same existing file."""
+    if first.resolve() == second.resolve():
+        return True
+    return first.exists() and second.exists() and os.path.samefile(first, second)
+
+
+def _inspect_socket_path(path: Path) -> tuple[int, int] | None:
+    """Check that path is free or a stale socket and return the stale socket's identity.
+
+    Returns None when nothing exists at path, and (device, inode) of a socket file
+    nothing is listening on. Raises FileExistsError for a symlink, a regular file,
+    a directory or any other non-socket, and for a socket another service answers
+    on, so the caller never replaces something it does not own. It deletes nothing.
+    """
+    try:
+        found = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISSOCK(found.st_mode):
+        raise FileExistsError(f"{path} exists and is not a socket; refusing to replace it")
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.connect(str(path))
+    except (ConnectionRefusedError, FileNotFoundError):
+        return found.st_dev, found.st_ino
+    except OSError as error:
+        raise FileExistsError(f"Cannot tell whether the socket {path} is stale: {error}") from error
+    finally:
+        probe.close()
+    raise FileExistsError(f"Another service is listening on {path}; refusing to replace it")
 
 
 class OwnerService:
@@ -59,37 +94,94 @@ class OwnerService:
         """
         self.socket_path = Path(socket_path)
         self.db_path = Path(db_path)
+        if _same_file(self.socket_path, self.db_path):
+            raise ValueError("socket_path and db_path name the same file")
         self.server = None
+        self._socket_identity: tuple[int, int] | None = None
         self.authenticator = authenticator
         self.registry = registry or ProcessorRegistry()
         self.retrievers = retrievers or {}
         self.policy = policy
         self.max_request_bytes = max_request_bytes
         self.drain_timeout_seconds = drain_timeout_seconds
+        self.active_tasks: set[asyncio.Task] = set()
+        self.processing_tasks: set[asyncio.Task] = set()
+        self.lifetime_conn: AsyncConnection | None = None
 
     async def start(self) -> None:
-        """Initialize database connection and start UNIX socket server."""
-        self.active_tasks = set()
+        """Initialize database connection and start UNIX socket server.
 
-        # Hold an exclusive single-process file ownership connection for the lifetime of the service.
-        self.lifetime_conn = await duckdb_connect(str(self.db_path))
-        core = OwnerCore(self.lifetime_conn)
-        await core.initialize_schema()
-        self.dispatcher = MemoryDispatcher(self.lifetime_conn, self.registry)
-        self.retrieval = MemoryRetrievalService(self.lifetime_conn, self.retrievers, self.policy)
-        self.processing_tasks: set[asyncio.Task] = set()
-        # Restart: finish whatever the previous run left owed to registered engines.
-        self._spawn_processing(self.dispatcher.process_pending())
+        If any step fails, the owner connection is released (after in-flight
+        engine work finishes) before the error is raised again, so a failed
+        start never leaves the database file locked. Before anything is acquired,
+        the socket path must be free or a stale socket (FileExistsError otherwise:
+        a regular file, symlink, directory or a socket another service answers on is
+        never replaced). A stale socket is removed only once the database is owned
+        and only if it is still the same file that was checked. This service's own
+        socket is remembered by identity, so only it is removed at stop.
+        """
+        stale = _inspect_socket_path(self.socket_path)
+        try:
+            # Hold an exclusive single-process file ownership connection for the lifetime of the service.
+            self.lifetime_conn = await duckdb_connect(str(self.db_path))
+            core = OwnerCore(self.lifetime_conn)
+            await core.initialize_schema()
+            self.dispatcher = MemoryDispatcher(self.lifetime_conn, self.registry)
+            self.retrieval = MemoryRetrievalService(
+                self.lifetime_conn, self.retrievers, self.policy
+            )
+            # Restart: finish whatever the previous run left owed to registered engines.
+            self._spawn_processing(self.dispatcher.process_pending())
 
-        # Ensure socket directory exists
-        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.socket_path.exists():
+            # Ensure socket directory exists
+            self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+            if stale is not None:
+                if _inspect_socket_path(self.socket_path) != stale:
+                    raise FileExistsError(f"{self.socket_path} changed while starting; refusing")
+                self.socket_path.unlink()
+
+            self.server = await asyncio.start_unix_server(
+                self.handle_client_task, str(self.socket_path)
+            )
+            made = os.lstat(self.socket_path)
+            self._socket_identity = (made.st_dev, made.st_ino)
+        except BaseException:
+            if self.server is not None:
+                self.server.close()
+                await self.server.wait_closed()
+                self.server = None
+            self._remove_own_socket()
+            await self._release_connection()
+            raise
+        logger.info(f"Owner service listening on {self.socket_path}")
+
+    def _remove_own_socket(self) -> None:
+        """Remove the socket file only if it is the very file this service bound; safe to repeat.
+
+        A path that is missing, or is now anything else (another service's socket,
+        a regular file, a symlink), is left alone.
+        """
+        identity, self._socket_identity = self._socket_identity, None
+        if identity is None:
+            return
+        try:
+            found = os.lstat(self.socket_path)
+        except FileNotFoundError:
+            return
+        if stat.S_ISSOCK(found.st_mode) and (found.st_dev, found.st_ino) == identity:
             self.socket_path.unlink()
 
-        self.server = await asyncio.start_unix_server(
-            self.handle_client_task, str(self.socket_path)
-        )
-        logger.info(f"Owner service listening on {self.socket_path}")
+    async def _release_connection(self) -> None:
+        """Let in-flight engine work finish, then close the owner connection; safe to repeat.
+
+        Cancelling engine work mid-transaction would invalidate the connection, so
+        it is awaited, and an engine failure is logged by its own task callback.
+        """
+        if self.processing_tasks:
+            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
+        connection, self.lifetime_conn = self.lifetime_conn, None
+        if connection is not None:
+            await connection.close()
 
     def _spawn_processing(self, coroutine) -> None:
         """Run processing in the background while keeping a reference until it ends."""
@@ -118,22 +210,16 @@ class OwnerService:
             await self.server.wait_closed()
 
         # Drain active clients with a bounded timeout
-        if hasattr(self, "active_tasks") and self.active_tasks:
+        if self.active_tasks:
             _, pending = await asyncio.wait(self.active_tasks, timeout=self.drain_timeout_seconds)
             for t in pending:
                 t.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
 
-        # Let in-flight engine work finish: cancelling it mid-transaction would invalidate the connection.
-        if getattr(self, "processing_tasks", None):
-            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
+        await self._release_connection()
 
-        if hasattr(self, "lifetime_conn") and self.lifetime_conn:
-            await self.lifetime_conn.close()
-
-        if self.socket_path.exists():
-            self.socket_path.unlink()
+        self._remove_own_socket()
 
     async def serve_forever(self) -> None:
         """Run the server until cancelled."""
