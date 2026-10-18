@@ -18,7 +18,7 @@ refused with a terminal failure rather than reported as processed.
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.metadata import version
 from typing import Any, Callable, Dict, List, Optional
 
@@ -79,6 +79,9 @@ class PreparedWork:
     mapping: Dict[str, str]
     raw_embeddings: List[List[float]]
     target_event_id: Optional[str] = None
+    target_actor: Optional[str] = None
+    actor: Optional[str] = None
+    entity_embeddings: Dict[Any, List[float]] = field(default_factory=dict)
 
 
 class Mem0Tier:
@@ -97,16 +100,33 @@ class Mem0Tier:
         self,
         config: MemoryConfig,
         terminal_error: type[Exception] = TerminalCaptureError,
+        scope_of: Callable[[str], str] = lambda actor: actor,
+        may_modify: Callable[[str, Optional[str]], bool] = lambda actor, author: actor == author,
     ) -> None:
         """Keep the configuration; nothing is opened until the first owner call.
 
         terminal_error is the exception type that tells the owner a failure is
         permanent; pass the owner's TerminalProcessingError.
+
+        scope_of maps an event's authenticated actor to the Mem0 identity scope
+        (user_id) its memories are stored and consolidated under. The default
+        keeps each actor's memories separate (the restricted profile); a shared
+        pool deployment passes a function returning its one pool id. The actor
+        is always kept as provenance in each memory's payload, and who may read
+        a memory is decided by the visibility the owner passes to retrieve, never
+        by this mapping.
+
+        may_modify(actor, author) says whether an event's actor may update or
+        delete a memory authored by another actor. The default refuses anything
+        but one's own memory (fail closed); a shared-pool deployment passes the
+        rule its permission owner defines. A refused change is a terminal failure.
         """
         if config.vector_store.provider != "duckdb":
             raise ValueError("Mem0Tier needs the duckdb vector store provider")
         self.config = config
         self.terminal_error = terminal_error
+        self.scope_of = scope_of
+        self.may_modify = may_modify
         self._reader: Optional[Callable[..., Any]] = None
         self._memory: Optional[Memory] = None
         self._handle: Optional[duckdb.DuckDBPyConnection] = None
@@ -150,16 +170,17 @@ class Mem0Tier:
             )
         memory = await self._read(lambda m: m)
         event_id = event_envelope["event_id"]
-        scope_id = event_envelope.get("actor_agent_id", event_envelope.get("agent_id"))
+        actor = event_envelope.get("actor_agent_id", event_envelope.get("agent_id"))
         if event_envelope.get("event_type") == EXPIRE_EVENT_TYPE:
-            return self._prepare_expiry(event_id, scope_id, event_envelope, verified_payload_bytes)
+            return await self._prepare_expiry(event_id, event_envelope, verified_payload_bytes)
+        scope_id = self.scope_of(actor)
 
         messages, infer = self._messages_of(event_envelope, verified_payload_bytes)
         provenance = {
             key: event_envelope[key] for key in PROVENANCE_FIELDS if event_envelope.get(key)
         }
         provenance["event_id"] = event_id
-        provenance["actor_agent_id"] = scope_id
+        provenance["actor_agent_id"] = actor
         metadata, filters = _build_filters_and_metadata(user_id=scope_id, input_metadata=provenance)
         if not infer:
             texts = [m["content"] for m in messages if m.get("role") != "system"]
@@ -179,6 +200,15 @@ class Mem0Tier:
                 embeddings[text] = await asyncio.to_thread(
                     memory.embedding_model.embed, text, purpose
                 )
+        entity_embeddings = await self._embed_entities(
+            memory,
+            [a["text"] for a in decisions.get("memory", []) if a["event"] == "UPDATE"],
+            [
+                mapping[a["id"]]
+                for a in decisions.get("memory", [])
+                if a["event"] in ("UPDATE", "DELETE")
+            ],
+        )
         return PreparedWork(
             "actions",
             scope_id,
@@ -190,12 +220,31 @@ class Mem0Tier:
             decisions,
             mapping,
             [],
+            actor=actor,
+            entity_embeddings=entity_embeddings,
         )
 
-    def _prepare_expiry(
-        self, event_id: str, _owner_scope: str, envelope: Dict[str, Any], payload: Optional[bytes]
+    async def _embed_entities(
+        self, memory: Memory, new_texts: List[str], changed_memory_ids: List[str]
+    ) -> Dict[Any, List[float]]:
+        """Embed, outside the transaction, every entity text apply's entity upkeep will need.
+
+        Covers the entities of each updated memory text and the entity records that
+        still link to a memory about to be updated or deleted. Reads go through the
+        owner's reader; embedding goes through the model, never the database worker.
+        """
+        needed = list(memory._entity_texts_to_embed(new_texts))
+        if changed_memory_ids:
+            needed += await self._read(lambda m: m._linked_entity_texts(changed_memory_ids))
+        return {
+            key: await asyncio.to_thread(memory.embedding_model.embed, *key)
+            for key in dict.fromkeys(needed)
+        }
+
+    async def _prepare_expiry(
+        self, event_id: str, envelope: Dict[str, Any], payload: Optional[bytes]
     ) -> PreparedWork:
-        """Read an owner-authored expiry event and name the captured event to remove."""
+        """Read an owner-authored expiry event, name the memories to remove and prepare their entity upkeep."""
         if payload is None:
             raise self.terminal_error("Expiry event has no payload bytes")
         body = json.loads(payload.decode("utf-8"))
@@ -208,8 +257,35 @@ class Mem0Tier:
             or not owner_of_target
         ):
             raise self.terminal_error("Expiry payload does not match its causation event")
-        # The memories to remove belong to the expired event's actor, not to the owner.
-        return PreparedWork("expire", owner_of_target, event_id, [], {}, {}, {}, {}, {}, [], target)
+        memory = await self._read(lambda m: m)
+        ids = await self._read(lambda m: [r.id for r in self._derived(m, target, owner_of_target)])
+        entity_embeddings = await self._embed_entities(memory, [], ids)
+        return PreparedWork(
+            "expire",
+            owner_of_target,
+            event_id,
+            [],
+            {},
+            {},
+            {},
+            {},
+            {},
+            [],
+            target,
+            owner_of_target,
+            entity_embeddings,
+        )
+
+    @staticmethod
+    def _derived(memory: Memory, target_event_id: Optional[str], actor: str) -> list:
+        """List the stored memories derived from one captured event by one actor (read only)."""
+        store = memory.vector_store
+        count = store.col_info()["count"]
+        if not count:
+            return []
+        return store.list(
+            filters={"event_id": target_event_id, "actor_agent_id": actor}, top_k=count
+        )
 
     def _messages_of(self, envelope: Dict[str, Any], payload: Optional[bytes]):
         """Return (messages, infer) from an event, or raise the terminal error.
@@ -250,34 +326,56 @@ class Mem0Tier:
         """
         memory = self._memory_for(native_tx_handle)
         work = prepared_work
-        if work.kind == "expire":
-            removed = self._expire(memory, work)
-            status = "processed" if removed else "processed_no_new_fact"
-        elif work.kind == "raw":
-            texts = [m for m in work.messages if m.get("role") != "system"]
-            for message, embedding in zip(texts, work.raw_embeddings, strict=True):
-                meta = dict(work.metadata, role=message["role"])
-                memory._create_memory(message["content"], {message["content"]: embedding}, meta)
-            memory.db.save_messages(work.messages, _scope(work))
-            status = "processed" if texts else "processed_no_new_fact"
-        else:
-            returned = memory._execute_memory_actions(
-                work.decisions, work.mapping, work.embeddings, work.metadata, work.filters
+        with memory.use_planned_embeddings(work.entity_embeddings):
+            if work.kind == "expire":
+                removed = self._expire(memory, work)
+                status = "processed" if removed else "processed_no_new_fact"
+            elif work.kind == "raw":
+                texts = [m for m in work.messages if m.get("role") != "system"]
+                for message, embedding in zip(texts, work.raw_embeddings, strict=True):
+                    meta = dict(work.metadata, role=message["role"])
+                    memory._create_memory(message["content"], {message["content"]: embedding}, meta)
+                memory.db.save_messages(work.messages, _scope(work))
+                status = "processed" if texts else "processed_no_new_fact"
+            else:
+                self._require_may_modify(memory, work)
+                returned = memory._execute_memory_actions(
+                    work.decisions, work.mapping, work.embeddings, work.metadata, work.filters
+                )
+                memory.db.save_messages(work.messages, _scope(work))
+                changed = [r for r in returned if r.get("event") in ("ADD", "UPDATE", "DELETE")]
+                status = "processed" if changed else "processed_no_new_fact"
+        if memory.planned_embedding_misses:
+            # Entity upkeep needed text that was not embedded before the transaction: refuse
+            # to report success, so the owner rolls back and the event is prepared again.
+            raise RuntimeError(
+                "Entity upkeep needed embeddings that were not prepared: "
+                f"{memory.planned_embedding_misses}"
             )
-            memory.db.save_messages(work.messages, _scope(work))
-            changed = [r for r in returned if r.get("event") in ("ADD", "UPDATE", "DELETE")]
-            status = "processed" if changed else "processed_no_new_fact"
         return TierResult(status, "mem0-duckdb", version("mem0_duckdb"), PROJECTION_VERSION)
+
+    def _require_may_modify(self, memory: Memory, work: PreparedWork) -> None:
+        """Refuse, as a terminal failure, any UPDATE or DELETE of a memory the actor may not change.
+
+        A target that has disappeared since the plan raises ValueError instead,
+        which the owner records as retryable.
+        """
+        for action in work.decisions.get("memory", []):
+            if action["event"] not in ("UPDATE", "DELETE"):
+                continue
+            target = memory.vector_store.get(vector_id=work.mapping[action["id"]])
+            if target is None:
+                # Changed by someone else since the plan was made: prepare again.
+                raise ValueError(f"Memory {work.mapping[action['id']]} no longer exists")
+            author = (target.payload or {}).get("actor_agent_id")
+            if not self.may_modify(work.actor or "", author):
+                raise self.terminal_error(
+                    f"Actor {work.actor!r} may not change a memory authored by {author!r}"
+                )
 
     def _expire(self, memory: Memory, work: PreparedWork) -> int:
         """Delete every memory derived from the expired event; return how many were removed."""
-        store = memory.vector_store
-        count = store.col_info()["count"]
-        if not count:
-            return 0
-        rows = store.list(
-            filters={"user_id": work.scope_id, "event_id": work.target_event_id}, top_k=count
-        )
+        rows = self._derived(memory, work.target_event_id, work.target_actor or "")
         for row in rows:
             memory._delete_memory(row.id, existing_memory=row)
         return len(rows)
@@ -293,29 +391,42 @@ class Mem0Tier:
     def retrieve(
         self, native_handle: duckdb.DuckDBPyConnection, scope: Any, prepared_query: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
-        """Search the scope's own memories on the owner's handle; expired ones are left out.
+        """Search the memories the scope's visibility permits on the owner's handle; expired ones are left out.
 
-        Every hit names the captured event it came from. A memory without that
-        provenance, or from another identity, raises instead of being returned.
+        The search is limited to the producers the visibility names ("own": the
+        principal; "granted": the granted actors; "pool": no producer limit).
+        Every hit names the captured event it came from and is re-checked against
+        the visibility; an unknown mode or a hit it does not permit raises
+        instead of being returned.
         """
+        visibility = scope.visibility
+        if visibility.mode == "own":
+            filters: Dict[str, Any] = {"actor_agent_id": scope.agent_id}
+        elif visibility.mode == "granted":
+            filters = {"actor_agent_id": {"in": sorted(visibility.actor_agent_ids)}}
+        elif visibility.mode == "pool":
+            filters = {}
+        else:
+            raise ValueError(f"Unsupported visibility mode: {visibility.mode!r}")
         memory = self._memory_for(native_handle)
         found = memory.vector_store.search(
             query=prepared_query["query"],
             vectors=prepared_query["vector"],
             top_k=prepared_query["limit"],
-            filters={"user_id": scope.agent_id},
+            filters=filters,
         )
         hits = []
         for item in found:
             payload = item.payload or {}
-            if payload.get("user_id") != scope.agent_id:
-                raise ValueError("Mem0 returned a memory outside the requested identity scope")
+            if not visibility.permits(payload.get("actor_agent_id"), scope.agent_id):
+                raise ValueError("Mem0 returned a memory outside the requested visibility")
             if _payload_is_expired(payload):
                 continue
             hits.append(
                 {
                     "id": item.id,
                     "event_id": payload.get("event_id"),
+                    "actor_agent_id": payload.get("actor_agent_id"),
                     "memory": payload.get("data"),
                     "score": item.score,
                     "source_artifact_id": payload.get("source_artifact_id"),

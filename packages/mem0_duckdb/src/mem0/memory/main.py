@@ -8,6 +8,7 @@ import os
 import time
 import uuid
 import warnings
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional
@@ -540,12 +541,15 @@ class Memory(MemoryBase):
         With `connection`, the vector store and history share that one borrowed
         handle (the DuckDB vector store provider is required): this Memory never
         commits, rolls back or closes it, and the caller owns the transaction.
-        Entity-store maintenance, which needs embedding calls and extra
-        collections, is then skipped so no model work happens in the caller's
-        transaction.
+        Entity-store maintenance still runs, on that same handle, but never calls
+        the embedding model: it embeds only from the set a caller prepared with
+        `use_planned_embeddings`, and records any text it needed but was not given
+        in `planned_embedding_misses` so the caller can refuse to commit.
         """
         self.config = config
         self._borrowed_connection = connection
+        self._planned_embeddings = None
+        self.planned_embedding_misses = []
         if connection is not None and self.config.vector_store.provider != "duckdb":
             raise ValueError("A borrowed DuckDB handle requires the duckdb vector store provider")
 
@@ -650,9 +654,79 @@ class Memory(MemoryBase):
                 elif isinstance(entity_config, dict):
                     entity_config["client"] = self.vector_store.client
             self._entity_store = VectorStoreFactory.create(
-                self.config.vector_store.provider, entity_config
+                self.config.vector_store.provider,
+                entity_config,
+                **({"connection": self._borrowed_connection} if self._borrowed_connection else {}),
             )
         return self._entity_store
+
+    @contextmanager
+    def use_planned_embeddings(self, embeddings):
+        """Within the block, entity maintenance embeds only from `embeddings`.
+
+        Keys are (text, purpose) pairs. A text outside the set is not sent to the
+        model: it is appended to `planned_embedding_misses` and the entity step
+        fails, so a caller applying inside a transaction can detect the gap and
+        roll back instead of leaving stale entity records.
+        """
+        self._planned_embeddings = dict(embeddings)
+        self.planned_embedding_misses = []
+        try:
+            yield
+        finally:
+            self._planned_embeddings = None
+
+    def _entity_embed(self, text, purpose):
+        """Embed an entity text, from the prepared set when one is active."""
+        if self._planned_embeddings is None:
+            return self.embedding_model.embed(text, purpose)
+        if (text, purpose) not in self._planned_embeddings:
+            self.planned_embedding_misses.append((text, purpose))
+            raise RuntimeError(f"Entity text was not embedded before the transaction: {text!r}")
+        return self._planned_embeddings[(text, purpose)]
+
+    def _entity_texts_to_embed(self, texts):
+        """Return the (text, purpose) pairs `_link_entities_for_memory` will embed for these memory texts."""
+        needed = []
+        for text in texts:
+            seen = set()
+            for _entity_type, entity_text in extract_entities(text):
+                key = self._normalize_entity_text(entity_text)
+                if key and key not in seen:
+                    seen.add(key)
+                    needed.append((entity_text, "add"))
+        return needed
+
+    def _linked_entity_texts(self, memory_ids):
+        """Read the (text, "update") pairs `_remove_memory_from_entity_store` will re-embed.
+
+        These are entity records that link to one of `memory_ids` and would still
+        link to something else afterwards. Read only.
+        """
+        needed = []
+        for memory_id in memory_ids:
+            memory = self.vector_store.get(vector_id=memory_id)
+            payload = (memory.payload if memory else None) or {}
+            scope = {k: payload[k] for k in ("user_id", "agent_id", "run_id") if payload.get(k)}
+            listed = self.entity_store.list(filters=scope, top_k=10000)
+            rows = (
+                listed[0]
+                if isinstance(listed, (list, tuple)) and listed and isinstance(listed[0], list)
+                else listed
+            )
+            for row in rows or []:
+                row_payload = getattr(row, "payload", None) or {}
+                linked = row_payload.get("linked_memory_ids", [])
+                text = row_payload.get("data")
+                if (
+                    isinstance(linked, list)
+                    and memory_id in linked
+                    and len(linked) > 1
+                    and isinstance(text, str)
+                    and text
+                ):
+                    needed.append((text, "update"))
+        return needed
 
     @staticmethod
     def _normalize_entity_text(value: str) -> str:
@@ -680,7 +754,7 @@ class Memory(MemoryBase):
     def _upsert_entity(self, entity_text, entity_type, memory_id, filters):
         """Upsert an entity into the entity store, linking it to a memory."""
         try:
-            entity_embedding = self.embedding_model.embed(entity_text, "add")
+            entity_embedding = self._entity_embed(entity_text, "add")
             search_filters = {
                 k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v
             }
@@ -736,12 +810,14 @@ class Memory(MemoryBase):
           - otherwise re-embed the entity text and update the payload
             (the vector store's update() requires a vector).
 
-        No-op if the entity store has never been initialized in this process.
+        No-op if the entity store has never been initialized in this process,
+        except on a borrowed handle, where the entity table lives in the shared
+        file and is always maintained.
         Errors on individual entities are swallowed at debug level; outer
         failures are swallowed at warning level so the primary delete/update
         path is never broken by entity cleanup.
         """
-        if self._entity_store is None:
+        if self._entity_store is None and self._borrowed_connection is None:
             return
         search_filters = {
             k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v
@@ -773,7 +849,7 @@ class Memory(MemoryBase):
                             )
                             continue
                         try:
-                            vec = self.embedding_model.embed(entity_text, "update")
+                            vec = self._entity_embed(entity_text, "update")
                         except Exception as e:
                             logger.debug(f"Entity re-embed failed for '{entity_text}': {e}")
                             continue
@@ -2564,7 +2640,7 @@ class Memory(MemoryBase):
         session_filters = {
             k: new_metadata[k] for k in ("user_id", "agent_id", "run_id") if new_metadata.get(k)
         }
-        if text_changed and self._borrowed_connection is None:
+        if text_changed:
             self._remove_memory_from_entity_store(memory_id, session_filters)
             self._link_entities_for_memory(memory_id, data, session_filters)
 
@@ -2600,8 +2676,7 @@ class Memory(MemoryBase):
 
         # Entity-store cleanup: strip this memory's id from any entity records
         # that linked to it. Non-fatal — the helper swallows errors.
-        if self._borrowed_connection is None:
-            self._remove_memory_from_entity_store(memory_id, session_filters)
+        self._remove_memory_from_entity_store(memory_id, session_filters)
 
         return memory_id
 
