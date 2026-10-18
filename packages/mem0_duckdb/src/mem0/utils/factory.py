@@ -213,13 +213,14 @@ class VectorStoreFactory:
     }
 
     @classmethod
-    def create(cls, provider_name, config):
+    def create(cls, provider_name, config, **runtime):
+        """Build a vector store from its config; `runtime` carries live objects (such as a borrowed handle) that config cannot hold."""
         class_type = cls.provider_to_class.get(provider_name)
         if class_type:
             if not isinstance(config, dict):
                 config = config.model_dump()
             vector_store_instance = load_class(class_type)
-            return vector_store_instance(**config)
+            return vector_store_instance(**config, **runtime)
         else:
             raise ValueError(f"Unsupported VectorStore provider: {provider_name}")
 

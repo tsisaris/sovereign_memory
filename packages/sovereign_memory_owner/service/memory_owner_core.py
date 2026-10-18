@@ -8,7 +8,6 @@ from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import AsyncConnecti
 
 from service.memory_owner_schema import MemoryEventValidator
 
-
 TIERS = ("episodic", "temporal", "relational", "personalization")
 SYSTEM_EVENT_PREFIX = "system."
 SYSTEM_ACTOR = "owner-system"
@@ -217,16 +216,17 @@ class OwnerCore:
         interface. It is deterministic: asking again returns the same event
         without changing it. Its receipts start pending.
         """
+        target, _ = await self.load_event(target_event_id)
         payload = json.dumps(
             {
                 "operation": "expire",
                 "target_event_id": target_event_id,
+                "target_actor_agent_id": target.get("actor_agent_id", target.get("agent_id")),
                 "ttl_seconds": ttl,
                 "reason": "ttl_seconds elapsed",
             },
             sort_keys=True,
         ).encode("utf-8")
-        target, _ = await self.load_event(target_event_id)
         event_id = f"{SYSTEM_EVENT_PREFIX}expire:{target_event_id}"
         envelope = {
             "schema_version": "2.0.0",

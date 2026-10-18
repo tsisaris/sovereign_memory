@@ -8,12 +8,15 @@ that the authenticated principal produced and that has not expired, or it is
 withheld and counted.
 """
 
+import logging
 from typing import Any
 
 from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import AsyncConnection
 
 from service.memory_owner_core import TIERS, OwnerCore
 from service.memory_processor_seam import AuthenticatedPrincipal, MemoryRetriever, RetrievalScope
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryRetrievalService:
@@ -50,6 +53,7 @@ class MemoryRetrievalService:
                 hits = await self.conn.run(retriever.retrieve, self.conn.native, scope, prepared)
                 answers[tier] = await self._filter(tier, hits, scope, expired)
             except Exception as error:
+                logger.exception("Retrieval for tier %s failed", tier)
                 answers[tier] = {
                     "status": "failed",
                     "reason": f"{type(error).__name__}: {error}",

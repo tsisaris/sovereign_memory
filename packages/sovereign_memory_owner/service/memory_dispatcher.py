@@ -9,6 +9,7 @@ processor is left pending; the dispatcher never invents a result.
 """
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -25,6 +26,7 @@ REPORTABLE_STATUSES = frozenset(
     {"processed", "processed_no_new_fact", "retryable_failure", "terminal_failure", "unknown"}
 )
 ERROR_REF_LIMIT = 500
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -103,7 +105,9 @@ class MemoryDispatcher:
     async def process_event(self, event_id: str) -> dict[str, str]:
         """Process one event for every registered tier and return tier -> receipt status."""
         owed = {
-            tier for ev, tier in await self.core.pending_work(self.registry.tiers()) if ev == event_id
+            tier
+            for ev, tier in await self.core.pending_work(self.registry.tiers())
+            if ev == event_id
         }
         return {tier: await self.process(event_id, tier) for tier in TIERS if tier in owed}
 
@@ -127,17 +131,27 @@ class MemoryDispatcher:
                 event, payload = await self.core.load_event(event_id)
                 prepared = await processor.prepare(event, payload)
             except TerminalProcessingError as error:
-                return await self._record_failure(event_id, tier, attempt_id, "terminal_failure", error)
+                return await self._record_failure(
+                    event_id, tier, attempt_id, "terminal_failure", error
+                )
             except Exception as error:
-                return await self._record_failure(event_id, tier, attempt_id, "retryable_failure", error)
+                logger.exception("Preparing %s for tier %s failed", event_id, tier)
+                return await self._record_failure(
+                    event_id, tier, attempt_id, "retryable_failure", error
+                )
             try:
                 return await self.conn.run(
                     self._apply_and_record, processor, prepared, event_id, tier, attempt_id
                 )
             except TerminalProcessingError as error:
-                return await self._record_failure(event_id, tier, attempt_id, "terminal_failure", error)
+                return await self._record_failure(
+                    event_id, tier, attempt_id, "terminal_failure", error
+                )
             except Exception as error:
-                return await self._record_failure(event_id, tier, attempt_id, "retryable_failure", error)
+                logger.exception("Applying %s for tier %s failed", event_id, tier)
+                return await self._record_failure(
+                    event_id, tier, attempt_id, "retryable_failure", error
+                )
 
     async def _status(self, event_id: str, tier: str) -> str:
         """Return the receipt's current status."""
@@ -197,11 +211,16 @@ class MemoryDispatcher:
         """
         handle: duckdb.DuckDBPyConnection = self.conn.native
         handle.begin()
+        ended = False
         try:
             started = handle.execute("SELECT current_transaction_id()").fetchone()[0]
             result = processor.apply(handle, prepared)
             if handle.execute("SELECT current_transaction_id()").fetchone()[0] != started:
-                raise RuntimeError("Processor ended the owner's transaction; apply must not commit")
+                ended = True
+                raise TerminalProcessingError(
+                    "Processor ended the owner's transaction: apply must not commit, and "
+                    "whatever it already committed cannot be undone"
+                )
             status = getattr(result, "status", None)
             if status not in REPORTABLE_STATUSES:
                 raise RuntimeError(f"Processor reported unreportable status {status!r}")
@@ -231,7 +250,9 @@ class MemoryDispatcher:
             handle.commit()
             return status
         except BaseException:
-            handle.rollback()
+            # When apply itself ended the transaction there is nothing left to roll back.
+            if not ended:
+                handle.rollback()
             raise
 
     async def _record_failure(
@@ -257,4 +278,3 @@ class MemoryDispatcher:
                 raise
 
         return await self.conn.run(job)
-

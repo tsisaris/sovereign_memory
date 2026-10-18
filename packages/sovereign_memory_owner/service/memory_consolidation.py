@@ -31,7 +31,9 @@ class MemoryConsolidator:
             await self.conn.rollback()
             raise
 
-    async def enforce_scope_and_expiry(self, dispatcher: MemoryDispatcher) -> dict[str, dict[str, str]]:
+    async def enforce_scope_and_expiry(
+        self, dispatcher: MemoryDispatcher
+    ) -> dict[str, dict[str, str]]:
         """Expire events whose ttl has elapsed through the real processor interface.
 
         For each expired event the owner captures its own "system.expire" event

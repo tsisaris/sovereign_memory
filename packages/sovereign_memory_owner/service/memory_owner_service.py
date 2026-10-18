@@ -201,7 +201,9 @@ class OwnerService:
             if operation == "retrieve":
                 query, limit = payload.get("query"), payload.get("limit")
                 if not isinstance(query, str) or not isinstance(limit, int) or limit < 1:
-                    self._send_error(writer, "Invalid retrieval request", "query and limit required")
+                    self._send_error(
+                        writer, "Invalid retrieval request", "query and limit required"
+                    )
                     return
                 answers = await self.retrieval.retrieve(principal, query, limit)
                 writer.write(json.dumps({"status": "success", "tiers": answers}).encode("utf-8"))
