@@ -31,6 +31,7 @@ dev = [
     "coverage==7.15.4",
     "cognee==1.6.5",
     "pytest-asyncio==1.4.0",
+    "jsonschema>=4.25.1",
 ]
 # Reported, never blocking.
 advisory = [
@@ -90,7 +91,7 @@ source = ["src"]
 [tool.deptry]
 # exclude REPLACES deptry's defaults, which would silently skip every folder
 # named tests (measured 2026-09-22, W-753 finding 3).
-exclude = [".venv", ".git", "data/sovereign", "local", "service"]
+exclude = [".venv", ".git", "data/sovereign", "local"]
 
 # The advisory checkers are run by name, never imported; naming their modules
 # stops deptry guessing, and the GitHub check fails on any line where it guesses.
