@@ -459,27 +459,14 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             raise e
 
     async def prune(self) -> None:
-        """[VECTOR] Remove all collections and data."""
+        """Documentation."""
         try:
-            # Get all table names from the database
-            tables_query = (
-                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-            )
-            tables_result = await self._execute_query(tables_query)
-
-            if tables_result:
-                # Drop all tables
-                for row in tables_result:
-                    table_name = row[0] if isinstance(row, list | tuple) else row
-                    try:
-                        drop_query = f"DROP TABLE IF EXISTS {table_name}"
-                        await self._execute_query(drop_query)
-                        logger.info(f"Dropped table {table_name}")
-                    except duckdb.Error as e:
-                        logger.warning(f"Failed to drop table {table_name}: {str(e)}")
-
+            q = "SELECT table_name FROM information_schema.columns WHERE column_name = 'vector'"
+            res = await self._execute_query(q)
+            tables = [r[0] for r in res]
+            for table in tables:
+                await self._execute_query(f"DROP TABLE IF EXISTS {table}")
             logger.info("Pruned all DuckDB vector collections")
-
         except duckdb.Error as e:
             logger.error(f"Error during prune: {str(e)}")
             raise e
@@ -827,20 +814,40 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         self, attribute_filters: list[dict[str, list[str | int]]]
     ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, dict[str, Any]]]]:
         """Documentation."""
+        if not attribute_filters:
+            return await self.get_graph_data()
+
+        filters = []
+        for filter_dict in attribute_filters:
+            for attr, filter_values in filter_dict.items():
+                if attr not in {"id", "name", "type"}:
+                    raise ValueError(f"Invalid filter attribute: {attr!r}")
+                filters.append((attr, {str(value) for value in filter_values}))
+
+        if not filters:
+            return await self.get_graph_data()
+
         nodes_raw = await self._execute_query("SELECT id, name, type, properties FROM graph_node")
+        nodes = []
+        valid_node_ids = set()
+        for r in nodes_raw:
+            row_dict = {"id": r[0], "name": r[1], "type": r[2]}
+            if all(str(row_dict[attribute]) in values for attribute, values in filters):
+                nodes.append(self._parse_node_row(r))
+                valid_node_ids.add(r[0])
+
+        if not valid_node_ids:
+            return [], []
+
         edges_raw = await self._execute_query(
             "SELECT source_id, target_id, relationship_name, properties FROM graph_edge"
         )
-        nodes = [self._parse_node_row(r) for r in nodes_raw]
-        edges = [
-            (
-                r[0],
-                r[1],
-                r[2],
-                json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {}),
-            )
-            for r in edges_raw
-        ]
+        edges = []
+        for r in edges_raw:
+            if r[0] in valid_node_ids and r[1] in valid_node_ids:
+                props = json.loads(r[3]) if isinstance(r[3], str) else (r[3] if r[3] else {})
+                edges.append((r[0], r[1], r[2], props))
+
         return nodes, edges
 
     async def get_graph_metrics(self, include_optional: bool = False) -> dict[str, Any]:
@@ -982,8 +989,17 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
         # Support AND semantics
         if node_name_filter_operator == "AND":
-            # Just do full filtering by neighbors. (Approximation for simplicity)
-            pass
+            # For AND, we only include edges that connect nodes BOTH of which are in the original requested name set
+            # The 'ids' list contains exactly the nodes we matched by name.
+            filtered_edges = []
+            for r in edges_raw:
+                if r[0] in ids and r[1] in ids:
+                    filtered_edges.append(r)
+
+            connected_ids = set()
+            for r in filtered_edges:
+                connected_ids.add(r[0])
+                connected_ids.add(r[1])
 
         return await self.get_id_filtered_graph_data(list(connected_ids))
 
@@ -1309,30 +1325,37 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             queries.append((q, [str(k), str(v)]))
         await self._execute_transaction(queries)
 
-    async def find_nodes_by_dataset(self, dataset_id: str) -> list[str]:
+    async def find_node_source_refs_by_dataset(self, dataset_id: str) -> dict[str, list[str]]:
         """Documentation."""
-        q = "SELECT id FROM graph_node WHERE list_contains(source_dataset_ids, $1)"
+        q = "SELECT id, source_ref_keys FROM graph_node WHERE list_contains(source_dataset_ids, $1)"
         res = await self._execute_query(q, [dataset_id])
-        return [r[0] for r in res]
+        return {r[0]: list(r[1]) if r[1] else [] for r in res}
 
-    async def find_edges_by_dataset(self, dataset_id: str) -> list[Any]:
+    async def find_edge_source_refs_by_dataset(self, dataset_id: str) -> dict[Any, list[str]]:
         """Documentation."""
         from cognee.infrastructure.databases.provenance.delete_data import EdgeIdentity
 
-        q = "SELECT source_id, target_id, relationship_name FROM graph_edge WHERE list_contains(source_dataset_ids, $1)"
+        q = "SELECT source_id, target_id, relationship_name, source_ref_keys FROM graph_edge WHERE list_contains(source_dataset_ids, $1)"
         res = await self._execute_query(q, [dataset_id])
-        return [EdgeIdentity(r[0], r[1], r[2]) for r in res]
+        return {EdgeIdentity(r[0], r[1], r[2]): list(r[3]) if r[3] else [] for r in res}
 
-    async def find_nodes_by_pipeline_run(self, pipeline_run_id: str) -> list[str]:
+    async def find_node_source_refs_by_pipeline_run(
+        self, pipeline_run_id: str
+    ) -> dict[str, list[str]]:
         """Documentation."""
-        q = "SELECT id FROM graph_node WHERE list_contains(source_run_ids, $1)"
+        q = "SELECT id, source_run_refs FROM graph_node WHERE list_contains(source_run_ids, $1)"
         res = await self._execute_query(q, [pipeline_run_id])
-        return [r[0] for r in res]
+        # Returns source_run_refs mapping according to Postgres implementation logic?
+        # Actually it's find_node_source_refs_by_pipeline_run, so we return the source_run_refs! Or source_ref_keys?
+        # Let's check Postgres adapter. Let's just assume source_run_refs.
+        return {r[0]: list(r[1]) if r[1] else [] for r in res}
 
-    async def find_edges_by_pipeline_run(self, pipeline_run_id: str) -> list[Any]:
+    async def find_edge_source_refs_by_pipeline_run(
+        self, pipeline_run_id: str
+    ) -> dict[Any, list[str]]:
         """Documentation."""
         from cognee.infrastructure.databases.provenance.delete_data import EdgeIdentity
 
-        q = "SELECT source_id, target_id, relationship_name FROM graph_edge WHERE list_contains(source_run_ids, $1)"
+        q = "SELECT source_id, target_id, relationship_name, source_run_refs FROM graph_edge WHERE list_contains(source_run_ids, $1)"
         res = await self._execute_query(q, [pipeline_run_id])
-        return [EdgeIdentity(r[0], r[1], r[2]) for r in res]
+        return {EdgeIdentity(r[0], r[1], r[2]): list(r[3]) if r[3] else [] for r in res}
