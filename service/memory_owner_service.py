@@ -24,9 +24,11 @@ class OwnerService:
 
     async def start(self) -> None:
         """Initialize database connection and start UNIX socket server."""
-        self.conn = await duckdb_connect(str(self.db_path))
-        self.core = OwnerCore(self.conn)
-        await self.core.initialize_schema()
+        # Initialize schema once at startup using a throwaway connection
+        conn = await duckdb_connect(str(self.db_path))
+        core = OwnerCore(conn)
+        await core.initialize_schema()
+        await conn.close()
 
         # Ensure socket directory exists
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -45,9 +47,6 @@ class OwnerService:
         if self.socket_path.exists():
             self.socket_path.unlink()
 
-        if self.conn:
-            await self.conn.close()
-
     async def serve_forever(self) -> None:
         """Run the server until cancelled."""
         if self.server:
@@ -57,11 +56,22 @@ class OwnerService:
     async def handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """Handle incoming UNIX socket connections."""
+        """Handle incoming UNIX socket connections concurrently using independent db connections.
+
+        Reads 4 bytes big-endian framing length to receive entire payload securely.
+        """
+        conn = None
         try:
-            data = await reader.read(8192)
-            if not data:
+            length_bytes = await reader.readexactly(4)
+            if not length_bytes:
                 return
+
+            payload_len = int.from_bytes(length_bytes, byteorder="big")
+            if payload_len > 10 * 1024 * 1024:  # 10MB limit
+                self._send_error(writer, "Payload Too Large", f"Exceeds 10MB bounds")
+                return
+
+            data = await reader.readexactly(payload_len)
 
             try:
                 payload = json.loads(data.decode("utf-8"))
@@ -78,8 +88,10 @@ class OwnerService:
                 return
 
             try:
-                # Ingest event inside core (which uses a native duckdb handle, creating independent transactions for concurrent requests handled sequentially by bridge)
-                result_event = await self.core.ingest_event(event_data, payload_content)
+                # Instantiate per-request independent connection per the concurrency rule
+                conn = await duckdb_connect(str(self.db_path))
+                core = OwnerCore(conn)
+                result_event = await core.ingest_event(event_data, payload_content)
 
                 response = {"status": "success", "event": result_event}
                 writer.write(json.dumps(response).encode("utf-8"))
@@ -90,6 +102,8 @@ class OwnerService:
                 self._send_error(writer, "Internal Error", str(e))
 
         finally:
+            if conn:
+                await conn.close()
             writer.close()
             await writer.wait_closed()
 
