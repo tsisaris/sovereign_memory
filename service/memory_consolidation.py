@@ -87,17 +87,58 @@ class MemoryConsolidator:
         """
         await self.conn.begin()
         try:
-            # Look for expired TTLs or specific correction events.
-            # Mark them inactive rather than deleting to retain provenance.
-            await self.conn.run(
-                self.conn.native.execute,
+            # 1. Select expired events correctly handling ISO timestamps and TTL limits
+            cursor = await self.conn.cursor()
+            await cursor.execute(
                 """
                 SELECT event_id FROM memory_events
                 WHERE json_extract(raw_event, '$.ttl_seconds') IS NOT NULL
                 AND json_extract(raw_event, '$.ttl_seconds')::BIGINT > 0
                 AND CAST(created_at AS TIMESTAMP) + INTERVAL (json_extract(raw_event, '$.ttl_seconds')::BIGINT) SECONDS < CURRENT_TIMESTAMP
-                """,
+                """
             )
+            expired_ids = [row[0] for row in await cursor.fetchall()]
+
+            if not expired_ids:
+                await self.conn.commit()
+                return
+
+            # 2. Coordinate explicit projection removal via trusted registered tier processors
+            for event_id in expired_ids:
+                for tier_name, processor in self.registry.items():
+                    deletion_work = {"action": "delete", "event_id": event_id}
+
+                    def _apply_deletion(proc=processor, work=deletion_work):
+                        return proc.apply(self.conn.native, work)
+
+                    try:
+                        result = await self.conn.run(_apply_deletion)
+                        await cursor.execute(
+                            """
+                            UPDATE memory_receipts
+                            SET status = ?, processor_id = ?, processor_version = ?, projection_version = ?, error_ref = ?
+                            WHERE event_id = ? AND tier = ?
+                            """,
+                            (
+                                "processed_no_new_fact",
+                                result.processor_id,
+                                result.processor_version,
+                                result.projection_version,
+                                result.error_ref,
+                                event_id,
+                                tier_name,
+                            ),
+                        )
+                    except (RuntimeError, ValueError) as e:
+                        await cursor.execute(
+                            """
+                            UPDATE memory_receipts
+                            SET status = 'terminal_failure', error_ref = ?
+                            WHERE event_id = ? AND tier = ?
+                            """,
+                            (str(e)[:255], event_id, tier_name),
+                        )
+
             await self.conn.commit()
         except Exception:
             await self.conn.rollback()

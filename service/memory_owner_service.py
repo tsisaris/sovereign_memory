@@ -14,23 +14,21 @@ logger = logging.getLogger(__name__)
 class OwnerService:
     """The unified owner service running the DuckDB connection and socket server."""
 
-    def __init__(self, socket_path: str | Path, db_path: str | Path):
+    def __init__(self, socket_path: str | Path, db_path: str | Path, authenticator=None):
         """Initialize the service with socket and db paths."""
         self.socket_path = Path(socket_path)
         self.db_path = Path(db_path)
-        self.conn = None
-        self.core = None
         self.server = None
+        self.authenticator = authenticator
 
     async def start(self) -> None:
         """Initialize database connection and start UNIX socket server."""
         self.active_tasks = set()
 
-        # Test for exclusive single-process file ownership (fails if another process holds it)
-        conn = await duckdb_connect(str(self.db_path))
-        core = OwnerCore(conn)
+        # Hold an exclusive single-process file ownership connection for the lifetime of the service.
+        self.lifetime_conn = await duckdb_connect(str(self.db_path))
+        core = OwnerCore(self.lifetime_conn)
         await core.initialize_schema()
-        await conn.close()
 
         # Ensure socket directory exists
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,9 +54,14 @@ class OwnerService:
             self.server.close()
             await self.server.wait_closed()
 
-        # Drain active clients
+        # Drain active clients with a bounded timeout
         if hasattr(self, "active_tasks") and self.active_tasks:
-            await asyncio.gather(*self.active_tasks, return_exceptions=True)
+            _, pending = await asyncio.wait(self.active_tasks, timeout=5.0)
+            for t in pending:
+                t.cancel()
+
+        if hasattr(self, "lifetime_conn") and self.lifetime_conn:
+            await self.lifetime_conn.close()
 
         if self.socket_path.exists():
             self.socket_path.unlink()
@@ -114,21 +117,33 @@ class OwnerService:
                 return
 
             # 1. Enforce transport-layer authentication rather than trusting JSON actor claims
-            # Platform blocker: We cannot securely extract SO_PEERCRED using standard asyncio.
-            # Thus, we MUST rely on an injected authenticator, otherwise refuse the connection.
-            if not self.authenticator:
-                self._send_error(
-                    writer, "Configuration Error", "No authenticator registered to verify principal"
-                )
-                return
+            if self.authenticator:
+                try:
+                    principal = await self.authenticator.authenticate_stream(reader, writer)
+                except (RuntimeError, ValueError, ConnectionError) as e:
+                    self._send_error(
+                        writer,
+                        "Authentication Error",
+                        f"Failed to authenticate connection via explicit authenticator: {e}",
+                    )
+                    return
+            else:
+                # Attempt to extract OS peer credentials if supported (Linux / Unix sockets natively)
+                peercred = writer.get_extra_info("peercred")
+                if not peercred:
+                    self._send_error(
+                        writer,
+                        "Configuration Error",
+                        "No authenticator registered and OS peercred unavailable",
+                    )
+                    return
+                # Extract pid, uid, gid. Use uid as fallback actor boundary.
+                # In a real environment, uid might map to a user agent, but without an explicit auth module,
+                # uid is the only OS-guaranteed boundary available natively.
+                _, uid, _ = peercred
+                from service.memory_processor_seam import AuthenticatedPrincipal
 
-            try:
-                principal = await self.authenticator.authenticate_stream(reader, writer)
-            except (RuntimeError, ValueError, ConnectionError) as e:
-                self._send_error(
-                    writer, "Authentication Error", f"Failed to authenticate connection: {e}"
-                )
-                return
+                principal = AuthenticatedPrincipal(f"os-uid-{uid}", "restricted")
 
             # Bind the authenticated principal to the event explicitly
             event_data["actor_agent_id"] = principal.agent_id
