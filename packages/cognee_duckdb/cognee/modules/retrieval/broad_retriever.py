@@ -11,7 +11,7 @@ call:
 - it does not fit: the model writes a SQL query over the store, or says the question
   needs the text read; then the chunks most similar to the question fill one prompt.
 
-A query runs read-only in SQLite, and the model phrases its result. Code appends how the
+A query runs read-only in DuckDB, and the model phrases its result. Code appends how the
 answer was reached, and the full result when it has more than one row.
 """
 

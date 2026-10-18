@@ -44,26 +44,20 @@ class GitWorktree:
         """Method docstring."""
         self.remote_url = remote_url
         self.work_dir = tempfile.mkdtemp(prefix="letta_memfs_work_")
-        self._clone()
+        try:
+            self._clone()
+        except subprocess.CalledProcessError:
+            self.cleanup()
+            raise
 
     def _clone(self):
-        """Method docstring."""
-        try:
-            subprocess.run(
-                ["git", "clone", self.remote_url, "."],
-                cwd=self.work_dir,
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError:
-            # If bare repo is empty, we just init and add remote
-            subprocess.run(["git", "init"], cwd=self.work_dir, check=True, capture_output=True)
-            subprocess.run(
-                ["git", "remote", "add", "origin", self.remote_url],
-                cwd=self.work_dir,
-                check=True,
-                capture_output=True,
-            )
+        """Clone the real remote, including empty repositories, or report its failure."""
+        subprocess.run(
+            ["git", "clone", self.remote_url, "."],
+            cwd=self.work_dir,
+            check=True,
+            capture_output=True,
+        )
 
     def write_file(self, filepath: str, content: str):
         """Method docstring."""
@@ -81,56 +75,46 @@ class GitWorktree:
             return f.read()
 
     def commit_and_push(self, message: str = "Update memory"):
-        """Method docstring."""
+        """Commit changed memory and push pending commits, propagating remote errors."""
         subprocess.run(["git", "add", "."], cwd=self.work_dir, check=True, capture_output=True)
 
         # Check if there are changes
         status = subprocess.run(
-            ["git", "status", "--porcelain"], cwd=self.work_dir, capture_output=True, text=True
+            ["git", "status", "--porcelain"],
+            cwd=self.work_dir,
+            capture_output=True,
+            text=True,
+            check=True,
         )
-        if not status.stdout.strip():
-            return
-
-        subprocess.run(["git", "config", "user.name", "Letta Agent"], cwd=self.work_dir, check=True)
-        subprocess.run(
-            ["git", "config", "user.email", "agent@letta.local"], cwd=self.work_dir, check=True
-        )
-        subprocess.run(
-            ["git", "commit", "-m", message], cwd=self.work_dir, check=True, capture_output=True
-        )
-
-        # Push to origin main
-        try:
+        if status.stdout.strip():
             subprocess.run(
-                ["git", "push", "origin", "main"],
+                ["git", "config", "user.name", "Letta Agent"], cwd=self.work_dir, check=True
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "agent@letta.local"], cwd=self.work_dir, check=True
+            )
+            subprocess.run(
+                ["git", "commit", "-m", message],
                 cwd=self.work_dir,
                 check=True,
                 capture_output=True,
             )
-        except subprocess.CalledProcessError:
-            subprocess.run(
-                ["git", "push", "-u", "origin", "master"],
-                cwd=self.work_dir,
-                check=False,
-                capture_output=True,
-            )
+
+        subprocess.run(
+            ["git", "push", "--set-upstream", "origin", "HEAD"],
+            cwd=self.work_dir,
+            check=True,
+            capture_output=True,
+        )
 
     def pull(self):
-        """Method docstring."""
-        try:
-            subprocess.run(
-                ["git", "pull", "origin", "main"],
-                cwd=self.work_dir,
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError:
-            subprocess.run(
-                ["git", "pull", "origin", "master"],
-                cwd=self.work_dir,
-                check=False,
-                capture_output=True,
-            )
+        """Fast-forward the tracked branch or report the actual remote/conflict error."""
+        subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=self.work_dir,
+            check=True,
+            capture_output=True,
+        )
 
     def cleanup(self):
         """Method docstring."""

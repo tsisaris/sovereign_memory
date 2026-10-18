@@ -21,6 +21,7 @@ from mem0.configs.prompts import (
     AGENT_CONTEXT_SUFFIX,
     PROCEDURAL_MEMORY_SYSTEM_PROMPT,
     generate_additive_extraction_prompt,
+    get_update_memory_messages,
 )
 from mem0.exceptions import LLMError, VectorStoreError
 from mem0.exceptions import ValidationError as Mem0ValidationError
@@ -50,10 +51,12 @@ from mem0.memory.notices import (
     get_temporal_feature_error_message_async,
 )
 from mem0.memory.setup import mem0_dir, setup_config
-from mem0.memory.storage import SQLiteManager
 from mem0.memory.telemetry import MEM0_TELEMETRY, capture_event
 from mem0.memory.utils import (
+    ensure_json_instruction,
     extract_json,
+    get_fact_retrieval_messages,
+    normalize_facts,
     parse_messages,
     parse_vision_messages,
     process_telemetry_filters,
@@ -81,6 +84,38 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*swigva
 
 # Initialize logger early for util functions
 logger = logging.getLogger(__name__)
+
+
+def _validate_memory_actions(actions, uuid_mapping):
+    """Reject malformed or unscoped decisions before any planned memory mutation."""
+    if not isinstance(actions, list):
+        raise ValueError("Memory decisions must contain a list of actions")
+    for action in actions:
+        if not isinstance(action, dict) or action.get("event") not in {
+            "ADD",
+            "UPDATE",
+            "DELETE",
+            "NONE",
+        }:
+            raise ValueError("Unsupported memory action")
+        if action["event"] != "ADD" and (
+            not isinstance(action.get("id"), str) or action["id"] not in uuid_mapping
+        ):
+            raise ValueError("Memory action must reference a scoped retrieved memory ID")
+        if not isinstance(action.get("text"), str) or not action["text"].strip():
+            raise ValueError("Memory action must contain nonempty text")
+
+
+def _require_scoped_memory(memory, filters):
+    """Refuse missing or foreign search results before they can enter a mutation plan."""
+    if memory is None or not isinstance(memory.payload, dict):
+        raise ValueError("A scoped memory record is required")
+    if any(
+        memory.payload.get(key) != filters[key]
+        for key in ("user_id", "agent_id", "run_id")
+        if filters.get(key)
+    ):
+        raise ValueError("Retrieved memory does not belong to the requested identity scope")
 
 
 def _vector_store_list_rows(listed):
@@ -920,6 +955,218 @@ class Memory(MemoryBase):
             display_first_run_notice(self, "sync", "add")
         return {"results": vector_store_result}
 
+    def _add_with_memory_actions(self, messages, metadata, filters, prompt=None):
+        """Run the maintained 1.0.11 fact and action flow using current mutation helpers."""
+        parsed_messages = parse_messages(messages)
+
+        fact_prompt = prompt or self.config.custom_fact_extraction_prompt
+        if fact_prompt:
+            system_prompt = fact_prompt
+            user_prompt = f"Input:\n{parsed_messages}"
+        else:
+            # Determine if this should use agent memory extraction based on agent_id presence
+            # and role types in messages
+            is_agent_memory = self._should_use_agent_memory_extraction(messages, metadata)
+            system_prompt, user_prompt = get_fact_retrieval_messages(
+                parsed_messages, is_agent_memory
+            )
+
+        if self.custom_instructions:
+            system_prompt += "\n" + self.custom_instructions
+
+        # Ensure 'json' appears in prompts for json_object response format compatibility
+        system_prompt, user_prompt = ensure_json_instruction(system_prompt, user_prompt)
+
+        response = self.llm.generate_response(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        try:
+            cleaned_response = remove_code_blocks(response)
+            if not cleaned_response.strip():
+                new_retrieved_facts = []
+            else:
+                try:
+                    # First try direct JSON parsing
+                    new_retrieved_facts = json.loads(cleaned_response, strict=False)["facts"]
+                except json.JSONDecodeError:
+                    # Try extracting JSON from response (handles chatty LLM output)
+                    extracted_json = extract_json(response)
+                    new_retrieved_facts = json.loads(extracted_json, strict=False)["facts"]
+                new_retrieved_facts = normalize_facts(new_retrieved_facts)
+        except Exception as e:
+            logger.error(f"Error in new_retrieved_facts: {e}")
+            raise LLMError(f"Invalid fact extraction response: {e}") from e
+
+        if not new_retrieved_facts:
+            logger.debug("No new facts retrieved from input. Skipping memory update LLM call.")
+
+        retrieved_old_memory = []
+        new_message_embeddings = {}
+        # Search for existing memories using the provided session identifiers
+        # Use all available session identifiers for accurate memory retrieval
+        search_filters = {}
+        if filters.get("user_id"):
+            search_filters["user_id"] = filters["user_id"]
+        if filters.get("agent_id"):
+            search_filters["agent_id"] = filters["agent_id"]
+        if filters.get("run_id"):
+            search_filters["run_id"] = filters["run_id"]
+        for new_mem in new_retrieved_facts:
+            messages_embeddings = self.embedding_model.embed(new_mem, "add")
+            new_message_embeddings[new_mem] = messages_embeddings
+            existing_memories = self.vector_store.search(
+                query=new_mem,
+                vectors=messages_embeddings,
+                top_k=5,
+                filters=search_filters,
+            )
+            for mem in existing_memories:
+                _require_scoped_memory(mem, search_filters)
+                retrieved_old_memory.append({"id": mem.id, "text": mem.payload.get("data", "")})
+
+        unique_data = {}
+        for item in retrieved_old_memory:
+            unique_data[item["id"]] = item
+        retrieved_old_memory = list(unique_data.values())
+        logger.info(f"Total existing memories: {len(retrieved_old_memory)}")
+
+        # mapping UUIDs with integers for handling UUID hallucinations
+        temp_uuid_mapping = {}
+        for idx, item in enumerate(retrieved_old_memory):
+            temp_uuid_mapping[str(idx)] = item["id"]
+            retrieved_old_memory[idx]["id"] = str(idx)
+
+        if new_retrieved_facts:
+            function_calling_prompt = get_update_memory_messages(
+                retrieved_old_memory, new_retrieved_facts, self.config.custom_update_memory_prompt
+            )
+
+            try:
+                response = self.llm.generate_response(
+                    messages=[{"role": "user", "content": function_calling_prompt}],
+                    response_format={"type": "json_object"},
+                )
+            except Exception as e:
+                logger.error(f"Error in new memory actions response: {e}")
+                raise LLMError(f"Memory decision request failed: {e}") from e
+
+            try:
+                if not response or not response.strip():
+                    logger.warning("Empty response from LLM, no memories to extract")
+                    new_memories_with_actions = {}
+                else:
+                    try:
+                        new_memories_with_actions = json.loads(
+                            remove_code_blocks(response), strict=False
+                        )
+                    except json.JSONDecodeError:
+                        extracted_json = extract_json(response)
+                        new_memories_with_actions = json.loads(extracted_json, strict=False)
+            except Exception as e:
+                logger.error(f"Invalid JSON response: {e}")
+                raise LLMError(f"Invalid memory decision response: {e}") from e
+        else:
+            new_memories_with_actions = {}
+
+        _validate_memory_actions(new_memories_with_actions.get("memory", []), temp_uuid_mapping)
+        returned_memories = []
+        try:
+            for resp in new_memories_with_actions.get("memory", []):
+                logger.info(resp)
+                try:
+                    action_text = resp.get("text")
+                    if not action_text:
+                        logger.info("Skipping memory entry because of empty `text` field.")
+                        continue
+
+                    event_type = resp.get("event")
+                    if event_type == "ADD":
+                        # Ensure action_text has an embedding cached to avoid redundant API calls
+                        if action_text not in new_message_embeddings:
+                            new_message_embeddings[action_text] = self.embedding_model.embed(
+                                action_text, "add"
+                            )
+                        memory_id = self._create_memory(
+                            data=action_text,
+                            existing_embeddings=new_message_embeddings,
+                            metadata=deepcopy(metadata),
+                        )
+                        returned_memories.append(
+                            {"id": memory_id, "memory": action_text, "event": event_type}
+                        )
+                    elif event_type == "UPDATE":
+                        # Ensure action_text has an embedding cached to avoid redundant API calls
+                        if action_text not in new_message_embeddings:
+                            new_message_embeddings[action_text] = self.embedding_model.embed(
+                                action_text, "update"
+                            )
+                        self._update_memory(
+                            memory_id=temp_uuid_mapping[resp.get("id")],
+                            data=action_text,
+                            existing_embeddings=new_message_embeddings,
+                            metadata=deepcopy(metadata),
+                        )
+                        returned_memories.append(
+                            {
+                                "id": temp_uuid_mapping[resp.get("id")],
+                                "memory": action_text,
+                                "event": event_type,
+                                "previous_memory": resp.get("old_memory"),
+                            }
+                        )
+                    elif event_type == "DELETE":
+                        self._delete_memory(memory_id=temp_uuid_mapping[resp.get("id")])
+                        returned_memories.append(
+                            {
+                                "id": temp_uuid_mapping[resp.get("id")],
+                                "memory": action_text,
+                                "event": event_type,
+                            }
+                        )
+                    elif event_type == "NONE":
+                        # Even if content doesn't need updating, update session IDs if provided
+                        memory_id = temp_uuid_mapping.get(resp.get("id"))
+                        if memory_id and (metadata.get("agent_id") or metadata.get("run_id")):
+                            # Update only the session identifiers, keep content the same
+                            existing_memory = self.vector_store.get(vector_id=memory_id)
+                            if existing_memory is None:
+                                raise ValueError(
+                                    f"Memory {memory_id} disappeared before session update"
+                                )
+                            _require_scoped_memory(existing_memory, search_filters)
+                            updated_metadata = deepcopy(existing_memory.payload)
+                            if metadata.get("agent_id"):
+                                updated_metadata["agent_id"] = metadata["agent_id"]
+                            if metadata.get("run_id"):
+                                updated_metadata["run_id"] = metadata["run_id"]
+                            updated_metadata["created_at"] = _normalize_iso_timestamp_to_utc(
+                                updated_metadata.get("created_at")
+                            )
+                            updated_metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+                            self.vector_store.update(
+                                vector_id=memory_id,
+                                vector=None,  # Keep same embeddings
+                                payload=updated_metadata,
+                            )
+                            logger.info(f"Updated session IDs for memory {memory_id}")
+                        else:
+                            logger.info("NOOP for Memory.")
+                except Exception as e:
+                    logger.error(f"Error processing memory action: {resp}, Error: {e}")
+                    raise
+        except Exception as e:
+            logger.error(f"Error iterating new_memories_with_actions: {e}")
+            raise
+
+        self.db.save_messages(messages, _build_session_scope(filters))
+        return returned_memories
+
     def _add_to_vector_store(self, messages, metadata, filters, infer, prompt=None):
         if not infer:
             returned_memories = []
@@ -959,6 +1206,9 @@ class Memory(MemoryBase):
                 )
             return returned_memories
 
+        if self.config.enable_update_delete_branches:
+            return self._add_with_memory_actions(messages, metadata, filters, prompt=prompt)
+
         # === V3 PHASED BATCH PIPELINE ===
 
         # Phase 0: Context gathering
@@ -987,12 +1237,7 @@ class Memory(MemoryBase):
 
         # Phase 2: LLM extraction (single call)
         is_agent_scoped = bool(filters.get("agent_id")) and not filters.get("user_id")
-        if getattr(self.config, "enable_update_delete_branches", False):
-            from mem0.configs.prompts import RESTORED_UPDATE_MEMORY_PROMPT
-
-            system_prompt = RESTORED_UPDATE_MEMORY_PROMPT
-        else:
-            system_prompt = ADDITIVE_EXTRACTION_PROMPT
+        system_prompt = ADDITIVE_EXTRACTION_PROMPT
         if is_agent_scoped:
             system_prompt += AGENT_CONTEXT_SUFFIX
 
@@ -2750,6 +2995,183 @@ class AsyncMemory(MemoryBase):
             await display_first_run_notice_async(self, "async", "add")
         return {"results": vector_store_result}
 
+    async def _add_with_memory_actions(self, messages, metadata, effective_filters, prompt=None):
+        """Apply maintained fact/action decisions in order through current async mutation helpers."""
+        parsed_messages = parse_messages(messages)
+        fact_prompt = prompt or self.config.custom_fact_extraction_prompt
+        if fact_prompt:
+            system_prompt = fact_prompt
+            user_prompt = f"Input:\n{parsed_messages}"
+        else:
+            # Determine if this should use agent memory extraction based on agent_id presence
+            # and role types in messages
+            is_agent_memory = self._should_use_agent_memory_extraction(messages, metadata)
+            system_prompt, user_prompt = get_fact_retrieval_messages(
+                parsed_messages, is_agent_memory
+            )
+
+        if self.custom_instructions:
+            system_prompt += "\n" + self.custom_instructions
+
+        # Ensure 'json' appears in prompts for json_object response format compatibility
+        system_prompt, user_prompt = ensure_json_instruction(system_prompt, user_prompt)
+
+        response = await asyncio.to_thread(
+            self.llm.generate_response,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        try:
+            cleaned_response = remove_code_blocks(response)
+            if not cleaned_response.strip():
+                new_retrieved_facts = []
+            else:
+                try:
+                    # First try direct JSON parsing
+                    new_retrieved_facts = json.loads(cleaned_response, strict=False)["facts"]
+                except json.JSONDecodeError:
+                    # Try extracting JSON from response (handles chatty LLM output)
+                    extracted_json = extract_json(response)
+                    new_retrieved_facts = json.loads(extracted_json, strict=False)["facts"]
+                new_retrieved_facts = normalize_facts(new_retrieved_facts)
+        except Exception as e:
+            logger.error(f"Error in new_retrieved_facts: {e}")
+            raise LLMError(f"Invalid fact extraction response: {e}") from e
+
+        if not new_retrieved_facts:
+            logger.debug("No new facts retrieved from input. Skipping memory update LLM call.")
+
+        retrieved_old_memory = []
+        new_message_embeddings = {}
+        # Search for existing memories using the provided session identifiers
+        # Use all available session identifiers for accurate memory retrieval
+        search_filters = {}
+        if effective_filters.get("user_id"):
+            search_filters["user_id"] = effective_filters["user_id"]
+        if effective_filters.get("agent_id"):
+            search_filters["agent_id"] = effective_filters["agent_id"]
+        if effective_filters.get("run_id"):
+            search_filters["run_id"] = effective_filters["run_id"]
+
+        async def process_fact_for_search(new_mem_content):
+            """Retrieve one fact's actual scoped candidates without modifying stored memories."""
+            embeddings = await asyncio.to_thread(self.embedding_model.embed, new_mem_content, "add")
+            new_message_embeddings[new_mem_content] = embeddings
+            existing_mems = await asyncio.to_thread(
+                self.vector_store.search,
+                query=new_mem_content,
+                vectors=embeddings,
+                top_k=5,
+                filters=search_filters,
+            )
+            for memory in existing_mems:
+                _require_scoped_memory(memory, search_filters)
+            return [{"id": mem.id, "text": mem.payload.get("data", "")} for mem in existing_mems]
+
+        search_tasks = [process_fact_for_search(fact) for fact in new_retrieved_facts]
+        search_results_list = await asyncio.gather(*search_tasks)
+        for result_group in search_results_list:
+            retrieved_old_memory.extend(result_group)
+
+        unique_data = {}
+        for item in retrieved_old_memory:
+            unique_data[item["id"]] = item
+        retrieved_old_memory = list(unique_data.values())
+        logger.info(f"Total existing memories: {len(retrieved_old_memory)}")
+        temp_uuid_mapping = {}
+        for idx, item in enumerate(retrieved_old_memory):
+            temp_uuid_mapping[str(idx)] = item["id"]
+            retrieved_old_memory[idx]["id"] = str(idx)
+
+        if new_retrieved_facts:
+            function_calling_prompt = get_update_memory_messages(
+                retrieved_old_memory, new_retrieved_facts, self.config.custom_update_memory_prompt
+            )
+            try:
+                response = await asyncio.to_thread(
+                    self.llm.generate_response,
+                    messages=[{"role": "user", "content": function_calling_prompt}],
+                    response_format={"type": "json_object"},
+                )
+            except Exception as e:
+                logger.error(f"Error in new memory actions response: {e}")
+                raise LLMError(f"Memory decision request failed: {e}") from e
+            try:
+                if not response or not response.strip():
+                    logger.warning("Empty response from LLM, no memories to extract")
+                    new_memories_with_actions = {}
+                else:
+                    try:
+                        new_memories_with_actions = json.loads(
+                            remove_code_blocks(response), strict=False
+                        )
+                    except json.JSONDecodeError:
+                        extracted_json = extract_json(response)
+                        new_memories_with_actions = json.loads(extracted_json, strict=False)
+            except Exception as e:
+                logger.error(f"Invalid JSON response: {e}")
+                raise LLMError(f"Invalid memory decision response: {e}") from e
+        else:
+            new_memories_with_actions = {}
+
+        _validate_memory_actions(new_memories_with_actions.get("memory", []), temp_uuid_mapping)
+        returned_memories = []
+        for resp in new_memories_with_actions.get("memory", []):
+            action_text = resp["text"]
+            event_type = resp["event"]
+            memory_id = temp_uuid_mapping.get(resp.get("id"))
+            if event_type in ("ADD", "UPDATE"):
+                if action_text not in new_message_embeddings:
+                    new_message_embeddings[action_text] = await asyncio.to_thread(
+                        self.embedding_model.embed, action_text, event_type.lower()
+                    )
+                if event_type == "ADD":
+                    memory_id = await self._create_memory(
+                        action_text, new_message_embeddings, deepcopy(metadata)
+                    )
+                else:
+                    await self._update_memory(
+                        memory_id, action_text, new_message_embeddings, deepcopy(metadata)
+                    )
+                result = {"id": memory_id, "memory": action_text, "event": event_type}
+                if event_type == "UPDATE":
+                    result["previous_memory"] = resp.get("old_memory")
+                returned_memories.append(result)
+            elif event_type == "DELETE":
+                await self._delete_memory(memory_id)
+                returned_memories.append(
+                    {"id": memory_id, "memory": action_text, "event": event_type}
+                )
+            elif metadata.get("agent_id") or metadata.get("run_id"):
+                existing_memory = await asyncio.to_thread(
+                    self.vector_store.get, vector_id=memory_id
+                )
+                if existing_memory is None:
+                    raise ValueError(f"Memory {memory_id} disappeared before session update")
+                _require_scoped_memory(existing_memory, search_filters)
+                updated_metadata = deepcopy(existing_memory.payload)
+                if metadata.get("agent_id"):
+                    updated_metadata["agent_id"] = metadata["agent_id"]
+                if metadata.get("run_id"):
+                    updated_metadata["run_id"] = metadata["run_id"]
+                updated_metadata["created_at"] = _normalize_iso_timestamp_to_utc(
+                    updated_metadata.get("created_at")
+                )
+                updated_metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+                await asyncio.to_thread(
+                    self.vector_store.update,
+                    vector_id=memory_id,
+                    vector=None,
+                    payload=updated_metadata,
+                )
+        await asyncio.to_thread(
+            self.db.save_messages, messages, _build_session_scope(effective_filters)
+        )
+        return returned_memories
+
     async def _add_to_vector_store(
         self,
         messages: list,
@@ -2798,6 +3220,11 @@ class AsyncMemory(MemoryBase):
                 )
             return returned_memories
 
+        if self.config.enable_update_delete_branches:
+            return await self._add_with_memory_actions(
+                messages, metadata, effective_filters, prompt=prompt
+            )
+
         # === V3 PHASED BATCH PIPELINE (async) ===
 
         # Phase 0: Context gathering
@@ -2833,12 +3260,7 @@ class AsyncMemory(MemoryBase):
         is_agent_scoped = bool(effective_filters.get("agent_id")) and not effective_filters.get(
             "user_id"
         )
-        if getattr(self.config, "enable_update_delete_branches", False):
-            from mem0.configs.prompts import RESTORED_UPDATE_MEMORY_PROMPT
-
-            system_prompt = RESTORED_UPDATE_MEMORY_PROMPT
-        else:
-            system_prompt = ADDITIVE_EXTRACTION_PROMPT
+        system_prompt = ADDITIVE_EXTRACTION_PROMPT
         if is_agent_scoped:
             system_prompt += AGENT_CONTEXT_SUFFIX
 

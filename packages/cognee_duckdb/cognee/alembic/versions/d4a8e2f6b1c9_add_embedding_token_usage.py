@@ -1,4 +1,4 @@
-"""Add embedding token usage columns (SDK-1077)
+"""Add embedding token usage columns (SDK-1077).
 
 Revision ID: d4a8e2f6b1c9
 Revises: f6b8d0a2c4e6
@@ -15,7 +15,8 @@ before, and every existing per-model row is an LLM's.
 Idempotent: every add/drop is inspector-guarded, like the other revisions.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 
 import sqlalchemy as sa
 from alembic import op
@@ -36,6 +37,7 @@ _NEW_COLUMNS = [
 
 
 def upgrade() -> None:
+    """Add measured token fields while preserving defaults for existing records."""
     insp = sa.inspect(op.get_bind())
     tables = set(insp.get_table_names())
 
@@ -46,6 +48,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Remove token fields from existing tables through the declared backend."""
     insp = sa.inspect(op.get_bind())
     tables = set(insp.get_table_names())
 
@@ -55,20 +58,53 @@ def downgrade() -> None:
 
 
 def _has_column(inspector, table: str, name: str) -> bool:
+    """Read existing column names without inferring migration completion."""
     return any(column["name"] == name for column in inspector.get_columns(table))
 
 
 def _add_column(table: str, column: sa.Column) -> None:
+    """Add a column, separating DuckDB's default and nullability operations."""
     if op.get_context().dialect.name == "sqlite":
         with op.batch_alter_table(table) as batch_op:
             batch_op.add_column(column)
+    elif op.get_context().dialect.name == "duckdb" and not column.nullable:
+        with _without_duckdb_indexes(table):
+            column.nullable = True
+            op.add_column(table, column)
+            op.alter_column(table, column.name, nullable=False, existing_type=column.type)
     else:
         op.add_column(table, column)
 
 
 def _drop_column(table: str, name: str) -> None:
+    """Drop the requested column without replacing unrelated table contents."""
     if op.get_context().dialect.name == "sqlite":
         with op.batch_alter_table(table) as batch_op:
             batch_op.drop_column(name)
+    elif op.get_context().dialect.name == "duckdb":
+        with _without_duckdb_indexes(table):
+            op.drop_column(table, name)
     else:
         op.drop_column(table, name)
+
+
+@contextmanager
+def _without_duckdb_indexes(table: str) -> Iterator[None]:
+    """Restore exact explicit indexes around one transactional column alteration."""
+    connection = op.get_bind()
+    indexes = connection.execute(
+        sa.text(
+            "SELECT schema_name, index_name, sql FROM duckdb_indexes() "
+            "WHERE database_name = current_database() "
+            "AND schema_name = current_schema() AND table_name = :table_name "
+            "ORDER BY index_oid"
+        ),
+        {"table_name": table},
+    ).all()
+    if not connection.in_transaction():
+        raise RuntimeError("DuckDB column migration requires a transaction")
+    for schema, name, _ in indexes:
+        op.drop_index(name, table_name=table, schema=schema)
+    yield
+    for _, _, statement in indexes:
+        connection.exec_driver_sql(statement)

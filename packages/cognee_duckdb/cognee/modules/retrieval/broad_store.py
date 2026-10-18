@@ -1,11 +1,11 @@
-"""BROAD's record store: a dataset's text as SQLite tables that one query answers exactly.
+"""BROAD's record store: a dataset's text as DuckDB tables that one query answers exactly.
 
 Every document becomes rows. Records (delimited text with a header, markdown tables, JSON
 records, an mbox email archive, DLT rows) become one table per set of columns. All other
 text becomes the ``lines`` table, one row per non-empty line, with the line's document,
 the first line of its document and of its block (so a line keeps the heading it sits
 under), and its shape: the line with every value masked, and the values in order
-(``v1`` ... ``v8``). A model writes one read-only SELECT over these tables; SQLite
+(``v1`` ... ``v8``). A model writes one read-only SELECT over these tables; DuckDB
 computes the answer.
 """
 
@@ -17,14 +17,17 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import tempfile
-import time
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
+from threading import Timer
 
+import duckdb
 import regex
+from duckdb.func import FunctionNullHandling
+from duckdb.sqltypes import BIGINT, VARCHAR
+from duckdb_sqlalchemy_async.native import connect_native
 
 # Fewer records than this are not trusted to be a table; their text goes to ``lines``.
 TABLE_MIN_ROWS = 10
@@ -82,6 +85,8 @@ class BroadQueryError(ValueError):
 
 @dataclass
 class Table:
+    """Keep parsed record columns, original rows and declared relationship descriptions."""
+
     name: str
     columns: list[str]
     rows: list[list[str]]
@@ -198,7 +203,7 @@ def _mail_records(name: str, text: str) -> Table | None:
     if len(starts) < 2 or starts[0] != 0:
         return None
     rows = []
-    for begin, end in zip(starts, [*starts[1:], len(text)]):
+    for begin, end in zip(starts, [*starts[1:], len(text)], strict=True):
         message = email.message_from_string(text[begin:end].split("\n", 1)[1])
         sender, address = email.utils.parseaddr(message.get("From", ""))
         body = next(
@@ -307,22 +312,22 @@ def shape_of(line: str) -> tuple[str, list[str]]:
     return " ".join(_VALUE.sub(mask, line).split()), values
 
 
-_READ_ONLY = {
-    sqlite3.SQLITE_SELECT,
-    sqlite3.SQLITE_READ,
-    sqlite3.SQLITE_FUNCTION,
-    getattr(sqlite3, "SQLITE_RECURSIVE", 33),
-}
-
-
 class RecordStore:
-    """A temporary SQLite database of one dataset's records, built document by document."""
+    """A temporary DuckDB database of one dataset's records, built document by document."""
 
     def __init__(self) -> None:
+        """Open private DuckDB storage with external file and extension access disabled."""
         self.directory = tempfile.mkdtemp(prefix="broad_")
-        self.connection = sqlite3.connect(os.path.join(self.directory, "records.db"))
-        self.connection.create_function("words", 2, _words, deterministic=True)
-        self.connection.create_function("norm", 1, norm, deterministic=True)
+        self.connection = connect_native(
+            os.path.join(self.directory, "records.duckdb"),
+            config={"enable_external_access": False},
+        )
+        self.connection.create_function(
+            "words", _words, [VARCHAR, VARCHAR], BIGINT, null_handling=FunctionNullHandling.SPECIAL
+        )
+        self.connection.create_function(
+            "norm", norm, [VARCHAR], VARCHAR, null_handling=FunctionNullHandling.SPECIAL
+        )
         self.tables: dict[str, _Built] = {}
         self.by_columns: dict[tuple[str, ...], str] = {}
         self.names: set[str] = {"lines"}
@@ -335,12 +340,14 @@ class RecordStore:
         )
 
     def close(self) -> None:
+        """Close the owned database and remove its temporary storage."""
         self.connection.close()
         shutil.rmtree(self.directory, ignore_errors=True)
 
     # --- building --------------------------------------------------------------------
 
     def add_document(self, name: str, text: str) -> None:
+        """Retain a document as structured records or as its original nonempty lines."""
         table = parse_records(name, text)
         if table is None:
             self._add_lines(name, text)
@@ -348,6 +355,7 @@ class RecordStore:
             self._add_table(table)
 
     def add_dlt_rows(self, texts: list[str]) -> None:
+        """Build tables from maintained DLT record parsing and foreign-key descriptions."""
         by_table: dict[str, tuple[list[dict[str, str]], set[str]]] = {}
         for text in texts:
             parsed = parse_dlt_row(text)
@@ -363,6 +371,7 @@ class RecordStore:
             self._add_table(Table(name, columns, rows, sorted(keys)))
 
     def _add_table(self, table: Table) -> None:
+        """Append records, promoting numeric columns when later text requires it."""
         key = tuple(table.columns)
         name = self.by_columns.get(key)
         if name is None:
@@ -373,21 +382,37 @@ class RecordStore:
             columns = [_identifier(c, taken) for c in table.columns]
             self.connection.execute(
                 f'CREATE TABLE "{name}" (_document TEXT, '
-                + ", ".join(f'"{c}" {t}' for c, t in zip(columns, types))
+                + ", ".join(
+                    f'"{c}" ' + {"INTEGER": "BIGINT", "REAL": "DOUBLE", "TEXT": "VARCHAR"}[t]
+                    for c, t in zip(columns, types, strict=True)
+                )
                 + ")"
             )
             self.tables[name] = _Built(columns=columns, types=types)
             self.by_columns[key] = name
         built = self.tables[name]
+        for position, (column, kind) in enumerate(zip(built.columns, built.types, strict=True)):
+            if kind != "TEXT" and any(
+                row[position].strip() and _number(row[position]) is None for row in table.rows
+            ):
+                self.connection.execute(
+                    f'ALTER TABLE "{name}" ALTER COLUMN "{column}" TYPE VARCHAR'
+                )
+                built.types[position] = "TEXT"
+            elif kind == "INTEGER" and any(
+                isinstance(_number(row[position]), float) for row in table.rows
+            ):
+                self.connection.execute(f'ALTER TABLE "{name}" ALTER COLUMN "{column}" TYPE DOUBLE')
+                built.types[position] = "REAL"
 
         def stored(value: str, kind: str) -> object:
-            # A number where the column holds numbers; else the text as written (SQLite
-            # keeps it), so a later document's odd value is not lost.
+            """Convert numeric fields while retaining text and empty values distinctly."""
             number = _number(value) if kind != "TEXT" else None
             return number if number is not None else (value if value.strip() else None)
 
         values = [
-            [table.name] + [stored(v, t) for v, t in zip(row, built.types)] for row in table.rows
+            [table.name] + [stored(v, t) for v, t in zip(row, built.types, strict=True)]
+            for row in table.rows
         ]
         marks = ", ".join("?" * (len(built.columns) + 1))
         self.connection.executemany(f'INSERT INTO "{name}" VALUES ({marks})', values)
@@ -396,6 +421,7 @@ class RecordStore:
         built.foreign_keys.update(table.foreign_keys)
 
     def _add_lines(self, name: str, text: str) -> None:
+        """Store each nonempty line with its document, block, shape and extracted values."""
         rows = []
         title = block = ""
         for number, raw in enumerate(text.splitlines(), 1):
@@ -409,7 +435,8 @@ class RecordStore:
             padded = (values + [None] * LINE_VALUES)[:LINE_VALUES]
             rows.append([name, title, block, number, line, shape, *padded])
         marks = ", ".join("?" * (6 + LINE_VALUES))
-        self.connection.executemany(f"INSERT INTO lines VALUES ({marks})", rows)
+        if rows:
+            self.connection.executemany(f"INSERT INTO lines VALUES ({marks})", rows)
         self.line_rows += len(rows)
 
     # --- what the model is shown -----------------------------------------------------
@@ -427,7 +454,7 @@ class RecordStore:
                     "column _document names the document a row came from"
                 )
             ]
-            for column, kind in zip(built.columns, built.types):
+            for column, kind in zip(built.columns, built.types, strict=True):
                 lines.append(f'- "{column}" {kind}{self._common(name, column, kind)}')
             if built.foreign_keys:
                 lines.append("Foreign keys: " + "; ".join(sorted(built.foreign_keys)))
@@ -441,6 +468,7 @@ class RecordStore:
         return "\n\n".join(parts)
 
     def _describe_lines(self) -> str:
+        """Describe text layout and representative rows without changing stored records."""
         shapes = self.connection.execute("SELECT COUNT(DISTINCT shape) FROM lines").fetchone()[0]
         text = (
             f"TABLE lines ({self.line_rows} rows: every non-empty line of the text documents)\n"
@@ -516,6 +544,7 @@ class RecordStore:
 
     @staticmethod
     def _question_words(question: str) -> list[str]:
+        """Choose normalized question terms for bounded schema value previews."""
         words = regex.findall(r"[\p{L}\p{N}][\p{L}\p{N}'-]*", norm(question) or "")
         longest_first = sorted(
             {w for w in words if len(w) >= PROBE_MIN_CHARS}, key=len, reverse=True
@@ -525,7 +554,7 @@ class RecordStore:
     def _probe(self, table: str, built: _Built, words: list[str]) -> str:
         """For each text column, the values containing a word of the question."""
         found = []
-        for column, kind in zip(built.columns, built.types):
+        for column, kind in zip(built.columns, built.types, strict=True):
             if kind != "TEXT" or not words:
                 continue
             hits: list[str] = []
@@ -544,6 +573,7 @@ class RecordStore:
         return "; ".join(found)
 
     def _common(self, table: str, column: str, kind: str) -> str:
+        """Describe actual numeric ranges or bounded common text values."""
         if kind != "TEXT":
             low, high = self.connection.execute(
                 f'SELECT MIN("{column}"), MAX("{column}") FROM "{table}"'
@@ -563,12 +593,15 @@ class RecordStore:
         )
 
     def _sample(self, sql: str) -> str:
+        """Format representative stored rows from an internal preview query."""
         cursor = self.connection.execute(sql)
         header = [d[0] for d in cursor.description]
         rows = cursor.fetchall()
         return "  rows: " + " || ".join(
             "; ".join(
-                f"{h}={str(v)[:VALUE_CHARS]!r}" for h, v in zip(header, row) if v not in (None, "")
+                f"{h}={str(v)[:VALUE_CHARS]!r}"
+                for h, v in zip(header, row, strict=True)
+                if v not in (None, "")
             )
             for row in rows
         )
@@ -577,25 +610,25 @@ class RecordStore:
 
     def run(self, sql: str) -> tuple[list[str], list[tuple], bool]:
         """Run one read-only query: its columns, up to MAX_RESULT_ROWS rows, and whether
-        more rows were left out. Raises BroadQueryError for anything else (SQLite itself
-        refuses more than one statement)."""
-        started = time.monotonic()
-
-        def too_long() -> int:
-            return int(time.monotonic() - started > MAX_QUERY_SECONDS)
-
-        def authorize(action, *_):
-            return sqlite3.SQLITE_OK if action in _READ_ONLY else sqlite3.SQLITE_DENY
-
-        self.connection.set_authorizer(authorize)
-        self.connection.set_progress_handler(too_long, 10_000)
+        more rows were left out. Native parsing, read-only transactions and the query's
+        own interruptible connection enforce the existing query boundaries.
+        """
+        query_connection = self.connection.cursor()
+        deadline = Timer(MAX_QUERY_SECONDS, query_connection.interrupt)
         try:
-            cursor = self.connection.execute(sql.strip().rstrip(";"))
+            statements = query_connection.extract_statements(sql)
+            if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
+                raise BroadQueryError("BROAD requires exactly one read-only SELECT")
+            query_connection.execute("BEGIN TRANSACTION READ ONLY")
+            deadline.start()
+            cursor = query_connection.execute(statements[0])
             rows = cursor.fetchmany(MAX_RESULT_ROWS + 1)
-        except (sqlite3.Error, sqlite3.Warning) as error:
+            columns = [d[0] for d in cursor.description or []]
+        except (duckdb.Error, duckdb.Warning) as error:
             raise BroadQueryError(str(error)) from error
         finally:
-            self.connection.set_authorizer(None)
-            self.connection.set_progress_handler(None, 0)
-        columns = [d[0] for d in cursor.description or []]
+            deadline.cancel()
+            if deadline.ident is not None:
+                deadline.join()
+            query_connection.close()
         return columns, rows[:MAX_RESULT_ROWS], len(rows) > MAX_RESULT_ROWS

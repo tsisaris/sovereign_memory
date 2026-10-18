@@ -1,4 +1,7 @@
+"""Map executable pipeline tasks and their maintained pipeline relationships."""
+
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import Column, DateTime, String, Text, Uuid
@@ -8,8 +11,13 @@ from cognee.infrastructure.databases.relational import Base
 
 from .PipelineTask import PipelineTask
 
+if TYPE_CHECKING:
+    from .Pipeline import Pipeline
+
 
 class Task(Base):
+    """Store task identity, executable text, timestamps and pipeline membership."""
+
     __tablename__ = "tasks"
 
     id = Column(Uuid, primary_key=True, default=uuid4)

@@ -12,8 +12,8 @@ from cognee.shared.lru_cache import DATABASE_MAX_LRU_CACHE_SIZE
 
 from .config import get_graph_context_config
 from .graph_db_interface import GraphDBInterface
-from .kuzu.adapter import DEFAULT_KUZU_BUFFER_POOL_SIZE, DEFAULT_KUZU_MAX_DB_SIZE
 from .supported_databases import supported_databases
+from .tuning_defaults import DEFAULT_KUZU_BUFFER_POOL_SIZE, DEFAULT_KUZU_MAX_DB_SIZE
 
 logger = get_logger("GraphEngine")
 
@@ -52,7 +52,7 @@ def _normalize_optional_create_graph_engine_params(params: dict) -> dict:
 
     if not normalized.get("graph_dataset_database_handler"):
         normalized["graph_dataset_database_handler"] = os.getenv(
-            "GRAPH_DATASET_DATABASE_HANDLER", "ladybug"
+            "GRAPH_DATASET_DATABASE_HANDLER", "duckdb_graph"
         )
 
     return normalized
@@ -340,6 +340,13 @@ def _create_graph_engine(
         Returns an instance of the appropriate graph adapter depending on the provider type
         specified.
     """
+
+    if graph_database_provider == "duckdb" and graph_database_provider not in supported_databases:
+        from cognee_community_hybrid_adapter_duckdb.duckdb_adapter import DuckDBAdapter
+
+        from .use_graph_adapter import use_graph_adapter
+
+        use_graph_adapter("duckdb", DuckDBAdapter)
 
     if graph_database_provider in supported_databases:
         adapter = supported_databases[graph_database_provider]

@@ -7,17 +7,20 @@
 name = "sovereign_memory"
 version = "0.1.0"
 description = "One large, connected, seamless local memory system on DuckDB: every useful kind of memory welded into one suite that works with DuckDB, a true superset of Letta, Zep/Graphiti, Cognee and Mem0, modular so new kinds of memory can be added as they appear, free and open for everyone to use and maintain."
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 # The packages this project's code needs, as name==version, one per line.
 dependencies = [
     "duckdb==1.5.6",
-    "duckdb-engine==0.17.0",
     "sqlalchemy==2.0.39",
-    "alembic==1.13.3",
 ]
 
 [tool.uv.sources]
+cognee = { workspace = true }
+mem0_duckdb = { workspace = true }
+letta_memory_model = { workspace = true }
+graphiti-duckdb = { workspace = true }
 duckdb_sqlalchemy_async = { workspace = true }
+sovereign-memory-owner = { workspace = true }
 
 [tool.uv.workspace]
 members = ["packages/*"]
@@ -27,6 +30,11 @@ members = ["packages/*"]
 # environment holds, so the laptop, GitHub and Jules give the same verdict.
 dev = [
     "duckdb_sqlalchemy_async==0.1.0",
+    "cognee==1.6.5",
+    "mem0_duckdb==0.1.0",
+    "letta_memory_model==0.1.0",
+    "graphiti-duckdb==0.1.0",
+    "sovereign-memory-owner==0.1.0",
     "pre-commit==4.6.2",
     "ruff==0.16.2",
     "mypy==2.3.0",
@@ -36,7 +44,6 @@ dev = [
     "deptry==0.25.1",
     "pytest==9.1.1",
     "coverage==7.15.4",
-    "cognee==1.6.5",
     "pytest-asyncio==1.4.0",
 ]
 # Reported, never blocking.

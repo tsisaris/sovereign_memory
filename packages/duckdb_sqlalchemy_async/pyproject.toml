@@ -16,3 +16,9 @@ dependencies = [
 
 [project.entry-points."sqlalchemy.dialects"]
 "duckdb.aio" = "duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_dialect:DuckDBAsyncDialect"
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "duckdb_sqlalchemy_async/**/*.py" },
+]

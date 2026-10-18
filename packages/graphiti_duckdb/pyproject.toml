@@ -1,15 +1,36 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "graphiti-duckdb"
 version = "0.1.0"
-description = "Graphiti DuckDB Driver Backend"
+description = "Graphiti 0.31.1 maintained fork and DuckDB adapter integration"
+requires-python = ">=3.12,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+# Upstream runtime closure from pinned d50741d1, with the DuckDB backend.
+# PostHog remains pending production telemetry removal; no absence is claimed.
 dependencies = [
-    "duckdb>=1.5.0",
-    "pydantic>=2.0.0"
+    "pydantic==2.14.1",
+    "neo4j==6.4.1",
+    "openai==2.54.0",
+    "tenacity==9.2.1",
+    "numpy==2.5.4",
+    "python-dotenv==1.2.4",
+    "posthog==7.71.0",
+    "duckdb==1.5.6",
+    "duckdb_sqlalchemy_async==0.1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/graphiti_duckdb"]
+packages = ["src/graphiti_core", "src/graphiti_duckdb"]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "src/**/*.py" },
+    { file = "src/**/py.typed" },
+    { file = "LICENSE" },
+    { file = "NOTICE" },
+]

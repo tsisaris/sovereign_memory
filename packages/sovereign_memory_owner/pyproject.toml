@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sovereign-memory-owner"
+version = "0.1.0"
+description = "Durable capture, authenticated local transport and engine coordination for Sovereign Memory."
+requires-python = ">=3.12,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    "duckdb==1.5.6",
+    "duckdb_sqlalchemy_async==0.1.0",
+    "jsonschema==4.25.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["service"]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "service/**/*" },
+    { file = "LICENSE" },
+]

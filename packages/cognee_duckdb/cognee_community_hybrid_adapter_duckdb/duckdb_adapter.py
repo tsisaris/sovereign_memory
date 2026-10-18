@@ -5,6 +5,7 @@ from typing import ClassVar
 """DuckDB Vector and Graph adapter package."""
 import asyncio
 import json
+from pathlib import Path
 from typing import Any, List, Optional
 from uuid import UUID
 
@@ -20,6 +21,8 @@ from cognee.infrastructure.databases.vector.models.ScoredResult import ScoredRes
 from cognee.infrastructure.databases.vector.vector_db_interface import VectorDBInterface
 from cognee.infrastructure.engine import DataPoint
 from cognee.shared.logging_utils import get_logger
+from duckdb_engine import Dialect
+from duckdb_sqlalchemy_async.native import connect_native
 
 
 class CollectionNotFoundError(CogneeCollectionNotFoundError):
@@ -33,7 +36,7 @@ class CollectionNotFoundError(CogneeCollectionNotFoundError):
     pass
 
 
-class DuckDBDataPoint(DataPoint):  # type: ignore[misc]
+class DuckDBDataPoint(DataPoint):
     """DuckDB data point schema for vector index entries.
 
     Attributes:
@@ -80,25 +83,46 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         embedding_engine: EmbeddingEngine | None = None,
         graph_database_username: str | None = None,
         graph_database_password: str | None = None,
+        graph_database_url: str | None = None,
         **kwargs,
     ) -> None:
         """Initialize DuckDB adapter."""
+        if url and graph_database_url and url != graph_database_url:
+            raise ValueError("Conflicting DuckDB file locations")
+        url = url or graph_database_url
+        if url and url != ":memory:":
+            if "://" in url or url.startswith("md:"):
+                raise ValueError("This adapter requires a local DuckDB file path")
+            database = Path(url).expanduser().resolve()
+            database.parent.mkdir(parents=True, exist_ok=True)
+            url = str(database)
         self.database_url = url
         self.api_key = api_key
-        self.database_name = database_name
+        self.database_name = database_name or "cognee"
         self.embedding_engine = embedding_engine
         self.graph_database_username = graph_database_username
         self.graph_database_password = graph_database_password
         self.VECTOR_DB_LOCK = asyncio.Lock()
+        identifier = self._identifier(self.database_name)
 
         # Create in-memory DuckDB connection
         # If database_url is provided, use it; otherwise use in-memory
         if url:
-            self.connection = duckdb.connect(url)
+            self.connection = connect_native(url)
         else:
-            self.connection = duckdb.connect()  # In-memory database
+            self.connection = connect_native()  # In-memory database
 
-        pass
+        try:
+            self.connection.execute(f"CREATE SCHEMA IF NOT EXISTS {identifier}")
+            self.connection.execute("SET schema = ?", [self.database_name])
+        except BaseException:
+            self.connection.close()
+            raise
+
+    @staticmethod
+    def _identifier(name: str) -> str:
+        """Quote one identifier so names cannot select another schema or add SQL."""
+        return Dialect().identifier_preparer.quote_identifier(name)
 
     def _setup_extensions(self) -> None:
         """Setup DuckDB extensions."""
@@ -150,26 +174,34 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         if not self.embedding_engine:
             raise ValueError("Embedding engine not configured")
         result = await self.embedding_engine.embed_text(data)
-        return result  # type: ignore[no-any-return]
+        return result
 
     async def has_collection(self, collection_name: str) -> bool:
         """[VECTOR] Check if a collection exists."""
         try:
             # Check if table exists in DuckDB
             result = await self._execute_query_one(
-                "SELECT table_name FROM information_schema.tables WHERE table_name = $1",
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = current_schema() AND table_name = $1",
                 [collection_name],
             )
             return result is not None
         except duckdb.Error:
             return False
 
-    async def create_collection(self, collection_name: str, vector_dimension: int = 3072) -> None:
+    async def create_collection(
+        self, collection_name: str, vector_dimension: int | None = None
+    ) -> None:
         """[VECTOR] Create a new collection (table) in DuckDB."""
         # Create a table for storing vector data with specified dimension
-        vector_dimension = self.embedding_engine.get_vector_size()
+        if vector_dimension is None:
+            if self.embedding_engine is None:
+                raise ValueError("An explicit vector dimension or embedding engine is required")
+            vector_dimension = self.embedding_engine.get_vector_size()
+        if not isinstance(vector_dimension, int) or vector_dimension <= 0:
+            raise ValueError("Vector dimension must be a positive integer")
         create_table_query = f"""
-        CREATE TABLE IF NOT EXISTS {collection_name} (
+        CREATE TABLE IF NOT EXISTS {self._identifier(collection_name)} (
             id VARCHAR PRIMARY KEY,
             text TEXT,
             vector FLOAT[{vector_dimension}],
@@ -191,7 +223,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
         # Create the data points (use INSERT OR REPLACE to handle duplicates)
         create_data_points_query = f"""
-        INSERT OR REPLACE INTO {collection_name} (id, text, vector, payload) VALUES ($1, $2, $3, $4)
+        INSERT OR REPLACE INTO {self._identifier(collection_name)} (id, text, vector, payload) VALUES ($1, $2, $3, $4)
         """
         await self._execute_transaction(
             [
@@ -244,7 +276,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
             for data_id in data_point_ids:
                 # Query DuckDB for the specific data point
-                query = f"SELECT payload FROM {collection_name} WHERE id = $1"
+                query = f"SELECT payload FROM {self._identifier(collection_name)} WHERE id = $1"
                 result = await self._execute_query_one(query, [data_id])
 
                 if result:
@@ -305,7 +337,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             return []
 
         if limit is None:
-            search_query = f"""select count(*) from {collection_name}"""
+            search_query = f"""select count(*) from {self._identifier(collection_name)}"""
             count = await self._execute_query_one(search_query)
             if count is None:
                 logger.warning("Count is None in DuckDBAdapter.search; returning [].")
@@ -327,14 +359,16 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
             # Use DuckDB's native array_distance function for efficient vector search
             # Convert query vector to DuckDB array format with proper dimension
-            vector_dimension = self.embedding_engine.get_vector_size()
-            vector_str = f"[{','.join(map(str, query_vector))}]::FLOAT[{vector_dimension}]"
+            vector_dimension = len(query_vector)
+            if vector_dimension == 0:
+                raise ValueError("A query vector must have at least one dimension")
+            vector_parameter = f"CAST($1 AS FLOAT[{vector_dimension}])"
 
             # Execute vector similarity search using cosine similarity
 
             select_fields = [
                 "id",
-                f"array_cosine_distance(vector, {vector_str}) as distance",
+                f"array_cosine_distance(vector, {vector_parameter}) as distance",
             ]
             if with_vector:
                 select_fields.append("vector")
@@ -344,7 +378,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             # Optionally filter on the "belongs_to_set" payload field by node_name.
             # belongs_to_set is stored inside the JSON payload as a list of names.
             where_clause = ""
-            query_params: list[Any] = []
+            query_params: list[Any] = [query_vector]
             if node_name:
                 # Extract belongs_to_set from the JSON payload as a list of strings.
                 belongs_expr = "CAST(json_extract_string(payload, '$.belongs_to_set') AS VARCHAR[])"
@@ -352,15 +386,17 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
                     list_fn = "list_has_all"
                 else:
                     list_fn = "list_has_any"
-                where_clause = f"WHERE {list_fn}({belongs_expr}, $1)"
+                where_clause = f"WHERE {list_fn}({belongs_expr}, $2)"
                 query_params.append(node_name)
+
+            query_params.append(limit)
 
             search_query = f"""
             SELECT {", ".join(select_fields)}
-            FROM {collection_name}
+            FROM {self._identifier(collection_name)}
             {where_clause}
             ORDER BY distance ASC
-            LIMIT {limit}
+            LIMIT ${len(query_params)}
             """
 
             search_results = await self._execute_query(
@@ -446,13 +482,14 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
             # Create placeholders for the IN clause
             placeholders = ", ".join([f"${i + 1}" for i in range(len(data_point_ids))])
-            delete_query = f"DELETE FROM {collection_name} WHERE id IN ({placeholders})"
+            delete_query = (
+                f"DELETE FROM {self._identifier(collection_name)} "
+                f"WHERE id IN ({placeholders}) RETURNING id"
+            )
 
             # Execute the deletion
-            await self._execute_query(delete_query, data_point_ids)
-
-            # Get the count of deleted rows (DuckDB doesn't return this directly, so we approximate)
-            deleted_count = len(data_point_ids)  # Assume all were deleted for simplicity
+            deleted_rows = await self._execute_query(delete_query, data_point_ids)
+            deleted_count = len(deleted_rows)
 
             logger.info(f"Deleted {deleted_count} data points from collection {collection_name}")
             return {"deleted": deleted_count}
@@ -464,11 +501,14 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
     async def prune(self) -> None:
         """Documentation."""
         try:
-            q = "SELECT table_name FROM information_schema.columns WHERE column_name = 'vector'"
+            q = (
+                "SELECT table_name FROM information_schema.columns "
+                "WHERE column_name = 'vector' AND table_schema = current_schema()"
+            )
             res = await self._execute_query(q)
             tables = [r[0] for r in res]
             for table in tables:
-                await self._execute_query(f"DROP TABLE IF EXISTS {table}")
+                await self._execute_query(f"DROP TABLE IF EXISTS {self._identifier(table)}")
             logger.info("Pruned all DuckDB vector collections")
         except duckdb.Error as e:
             logger.error(f"Error during prune: {str(e)}")
@@ -484,7 +524,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         collection_names = []
         # Get all table names from the database
         tables_query = (
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+            "SELECT table_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND column_name = 'vector'"
         )
         tables_result = await self._execute_query(tables_query)
         for row in tables_result:
@@ -548,8 +589,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
     async def add_nodes(
         self,
-        nodes: list[DataPoint] | list[str],
-        properties: list[dict[str, Any]] | None = None,
+        nodes: list[DataPoint] | list[tuple[str, dict[str, Any]]],
         source_ref_key: str | None = None,
         pipeline_run_id: str | None = None,
     ) -> None:
@@ -559,7 +599,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
         queries = []
 
-        for i, node in enumerate(nodes):
+        for node in nodes:
             if isinstance(node, tuple):
                 props = {**(node[1] or {}), "id": node[0]}
             elif hasattr(node, "model_dump"):
@@ -574,9 +614,6 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             node_type = props.get(
                 "type", node.__class__.__name__ if hasattr(node, "__class__") else None
             )
-
-            if properties and i < len(properties) and properties[i]:
-                props.update(properties[i])
 
             core_keys = {"id", "name", "type"}
             extra = {k: v for k, v in props.items() if k not in core_keys}
@@ -647,12 +684,16 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         pipeline_run_id: str | None = None,
     ) -> None:
         """Documentation."""
-        await self.add_nodes(
-            [node],
-            [properties] if properties else None,
-            source_ref_key,
-            pipeline_run_id,
-        )
+        if isinstance(node, str):
+            await self.add_nodes(
+                [(node, properties or {})],
+                source_ref_key=source_ref_key,
+                pipeline_run_id=pipeline_run_id,
+            )
+        else:
+            await self.add_nodes(
+                [node], source_ref_key=source_ref_key, pipeline_run_id=pipeline_run_id
+            )
 
     async def delete_node(self, node_id: str) -> None:
         """Documentation."""

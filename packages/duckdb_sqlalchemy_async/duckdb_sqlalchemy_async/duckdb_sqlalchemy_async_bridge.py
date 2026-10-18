@@ -13,6 +13,8 @@ from typing import Any, Callable, TypeVar
 
 import duckdb
 
+from .native import connect_native
+
 T = TypeVar("T")
 Warning = duckdb.Warning
 Error = duckdb.Error
@@ -151,7 +153,7 @@ class AsyncConnection:
 
     def _open(self, args: tuple, kwargs: dict) -> None:
         """Open the database on the same worker that owns subsequent operations."""
-        self._native = duckdb.connect(*args, **kwargs)
+        self._native = connect_native(*args, **kwargs)
 
     async def cursor(self) -> AsyncCursor:
         """Create a logical cursor without opening another native connection."""

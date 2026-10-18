@@ -1,6 +1,8 @@
+"""Resolve explicit, agent, tenant and role grants within the user's selected tenant."""
+
 from cognee.modules.data.models.Dataset import Dataset
 from cognee.modules.users.methods.get_user_agents import get_user_agents
-from cognee.modules.users.permissions.methods import get_principal_datasets
+from cognee.modules.users.permissions.methods.get_principal_datasets import get_principal_datasets
 from cognee.shared.logging_utils import get_logger
 
 from ...models.User import User
@@ -9,9 +11,9 @@ logger = get_logger()
 
 
 async def get_all_user_permission_datasets(user: User, permission_type: str) -> list[Dataset]:
-    """
-        Return a list of datasets the user has permission for.
-        If the user is part of a tenant, return datasets his roles have permission for.
+    """Return datasets the user can access within the selected tenant.
+
+    Include the user's explicit grants and grants through agents, tenants and roles.
     Args:
         user
         permission_type

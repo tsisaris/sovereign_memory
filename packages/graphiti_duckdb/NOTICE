@@ -1,0 +1,2 @@
+Graphiti core maintained fork from getzep/graphiti commit d50741d1bf463cbe3859eb73914cbff1b66839e6 (version0.31.1), Apache-2.0, Copyright Zep Software, Inc.
+Sovereign Memory adds a DuckDB provider and adapter; upstream behavior remains subject to integration validation.

@@ -4,6 +4,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 import duckdb
+from duckdb_sqlalchemy_async.native import connect_native
 from pydantic import BaseModel
 
 from mem0.vector_stores.base import VectorStoreBase
@@ -20,7 +21,7 @@ class OutputData(BaseModel):
 class DuckDBVectorStore(VectorStoreBase):
     def __init__(self, db_path: str = "vector_store.duckdb", **kwargs):
         self.db_path = db_path
-        self.connection = duckdb.connect(db_path)
+        self.connection = connect_native(db_path)
         self.collection_name = kwargs.get("collection_name", "mem0")
         self.embedding_model_dims = kwargs.get("embedding_model_dims", 1536)
 

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mem0_duckdb"
+version = "0.1.0"
+description = "Mem0 2.2.1 source for DuckDB integration"
+requires-python = ">=3.12,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+# Base requirements from the hash-verified Mem0 2.2.1 sdist. Qdrant storage
+# must use DuckDB; the current default still needs correction. This fork
+# does not declare PostHog. Graphiti core
+# still brings it transitively: telemetry dependency/source removal remains
+# unaccepted integration work, including this fork's eager telemetry import.
+dependencies = [
+    "pydantic==2.14.1",
+    "openai==2.54.0",
+    "httpx==0.28.1",
+    "pytz==2026.5",
+    "sqlalchemy==2.0.39",
+    "protobuf==6.33.6",
+    "duckdb==1.5.6",
+    "duckdb-engine==0.17.0",
+    "duckdb_sqlalchemy_async==0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mem0"]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "src/**/*" },
+    { file = "LICENSE" },
+]

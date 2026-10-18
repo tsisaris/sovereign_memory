@@ -1,22 +1,41 @@
 """DuckDB Relational Adapter for Cognee."""
 
 import asyncio
-import gc
 import logging
-from os import path
+from pathlib import Path
 
-from sqlalchemy import MetaData, inspect, text
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import make_url
 
+from cognee.infrastructure.databases.relational.duckdb_reset import reset_relational_tables
 from cognee.infrastructure.databases.relational.sqlalchemy.SqlAlchemyAdapter import (
     SQLAlchemyAdapter,
 )
-from cognee.infrastructure.files.storage import get_file_storage
 
 logger = logging.getLogger(__name__)
 
 
 class DuckDBRelationalAdapter(SQLAlchemyAdapter):
     """Adapt Cognee's SQLAlchemy relational operations for DuckDB."""
+
+    def __init__(
+        self,
+        connection_string: str,
+        connect_args: dict | None = None,
+        pool_args: dict | None = None,
+    ):
+        """Retain the actual DuckDB path without applying SQLite connection setup."""
+        database = make_url(connection_string).database
+        if not database:
+            raise ValueError("DuckDB relational storage requires a database path")
+        super().__init__(connection_string, connect_args=connect_args, pool_args=pool_args)
+        self.db_path = database
+
+    async def create_database(self, script_location: str | None = None):
+        """Prepare the local directory, then execute the maintained migration chain."""
+        if self.db_path != ":memory:":
+            await asyncio.to_thread(Path(self.db_path).parent.mkdir, parents=True, exist_ok=True)
+        await super().create_database(script_location)
 
     async def get_schema_list(self) -> list[str]:
         """Return a list of all schema names in the database."""
@@ -32,38 +51,11 @@ class DuckDBRelationalAdapter(SQLAlchemyAdapter):
             return [schema[0] for schema in result.fetchall()]
 
     async def delete_database(self):
-        """Delete the entire database, including all tables and files."""
-        try:
-            await self.engine.dispose(close=True)
-            # Drop the cached engine so file handle gets released
-            from cognee.infrastructure.databases.relational.create_relational_engine import (
-                create_relational_engine,
-            )
-
-            create_relational_engine.cache_clear()
-            gc.collect()
-            await asyncio.sleep(2)
-            db_directory = path.dirname(self.db_path)
-            file_name = path.basename(self.db_path)
-            file_storage = get_file_storage(db_directory)
-            for attempt in range(10):
-                try:
-                    await file_storage.remove(file_name)
-                    break
-                except (PermissionError, OSError) as remove_error:
-                    if attempt == 9:
-                        logger.warning(
-                            "Could not remove duckdb database file %s after retries: %s",
-                            file_name,
-                            remove_error,
-                        )
-                        break
-                    gc.collect()
-                    await asyncio.sleep(0.5)
-        except Exception as e:
-            logger.error(f"Error deleting database: {e}")
-            raise
-        logger.info("Database deleted successfully.")
+        """Reset verified Cognee relational tables while preserving the shared database file."""
+        async with self.engine.begin() as connection:
+            await connection.run_sync(reset_relational_tables)
+        await self.engine.dispose(close=True)
+        logger.info("Cognee relational tables reset; shared DuckDB file preserved.")
 
     async def extract_schema(self):
         """Extract schema info (tables, columns, constraints)."""
@@ -100,7 +92,9 @@ class DuckDBRelationalAdapter(SQLAlchemyAdapter):
                         schema[key]["primary_key"] = pk_columns[0]
                     for fk in fks:
                         for col, ref_col in zip(
-                            fk.get("constrained_columns", []), fk.get("referred_columns", [])
+                            fk.get("constrained_columns", []),
+                            fk.get("referred_columns", []),
+                            strict=True,
                         ):
                             if col and ref_col:
                                 schema[key]["foreign_keys"].append(
@@ -111,7 +105,3 @@ class DuckDBRelationalAdapter(SQLAlchemyAdapter):
                                     }
                                 )
             return schema
-
-    def _configure_sqlite_engine(self) -> None:
-        """Override to prevent SQLite WAL/PRAGMA injection on DuckDB connections."""
-        pass

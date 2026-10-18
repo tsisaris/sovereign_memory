@@ -29,6 +29,12 @@ class MemoryItem(BaseModel):
 
 
 class MemoryConfig(BaseModel):
+    custom_fact_extraction_prompt: Optional[str] = Field(
+        description="Custom prompt for the fact extraction", default=None
+    )
+    custom_update_memory_prompt: Optional[str] = Field(
+        description="Custom prompt for the update memory", default=None
+    )
     enable_update_delete_branches: bool = Field(
         default=False,
         description="Whether to use the restored ADD/UPDATE/DELETE/NONE extraction logic instead of ADD-only.",

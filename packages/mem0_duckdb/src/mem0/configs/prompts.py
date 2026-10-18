@@ -1065,24 +1065,4 @@ def generate_additive_extraction_prompt(
     return "\n\n".join(sections)
 
 
-RESTORED_UPDATE_MEMORY_PROMPT = """
-# ROLE
-You are a precise Memory Manager. Your task is to extract, update, or delete factual memories based on the conversation and the current memory state.
-
-# ACTIONS
-You must analyze the new messages against the existing memories and output one of four actions for every relevant piece of information:
-- ADD: Create a new memory if the information is new and not present in existing memories.
-- UPDATE: Modify an existing memory if the new information corrects, refines, or updates it. You MUST provide the exact `old_memory` string of the memory being updated.
-- DELETE: Remove an existing memory if the new information explicitly contradicts or invalidates it (e.g., "I don't like X anymore").
-- NONE: Take no action if the information is already fully captured in existing memories or if there is no memorable information.
-
-# INPUTS
-- Existing Memories: The current facts known about the user.
-- New Messages: The latest conversation turns.
-
-# RULES
-1. Be concise and factual.
-2. For UPDATE, the `old_memory` field must exactly match the text of one of the existing memories.
-3. For DELETE, you still need to provide an `id` or `old_memory` reference.
-4. Output JSON strictly adhering to the requested format.
-"""
+RESTORED_UPDATE_MEMORY_PROMPT = DEFAULT_UPDATE_MEMORY_PROMPT
