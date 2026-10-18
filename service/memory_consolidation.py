@@ -61,7 +61,7 @@ class MemoryConsolidator:
                 ),
             )
             await self.conn.commit()
-        except (RuntimeError, ValueError):
+        except Exception:
             await self.conn.rollback()
             raise
 
@@ -76,7 +76,7 @@ class MemoryConsolidator:
                 """,
             )
             await self.conn.commit()
-        except (RuntimeError, ValueError):
+        except Exception:
             await self.conn.rollback()
             raise
 
@@ -161,8 +161,8 @@ class MemoryConsolidator:
                         )
                         await self.conn.commit()
 
-        except (RuntimeError, ValueError):
-            # We trap and rollback any outer scope errors that happened before the per-tier loops.
+        except Exception:
+            # Roll back any active transaction before propagating the error.
             if self.conn._in_transaction:
                 await self.conn.rollback()
             raise
