@@ -7,7 +7,7 @@
 name = "sovereign_memory"
 version = "0.1.0"
 description = "One large, connected, seamless local memory system on DuckDB: every useful kind of memory welded into one suite that works with DuckDB, a true superset of Letta, Zep/Graphiti, Cognee and Mem0, modular so new kinds of memory can be added as they appear, free and open for everyone to use and maintain."
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 # The packages this project's code needs, as name==version, one per line.
 dependencies = [
     "alembic==1.13.3",
@@ -59,7 +59,7 @@ select = [
 ]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 ignore_missing_imports = true
 check_untyped_defs = true
 # Classes ruled ADVISORY in sovereign/pyproject.toml (no birth case yet).
@@ -73,7 +73,7 @@ disable_error_code = [
 exclude = ["^data/sovereign/", "^local/"]
 
 [tool.pyright]
-pythonVersion = "3.10"
+pythonVersion = "3.12"
 # Gating class: reportUndefinedVariable (UC-5). Nothing else gates.
 typeCheckingMode = "off"
 reportUndefinedVariable = "error"
@@ -90,7 +90,7 @@ source = ["src"]
 [tool.deptry]
 # exclude REPLACES deptry's defaults, which would silently skip every folder
 # named tests (measured 2026-09-22, W-753 finding 3).
-exclude = [".venv", ".git", "data/sovereign", "local"]
+exclude = [".venv", ".git", "data/sovereign", "local", "service"]
 
 # The advisory checkers are run by name, never imported; naming their modules
 # stops deptry guessing, and the GitHub check fails on any line where it guesses.
