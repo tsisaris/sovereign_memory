@@ -4,6 +4,18 @@ This revision contains the actual runtime source, maintained upstream packages, 
 
 This is an integration input, not accepted software, a main merge, a release or a deployment. All seven deliverables and original32 capabilities remain required, including DuckDB-only storage, permissive licensing, identity/permissions, corrections/deletion/expiry, transaction/retry, search freshness, telemetry absence and real local-model quality.
 
+## Reviewed pilot source incorporated on 18 October
+
+The integration tree now includes actual Owner/Mem0 source from `5151769fedf51d1f23460efb33e8a320a1b490b2` and the seven Letta ORM files from `d006eb3769c3c0a35ce5a0489aa57eab7b059353`, each reviewed against runtime base `81d4c9d2cf87336660b7c6b6b5c6542990abd23a`. Letta's unrelated Cognee UI and Graphiti edits are excluded because those packages have active owners. Original provider branches and partial returns remain preserved. Incorporation is not acceptance; Graphiti and Cognee pilot returns and requested corrections are still pending.
+
+The Claude return adds stored payload bytes, a dispatcher and retrieval seam, and a Mem0 tier implementation. Ordinary public Owner capture on a disposable database produced four pending receipts; close/reopen recovered the exact v2 payload. Native vector search/list honored supplied identity and numeric filters. This does not prove real model decisions or four-engine processing. The retained Mem0 suite still reports 5 failed, 4 passed and 10 errors (5.71s), including SQLite fixture assumptions and the fake LLM's incorrect fact shape. Changed-file Ruff reported 91 findings and mypy 13 errors in two files. No tests were changed or skipped to manufacture success.
+
+The Letta return establishes a real declarative base and seven mapped tables. Its existing suite passes 11 tests (0.52s), and the seven changed Letta files pass Ruff and mypy. A real async DuckDB `Base.metadata.create_all()` fails on the messages table's `ON DELETE SET NULL`: DuckDB rejects CASCADE, SET NULL and SET DEFAULT foreign-key actions. Persistence/reopen was not reached. Deletion semantics and native vector representation remain required; construction tests do not establish them.
+
+Review blockers sent to the same provider sessions: Owner retrieval hardcodes actor ownership in place of the full permission/shared-pool contract; borrowed Mem0 updates/deletes skip entity maintenance; dispatcher failure/unknown return statuses can commit projection writes; Letta needs real schema/persistence and deletion behavior. Source presence and provider completion do not close these gaps. The Claude commit attributes Sonnet 5.5, but attribution is not authoritative runtime model identity. Requested Opus 5.5 availability and selection remain unverified; no substitute review cycle has started.
+
+The existing plan's architecture guide maps source owners and these gaps. Supplied prompt-learning research is reconciled there as a cooperating subsystem using existing record owners and versioned instruction artifacts. No learner installation, training, scheduler activation, direct learner access to live DuckDB, or duplicate logging system is included in this return.
+
 ## Source and setup
 
 The source is materialized from DATA parent0037a0c4d8f328ca5baee0e58300dadbfed0cf37 plus the preserved complete3af4 source delta and subsequent local runtime repairs. Original component branches, failed returns and full local binary exports remain preserved. Historical snapshot narrative is retained in docs/late_artifacts/convergence_snapshot_before_source_materialization_20261018.txt.

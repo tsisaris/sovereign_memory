@@ -5,10 +5,10 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, String, func, text
-from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, declarative_mixin, declared_attr, mapped_column
 
 
-class Base:
+class Base(DeclarativeBase):
     """Class docstring."""
 
     pass

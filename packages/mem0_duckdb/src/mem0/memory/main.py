@@ -12,6 +12,7 @@ from copy import deepcopy
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional
 
+import duckdb
 from pydantic import ValidationError
 
 from mem0.configs.base import MemoryConfig, MemoryItem
@@ -529,8 +530,24 @@ class _AsyncOSSProject:
 
 
 class Memory(MemoryBase):
-    def __init__(self, config: MemoryConfig = MemoryConfig()):
+    def __init__(
+        self,
+        config: MemoryConfig = MemoryConfig(),
+        connection: Optional[duckdb.DuckDBPyConnection] = None,
+    ):
+        """Create a memory on its own DuckDB files, or on a caller-owned native handle.
+
+        With `connection`, the vector store and history share that one borrowed
+        handle (the DuckDB vector store provider is required): this Memory never
+        commits, rolls back or closes it, and the caller owns the transaction.
+        Entity-store maintenance, which needs embedding calls and extra
+        collections, is then skipped so no model work happens in the caller's
+        transaction.
+        """
         self.config = config
+        self._borrowed_connection = connection
+        if connection is not None and self.config.vector_store.provider != "duckdb":
+            raise ValueError("A borrowed DuckDB handle requires the duckdb vector store provider")
 
         self.embedding_model = EmbedderFactory.create(
             self.config.embedder.provider,
@@ -538,10 +555,12 @@ class Memory(MemoryBase):
             self.config.vector_store.config,
         )
         self.vector_store = VectorStoreFactory.create(
-            self.config.vector_store.provider, self.config.vector_store.config
+            self.config.vector_store.provider,
+            self.config.vector_store.config,
+            **({"connection": connection} if connection is not None else {}),
         )
         self.llm = LlmFactory.create(self.config.llm.provider, self.config.llm.config)
-        self.db = DuckDBManager(self.config.history_db_path)
+        self.db = DuckDBManager(self.config.history_db_path, connection=connection)
         self.collection_name = self.config.vector_store.config.collection_name
         self.api_version = self.config.version
         self.custom_instructions = self.config.custom_instructions
@@ -955,8 +974,16 @@ class Memory(MemoryBase):
             display_first_run_notice(self, "sync", "add")
         return {"results": vector_store_result}
 
-    def _add_with_memory_actions(self, messages, metadata, filters, prompt=None):
-        """Run the maintained 1.0.11 fact and action flow using current mutation helpers."""
+    @staticmethod
+    def _identity_filters(filters):
+        """Return only the identity keys that scope a memory search."""
+        return {key: filters[key] for key in ("user_id", "agent_id", "run_id") if filters.get(key)}
+
+    def _extract_facts(self, messages, metadata, filters, prompt=None):
+        """Stage 1 of the 1.0.11 action flow: one model call that turns messages into facts.
+
+        It reads nothing from the database and writes nothing.
+        """
         parsed_messages = parse_messages(messages)
 
         fact_prompt = prompt or self.config.custom_fact_extraction_prompt
@@ -1002,40 +1029,38 @@ class Memory(MemoryBase):
             logger.error(f"Error in new_retrieved_facts: {e}")
             raise LLMError(f"Invalid fact extraction response: {e}") from e
 
-        if not new_retrieved_facts:
-            logger.debug("No new facts retrieved from input. Skipping memory update LLM call.")
+        return new_retrieved_facts
 
-        retrieved_old_memory = []
-        new_message_embeddings = {}
-        # Search for existing memories using the provided session identifiers
-        # Use all available session identifiers for accurate memory retrieval
-        search_filters = {}
-        if filters.get("user_id"):
-            search_filters["user_id"] = filters["user_id"]
-        if filters.get("agent_id"):
-            search_filters["agent_id"] = filters["agent_id"]
-        if filters.get("run_id"):
-            search_filters["run_id"] = filters["run_id"]
-        for new_mem in new_retrieved_facts:
-            messages_embeddings = self.embedding_model.embed(new_mem, "add")
-            new_message_embeddings[new_mem] = messages_embeddings
-            existing_memories = self.vector_store.search(
-                query=new_mem,
-                vectors=messages_embeddings,
-                top_k=5,
-                filters=search_filters,
-            )
-            for mem in existing_memories:
+    def _embed_facts(self, facts):
+        """Embed each fact for the "add" purpose; returns {fact: embedding}. No database access."""
+        return {fact: self.embedding_model.embed(fact, "add") for fact in facts}
+
+    def _find_existing_memories(self, facts, embeddings, filters):
+        """Stage 2: read the scoped memories each fact is nearest to (read only).
+
+        Every result is checked against the requested identity scope before it
+        can enter a decision. Returns the unique results as {"id", "text"} rows
+        keyed by their real ids.
+        """
+        search_filters = self._identity_filters(filters)
+        found = {}
+        for fact in facts:
+            for mem in self.vector_store.search(
+                query=fact, vectors=embeddings[fact], top_k=5, filters=search_filters
+            ):
                 _require_scoped_memory(mem, search_filters)
-                retrieved_old_memory.append({"id": mem.id, "text": mem.payload.get("data", "")})
+                found[mem.id] = {"id": mem.id, "text": mem.payload.get("data", "")}
+        logger.info(f"Total existing memories: {len(found)}")
+        return list(found.values())
 
-        unique_data = {}
-        for item in retrieved_old_memory:
-            unique_data[item["id"]] = item
-        retrieved_old_memory = list(unique_data.values())
-        logger.info(f"Total existing memories: {len(retrieved_old_memory)}")
+    def _decide_memory_actions(self, existing, new_retrieved_facts):
+        """Stage 3: one model call that chooses ADD/UPDATE/DELETE/NONE for each fact.
 
-        # mapping UUIDs with integers for handling UUID hallucinations
+        Existing ids are replaced by small integers before the call so a model
+        cannot invent a real id. Returns (decisions, integer-id -> real id map);
+        the decisions are validated against that map before they are returned.
+        """
+        retrieved_old_memory = [dict(item) for item in existing]
         temp_uuid_mapping = {}
         for idx, item in enumerate(retrieved_old_memory):
             temp_uuid_mapping[str(idx)] = item["id"]
@@ -1074,6 +1099,30 @@ class Memory(MemoryBase):
             new_memories_with_actions = {}
 
         _validate_memory_actions(new_memories_with_actions.get("memory", []), temp_uuid_mapping)
+        return new_memories_with_actions, temp_uuid_mapping
+
+    def _require_live_scoped_target(self, memory_id, search_filters):
+        """Re-read a memory right before changing it and refuse a missing or out-of-scope one.
+
+        The decision was made on an earlier read; the memory may have been
+        changed or removed since. Raises ValueError so nothing is written.
+        """
+        _require_scoped_memory(self.vector_store.get(vector_id=memory_id), search_filters)
+
+    def _execute_memory_actions(
+        self,
+        new_memories_with_actions,
+        temp_uuid_mapping,
+        new_message_embeddings,
+        metadata,
+        filters,
+    ):
+        """Stage 4: apply validated decisions through the current mutation helpers.
+
+        This is the only stage that writes. Pass embeddings for every action
+        text to keep it free of model calls. Returns the returned-memories list.
+        """
+        search_filters = self._identity_filters(filters)
         returned_memories = []
         try:
             for resp in new_memories_with_actions.get("memory", []):
@@ -1100,6 +1149,9 @@ class Memory(MemoryBase):
                             {"id": memory_id, "memory": action_text, "event": event_type}
                         )
                     elif event_type == "UPDATE":
+                        self._require_live_scoped_target(
+                            temp_uuid_mapping[resp.get("id")], search_filters
+                        )
                         # Ensure action_text has an embedding cached to avoid redundant API calls
                         if action_text not in new_message_embeddings:
                             new_message_embeddings[action_text] = self.embedding_model.embed(
@@ -1120,6 +1172,9 @@ class Memory(MemoryBase):
                             }
                         )
                     elif event_type == "DELETE":
+                        self._require_live_scoped_target(
+                            temp_uuid_mapping[resp.get("id")], search_filters
+                        )
                         self._delete_memory(memory_id=temp_uuid_mapping[resp.get("id")])
                         returned_memories.append(
                             {
@@ -1164,6 +1219,21 @@ class Memory(MemoryBase):
             logger.error(f"Error iterating new_memories_with_actions: {e}")
             raise
 
+        return returned_memories
+
+    def _add_with_memory_actions(self, messages, metadata, filters, prompt=None):
+        """Run the maintained 1.0.11 fact and action flow using current mutation helpers."""
+        new_retrieved_facts = self._extract_facts(messages, metadata, filters, prompt=prompt)
+        if not new_retrieved_facts:
+            logger.debug("No new facts retrieved from input. Skipping memory update LLM call.")
+        new_message_embeddings = self._embed_facts(new_retrieved_facts)
+        existing = self._find_existing_memories(
+            new_retrieved_facts, new_message_embeddings, filters
+        )
+        decisions, mapping = self._decide_memory_actions(existing, new_retrieved_facts)
+        returned_memories = self._execute_memory_actions(
+            decisions, mapping, new_message_embeddings, metadata, filters
+        )
         self.db.save_messages(messages, _build_session_scope(filters))
         return returned_memories
 
@@ -2494,7 +2564,7 @@ class Memory(MemoryBase):
         session_filters = {
             k: new_metadata[k] for k in ("user_id", "agent_id", "run_id") if new_metadata.get(k)
         }
-        if text_changed:
+        if text_changed and self._borrowed_connection is None:
             self._remove_memory_from_entity_store(memory_id, session_filters)
             self._link_entities_for_memory(memory_id, data, session_filters)
 
@@ -2530,7 +2600,8 @@ class Memory(MemoryBase):
 
         # Entity-store cleanup: strip this memory's id from any entity records
         # that linked to it. Non-fatal — the helper swallows errors.
-        self._remove_memory_from_entity_store(memory_id, session_filters)
+        if self._borrowed_connection is None:
+            self._remove_memory_from_entity_store(memory_id, session_filters)
 
         return memory_id
 
