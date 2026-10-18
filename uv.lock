@@ -16,6 +16,13 @@ resolution-markers = [
     "(python_full_version < '3.13' and 'Darwin Kernel Version 22.' not in platform_version and 'Darwin Kernel Version 23.' not in platform_version) or (python_full_version < '3.13' and sys_platform != 'darwin')",
 ]
 
+[manifest]
+members = [
+    "duckdb-sqlalchemy-async",
+    "sovereign-memory",
+    "sovereign-memory-service",
+]
+
 [[package]]
 name = "aiofiles"
 version = "25.1.0"
@@ -1339,6 +1346,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/89/d5/c0d8d0a4ca3ffea92266f33d92a375e2794820ad89f9be97cf0c9a9697d0/duckdb_engine-0.17.0.tar.gz", hash = "sha256:396b23869754e536aa80881a92622b8b488015cf711c5a40032d05d2cf08f3cf", size = 48054, upload-time = "2025-03-29T09:49:17.663Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2a/a2/e90242f53f7ae41554419b1695b4820b364df87c8350aa420b60b20cab92/duckdb_engine-0.17.0-py3-none-any.whl", hash = "sha256:3aa72085e536b43faab635f487baf77ddc5750069c16a2f8d9c6c3cb6083e979", size = 49676, upload-time = "2025-03-29T09:49:15.564Z" },
+]
+
+[[package]]
+name = "duckdb-sqlalchemy-async"
+version = "0.1.0"
+source = { editable = "packages/duckdb_sqlalchemy_async" }
+dependencies = [
+    { name = "duckdb" },
+    { name = "duckdb-engine" },
+    { name = "sqlalchemy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "duckdb", specifier = "==1.5.6" },
+    { name = "duckdb-engine", specifier = "==0.17.0" },
+    { name = "sqlalchemy", specifier = "==2.0.39" },
 ]
 
 [[package]]
@@ -4951,6 +4975,8 @@ dependencies = [
     { name = "alembic" },
     { name = "duckdb" },
     { name = "duckdb-engine" },
+    { name = "duckdb-sqlalchemy-async" },
+    { name = "jsonschema" },
     { name = "sqlalchemy" },
 ]
 
@@ -4965,7 +4991,6 @@ dev = [
     { name = "cognee" },
     { name = "coverage" },
     { name = "deptry" },
-    { name = "jsonschema" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pylint" },
@@ -4980,6 +5005,8 @@ requires-dist = [
     { name = "alembic", specifier = "==1.13.3" },
     { name = "duckdb", specifier = "==1.5.6" },
     { name = "duckdb-engine", specifier = "==0.17.0" },
+    { name = "duckdb-sqlalchemy-async", editable = "packages/duckdb_sqlalchemy_async" },
+    { name = "jsonschema", specifier = ">=4.25.1" },
     { name = "sqlalchemy", specifier = "==2.0.39" },
 ]
 
@@ -4994,7 +5021,6 @@ dev = [
     { name = "cognee", specifier = "==1.6.5" },
     { name = "coverage", specifier = "==7.15.4" },
     { name = "deptry", specifier = "==0.25.1" },
-    { name = "jsonschema", specifier = ">=4.25.1" },
     { name = "mypy", specifier = "==2.3.0" },
     { name = "pre-commit", specifier = "==4.6.2" },
     { name = "pylint", specifier = "==4.0.7" },
@@ -5002,6 +5028,21 @@ dev = [
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-asyncio", specifier = "==1.4.0" },
     { name = "ruff", specifier = "==0.16.2" },
+]
+
+[[package]]
+name = "sovereign-memory-service"
+version = "0.1.0"
+source = { editable = "service" }
+dependencies = [
+    { name = "duckdb-sqlalchemy-async" },
+    { name = "jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "duckdb-sqlalchemy-async", editable = "packages/duckdb_sqlalchemy_async" },
+    { name = "jsonschema", specifier = ">=4.25.1" },
 ]
 
 [[package]]
