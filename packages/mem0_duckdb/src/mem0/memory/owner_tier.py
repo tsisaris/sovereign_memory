@@ -261,19 +261,20 @@ class Mem0Tier:
         ids = await self._read(lambda m: [r.id for r in self._derived(m, target, owner_of_target)])
         entity_embeddings = await self._embed_entities(memory, [], ids)
         return PreparedWork(
-            "expire",
-            owner_of_target,
-            event_id,
-            [],
-            {},
-            {},
-            {},
-            {},
-            {},
-            [],
-            target,
-            owner_of_target,
-            entity_embeddings,
+            kind="expire",
+            scope_id=owner_of_target,
+            event_id=event_id,
+            messages=[],
+            metadata={},
+            filters={},
+            embeddings={},
+            decisions={},
+            mapping={},
+            raw_embeddings=[],
+            target_event_id=target,
+            target_actor=owner_of_target,
+            actor=envelope.get("actor_agent_id"),
+            entity_embeddings=entity_embeddings,
         )
 
     @staticmethod

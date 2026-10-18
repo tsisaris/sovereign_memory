@@ -676,6 +676,24 @@ class Memory(MemoryBase):
         finally:
             self._planned_embeddings = None
 
+    @property
+    def _strict_entities(self):
+        """True on a borrowed handle: required entity maintenance must raise, never be skipped."""
+        return self._borrowed_connection is not None
+
+    def _entity_list(self, filters):
+        """List entity records within `filters`.
+
+        The standalone API keeps its fixed scan size. On a borrowed handle the scan
+        is sized from the entity store's actual row count, so no record is missed
+        because of a cap.
+        """
+        if not self._strict_entities:
+            return self.entity_store.list(filters=filters, top_k=10000)
+        return self.entity_store.list(
+            filters=filters, top_k=max(self.entity_store.col_info()["count"], 1)
+        )
+
     def _entity_embed(self, text, purpose):
         """Embed an entity text, from the prepared set when one is active."""
         if self._planned_embeddings is None:
@@ -708,7 +726,7 @@ class Memory(MemoryBase):
             memory = self.vector_store.get(vector_id=memory_id)
             payload = (memory.payload if memory else None) or {}
             scope = {k: payload[k] for k in ("user_id", "agent_id", "run_id") if payload.get(k)}
-            listed = self.entity_store.list(filters=scope, top_k=10000)
+            listed = self._entity_list(scope)
             rows = (
                 listed[0]
                 if isinstance(listed, (list, tuple)) and listed and isinstance(listed[0], list)
@@ -735,8 +753,10 @@ class Memory(MemoryBase):
     def _existing_entities_by_text(self, filters):
         """Return existing entity rows keyed by normalized payload data."""
         try:
-            listed = self.entity_store.list(filters=filters, top_k=10000)
+            listed = self._entity_list(filters)
         except Exception as e:
+            if self._strict_entities:
+                raise
             logger.debug(f"Exact entity lookup failed, falling back to semantic dedup: {e}")
             return {}
 
@@ -800,6 +820,8 @@ class Memory(MemoryBase):
                     payloads=[entity_payload],
                 )
         except Exception as e:
+            if self._strict_entities:
+                raise
             logger.warning(f"Entity upsert failed for '{entity_text}': {e}")
 
     def _remove_memory_from_entity_store(self, memory_id, filters):
@@ -815,7 +837,8 @@ class Memory(MemoryBase):
         file and is always maintained.
         Errors on individual entities are swallowed at debug level; outer
         failures are swallowed at warning level so the primary delete/update
-        path is never broken by entity cleanup.
+        path is never broken by entity cleanup. On a borrowed handle none are
+        swallowed: every failure raises so the caller's transaction is rolled back.
         """
         if self._entity_store is None and self._borrowed_connection is None:
             return
@@ -823,7 +846,7 @@ class Memory(MemoryBase):
             k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v
         }
         try:
-            listed = self.entity_store.list(filters=search_filters, top_k=10000)
+            listed = self._entity_list(search_filters)
             rows = (
                 listed[0]
                 if isinstance(listed, (list, tuple)) and listed and isinstance(listed[0], list)
@@ -840,10 +863,16 @@ class Memory(MemoryBase):
                         try:
                             self.entity_store.delete(vector_id=row.id)
                         except Exception as e:
+                            if self._strict_entities:
+                                raise
                             logger.debug(f"Entity delete failed for id={row.id}: {e}")
                     else:
                         entity_text = payload.get("data")
                         if not isinstance(entity_text, str) or not entity_text:
+                            if self._strict_entities:
+                                raise ValueError(
+                                    f"Entity id={row.id} has no text; cannot unlink memory {memory_id}"
+                                )
                             logger.debug(
                                 f"Entity id={row.id} missing 'data'; skipping update during cleanup"
                             )
@@ -851,6 +880,8 @@ class Memory(MemoryBase):
                         try:
                             vec = self._entity_embed(entity_text, "update")
                         except Exception as e:
+                            if self._strict_entities:
+                                raise
                             logger.debug(f"Entity re-embed failed for '{entity_text}': {e}")
                             continue
                         new_payload = {**payload, "linked_memory_ids": remaining}
@@ -861,17 +892,24 @@ class Memory(MemoryBase):
                                 payload=new_payload,
                             )
                         except Exception as e:
+                            if self._strict_entities:
+                                raise
                             logger.debug(f"Entity update failed for id={row.id}: {e}")
                 except Exception as e:
+                    if self._strict_entities:
+                        raise
                     logger.debug(f"Entity cleanup error: {e}")
         except Exception as e:
+            if self._strict_entities:
+                raise
             logger.warning(f"Entity store cleanup failed for memory_id={memory_id}: {e}")
 
     def _link_entities_for_memory(self, memory_id, text, filters):
         """Extract entities from `text` and link them to `memory_id` in the
         entity store, scoped to `filters`. Simpler single-memory variant of
         Phase 7 in add(): per-entity search-then-update-or-insert via the
-        existing `_upsert_entity` helper. Non-fatal on any failure.
+        existing `_upsert_entity` helper. Non-fatal on any failure, except on a
+        borrowed handle, where failures raise.
         """
         try:
             entities = extract_entities(text)
@@ -886,8 +924,12 @@ class Memory(MemoryBase):
                 try:
                     self._upsert_entity(entity_text, entity_type, memory_id, filters)
                 except Exception as e:
+                    if self._strict_entities:
+                        raise
                     logger.debug(f"Entity link failed for '{entity_text}': {e}")
         except Exception as e:
+            if self._strict_entities:
+                raise
             logger.warning(f"Entity linking failed for memory_id={memory_id}: {e}")
 
     @classmethod
