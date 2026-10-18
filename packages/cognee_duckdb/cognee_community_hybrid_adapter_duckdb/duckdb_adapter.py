@@ -183,20 +183,27 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
     def _run_in_transaction(self, work: Callable[[], T]) -> T:
         """Run work on the handle; an owned handle wraps it in its own transaction.
 
-        An owned handle begins, commits and, on a DuckDB error, rolls back. A
+        An owned handle begins, commits and, on any failure of work or commit, rolls
+        back and raises the original error; a BEGIN that fails (a transaction is
+        already open) rolls back nothing, since this method acquired nothing. A
         borrowed handle runs work inside the caller's transaction and leaves
         commit or rollback to the caller; errors propagate unchanged. The caller
         holds the adapter lock.
         """
         if not self.owns_connection:
             return work()
+        self.connection.execute("BEGIN TRANSACTION")
         try:
-            self.connection.execute("BEGIN TRANSACTION")
             result = work()
             self.connection.execute("COMMIT")
             return result
-        except duckdb.Error:
-            self.connection.execute("ROLLBACK")
+        except BaseException as error:
+            # The transaction is ours (BEGIN succeeded), so every unsuccessful path ends it.
+            try:
+                self.connection.execute("ROLLBACK")
+            except duckdb.TransactionException as rollback_failure:
+                # The database already ended it; the original error is the one to report.
+                raise error from rollback_failure
             raise
 
     async def _execute_transaction(self, queries: list[tuple[str, list[Any] | None]]) -> None:
@@ -682,50 +689,72 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         return await DuckDBVectorDatasetDatabaseHandler.create_dataset(dataset_id, user)
 
     async def delete_dataset(self, dataset_id: UUID, user: Any) -> None:
-        """[DATASET] Drop one dataset's schema from the shared file, for the dataset's owner only.
+        """[DATASET] Drop one dataset's schema from this handle's file, for the dataset's owner only.
 
-        The dataset's record in Cognee's relational metadata names the schema and
-        file; it is dropped only when the record belongs to ``user``, is a DuckDB
-        record, names the schema derived from the dataset id and names the file
-        this adapter works in. A dataset with no record is already gone and nothing
-        happens. Other schemas and the file itself are kept. A borrowed handle does
-        the drop inside the caller's transaction; cached engines of the dropped
-        schema are evicted afterwards. Raises PermissionError for another user's
-        dataset and ValueError for a record that does not match.
+        The dataset's record in Cognee's relational metadata is read on this
+        adapter's own handle, so it sees the caller's uncommitted changes and
+        opens no other engine, file or connection. The schema is dropped only when
+        the record belongs to ``user``, is a DuckDB record, names the schema
+        derived from the dataset id and names the file this handle works in; the
+        check and the drop are one step inside one transaction (owned) or inside
+        the caller's (borrowed, left to the caller to finish). Other schemas, the
+        file and the handle's current schema are untouched. A dataset with no
+        record is already gone and nothing happens. Raises ValueError when this
+        file holds no Cognee relational metadata or the record does not match,
+        and PermissionError for another user's dataset. Cached engines of the
+        dropped schema are evicted afterwards.
         """
         from cognee.infrastructure.databases.graph.get_graph_engine import graph_engine_cache
-        from cognee.infrastructure.databases.relational import get_relational_engine
         from cognee.infrastructure.databases.vector.create_vector_engine import vector_engine_cache
         from cognee.modules.users.models import DatasetDatabase
+        from duckdb_sqlalchemy_async.native import borrowed_engine
         from sqlalchemy import select
+        from sqlalchemy.orm import Session
 
-        async with get_relational_engine().get_async_session() as session:
-            record = await session.scalar(
-                select(DatasetDatabase).where(DatasetDatabase.dataset_id == dataset_id)
-            )
-        if record is None:
-            return
-        if record.owner_id != user.id:
-            raise PermissionError("Only the owner of a dataset may delete its storage")
         schema = f"ds_{UUID(str(dataset_id)).hex}"
-        file_rows = await self._execute_query(
-            "SELECT path FROM duckdb_databases() WHERE database_name = current_database()"
-        )
-        stored = record.vector_database_url
-        if (
-            record.vector_database_provider != "duckdb"
-            or record.vector_database_name != schema
-            or not stored
-            or not file_rows
-            or not file_rows[0][0]
-            or Path(stored).resolve() != Path(file_rows[0][0]).resolve()
-        ):
-            raise ValueError("Dataset storage does not match this adapter's DuckDB file")
-        await self._execute_transaction(
-            [(f"DROP SCHEMA IF EXISTS {self._identifier(schema)} CASCADE", None)]
-        )
-        await graph_engine_cache.aevict_for_database(schema)
-        await vector_engine_cache.aevict_for_database(schema)
+
+        def work() -> bool:
+            """Check the record and drop the schema on this handle; True when dropped."""
+            metadata = self.connection.execute(
+                "SELECT count(*) FROM duckdb_tables() WHERE database_name = current_database() "
+                "AND schema_name = current_schema() AND table_name = $1",
+                [DatasetDatabase.__tablename__],
+            ).fetchone()
+            if not metadata or metadata[0] != 1:
+                raise ValueError("This DuckDB file holds no Cognee dataset metadata to delete from")
+            engine = borrowed_engine(self.connection)
+            try:
+                with Session(engine) as session:
+                    record = session.scalar(
+                        select(DatasetDatabase).where(DatasetDatabase.dataset_id == dataset_id)
+                    )
+            finally:
+                engine.dispose()
+            if record is None:
+                return False
+            if record.owner_id != user.id:
+                raise PermissionError("Only the owner of a dataset may delete its storage")
+            file_rows = self.connection.execute(
+                "SELECT path FROM duckdb_databases() WHERE database_name = current_database()"
+            ).fetchall()
+            stored = record.vector_database_url
+            if (
+                record.vector_database_provider != "duckdb"
+                or record.vector_database_name != schema
+                or not stored
+                or not file_rows
+                or not file_rows[0][0]
+                or Path(stored).resolve() != Path(file_rows[0][0]).resolve()
+            ):
+                raise ValueError("Dataset storage does not match this adapter's DuckDB file")
+            self.connection.execute(f"DROP SCHEMA IF EXISTS {self._identifier(schema)} CASCADE")
+            return True
+
+        async with self.VECTOR_DB_LOCK:
+            dropped = self._run_in_transaction(work)
+        if dropped:
+            await graph_engine_cache.aevict_for_database(schema)
+            await vector_engine_cache.aevict_for_database(schema)
 
     async def prune(self) -> None:
         """Documentation."""

@@ -11,10 +11,8 @@ and never begins, commits, rolls back or closes the handle it is given.
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-import duckdb
-from duckdb_engine import ConnectionWrapper
-from sqlalchemy import Connection, Engine, create_engine, text
-from sqlalchemy.pool import StaticPool
+from duckdb_sqlalchemy_async.native import borrowed_engine
+from sqlalchemy import Connection, text
 
 from letta_memory_model.orm import Base
 from letta_memory_model.orm.base import LETTA_SCHEMA
@@ -52,40 +50,8 @@ class LegacyTable:
     embedding_type: Optional[str]
 
 
-class _BorrowedNativeHandle(ConnectionWrapper):
-    """Present a native DuckDB handle to SQLAlchemy without letting it own the handle.
-
-    SQLAlchemy's begin, rollback and close become no-ops and commit is refused,
-    so statements run inside whatever transaction the handle's owner holds and
-    only that owner finishes it.
-    """
-
-    def begin(self) -> None:
-        """Do nothing: the handle's owner has already begun or will begin it."""
-
-    def commit(self) -> None:
-        """Refuse: only the handle's owner may commit."""
-        raise duckdb.TransactionException("Letta never commits a borrowed DuckDB handle")
-
-    def rollback(self) -> None:
-        """Do nothing: the handle's owner rolls back its own failed transaction."""
-
-    def close(self) -> None:
-        """Do nothing: the handle's owner closes it."""
-
-
-def engine_for(native: duckdb.DuckDBPyConnection) -> Engine:
-    """Return a SQLAlchemy engine whose only connection runs on native.
-
-    The engine never opens another connection, never resets the handle when a
-    session ends and never commits, rolls back or closes it.
-    """
-    return create_engine(
-        "duckdb://",
-        creator=lambda: _BorrowedNativeHandle(native),
-        poolclass=StaticPool,
-        pool_reset_on_return=None,
-    )
+# The shared borrowed-handle engine lives in the foundation; the old name stays importable.
+engine_for = borrowed_engine
 
 
 def _expected_columns(connection: Connection) -> dict[str, dict[str, str]]:

@@ -102,6 +102,31 @@ class MemoryDispatcher:
             if attach is not None:
                 attach(reader)
 
+    async def initialize_storage(self) -> None:
+        """Let each processor that has initialize_storage create its tables, once, at start.
+
+        Each such processor gets its own short owner transaction (committed on
+        success, rolled back if it raises, and the error propagates), so storage
+        creation never hides inside a read-only callback or a receipt transaction.
+        """
+        for tier in self.registry.tiers():
+            initialize = getattr(self.registry.get(tier), "initialize_storage", None)
+            if initialize is None:
+                continue
+
+            def job(initialize=initialize) -> None:
+                """Run the processor's initialization inside one transaction on the worker."""
+                handle = self.conn.native
+                handle.begin()
+                try:
+                    initialize(handle)
+                    handle.commit()
+                except BaseException:
+                    handle.rollback()
+                    raise
+
+            await self.conn.run(job)
+
     async def process_pending(self) -> dict[tuple[str, str], str]:
         """Process every owed pair a registered processor covers, in capture order.
 

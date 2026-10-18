@@ -110,6 +110,11 @@ class MemoryProcessor(Protocol):
     A processor may also define attach_reader(reader), called once at
     registration with an OwnerReader, for reads its prepare step needs. It must
     use that reader instead of opening any connection of its own.
+
+    A processor may also define initialize_storage(native_tx_handle), called once
+    at owner start on the owner's worker inside a short transaction the owner
+    commits (or rolls back if it raises). It is the only place a processor that
+    needs its tables before its first event creates them, so reads never run DDL.
     """
 
     @property

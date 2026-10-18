@@ -526,6 +526,7 @@ logger = logging.getLogger(__name__)
 
 _UNSET = object()
 # Serializes lazy entity-store creation, so threads sharing a client never open two stores.
+_MODEL_LOCK = threading.Lock()
 _ENTITY_STORE_LOCK = threading.Lock()
 _PROJECT_UPDATE_UNSUPPORTED_ERROR = "Project updates are not supported by the OSS Memory SDK."
 
@@ -577,6 +578,43 @@ class _MemoryCore:
     _borrowed_connection: Optional[duckdb.DuckDBPyConnection]
     _planned_embeddings: Optional[Dict[Any, Any]]
     planned_embedding_misses: list
+    _embedding_model: Any = None
+    _llm: Any = None
+
+    @property
+    def embedding_model(self):
+        """Return the embedding client, creating it from the configuration on first use.
+
+        A client built eagerly (the usual case) is returned as is. A client on a
+        borrowed handle is created here, on the first call that needs the model,
+        so binding storage to the handle never initializes a model client.
+        """
+        with _MODEL_LOCK:
+            if self._embedding_model is None:
+                self._embedding_model = EmbedderFactory.create(
+                    self.config.embedder.provider,
+                    self.config.embedder.config,
+                    self.config.vector_store.config,
+                )
+        return self._embedding_model
+
+    @embedding_model.setter
+    def embedding_model(self, client):
+        """Install the embedding client."""
+        self._embedding_model = client
+
+    @property
+    def llm(self):
+        """Return the language-model client, creating it from the configuration on first use."""
+        with _MODEL_LOCK:
+            if self._llm is None:
+                self._llm = LlmFactory.create(self.config.llm.provider, self.config.llm.config)
+        return self._llm
+
+    @llm.setter
+    def llm(self, client):
+        """Install the language-model client."""
+        self._llm = client
 
     @property
     def entity_store(self):
@@ -2079,17 +2117,20 @@ class Memory(_MemoryCore, MemoryBase):
         if connection is not None and self.config.vector_store.provider != "duckdb":
             raise ValueError("A borrowed DuckDB handle requires the duckdb vector store provider")
 
-        self.embedding_model = EmbedderFactory.create(
-            self.config.embedder.provider,
-            self.config.embedder.config,
-            self.config.vector_store.config,
-        )
+        if connection is None:
+            self.embedding_model = EmbedderFactory.create(
+                self.config.embedder.provider,
+                self.config.embedder.config,
+                self.config.vector_store.config,
+            )
+            self.llm = LlmFactory.create(self.config.llm.provider, self.config.llm.config)
+        # On a borrowed handle both model clients are created on first use (see the
+        # properties), so the owner can bind storage without any model initialization.
         self.vector_store = VectorStoreFactory.create(
             self.config.vector_store.provider,
             self.config.vector_store.config,
             **({"connection": connection} if connection is not None else {}),
         )
-        self.llm = LlmFactory.create(self.config.llm.provider, self.config.llm.config)
         self.db = DuckDBManager(self.config.history_db_path, connection=connection)
         self.collection_name = self.config.vector_store.config.collection_name
         self.api_version = self.config.version
