@@ -11,3 +11,6 @@ dependencies = [
     "jsonschema>=4.25.1",
     "duckdb_sqlalchemy_async"
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["service"]

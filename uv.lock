@@ -1353,6 +1353,7 @@ name = "duckdb-sqlalchemy-async"
 version = "0.1.0"
 source = { editable = "packages/duckdb_sqlalchemy_async" }
 dependencies = [
+    { name = "alembic" },
     { name = "duckdb" },
     { name = "duckdb-engine" },
     { name = "sqlalchemy" },
@@ -1360,6 +1361,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", specifier = "==1.13.3" },
     { name = "duckdb", specifier = "==1.5.6" },
     { name = "duckdb-engine", specifier = "==0.17.0" },
     { name = "sqlalchemy", specifier = "==2.0.39" },
