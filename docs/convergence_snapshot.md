@@ -4,6 +4,12 @@ This revision contains the actual runtime source, maintained upstream packages, 
 
 This is an integration input, not accepted software, a main merge, a release or a deployment. All seven deliverables and original32 capabilities remain required, including DuckDB-only storage, permissive licensing, identity/permissions, corrections/deletion/expiry, transaction/retry, search freshness, telemetry absence and real local-model quality.
 
+## Runtime package closure
+
+All six existing workspace implementation packages are now runtime dependencies of the common root project, rather than development-only requirements. A no-dev dependency resolution therefore includes the actual foundation, Owner, Cognee, Graphiti, Mem0 and Letta source packages. The lock was regenerated offline with the same 232 package versions; `uv lock --check --offline` passes and the no-dev root tree names all six. No new external dependency or checker setting was introduced. This corrects installation coverage; it does not make the incomplete engine flows accepted or prove a standalone distribution/command-line interface.
+
+The preceding coordinator Mem0 base-contract repair at `88b058f` passed all seven normal commit hooks, focused mypy across 15 source files, and the three unchanged native vector-store tests. Optional `MemoryItem` defaults remain the same, concrete sync/async update signatures remain unchanged, abstract update and batch-search annotations now match them. Earlier full-return failures below remain historical evidence, not superseded whole-source green.
+
 ## Reviewed pilot source incorporated on 18 October
 
 The integration tree now includes actual Owner/Mem0 source from `5151769fedf51d1f23460efb33e8a320a1b490b2` and the seven Letta ORM files from `d006eb3769c3c0a35ce5a0489aa57eab7b059353`, each reviewed against runtime base `81d4c9d2cf87336660b7c6b6b5c6542990abd23a`. Letta's unrelated Cognee UI and Graphiti edits are excluded because those packages have active owners. Original provider branches and partial returns remain preserved. Incorporation is not acceptance; Graphiti and Cognee pilot returns and requested corrections are still pending.
