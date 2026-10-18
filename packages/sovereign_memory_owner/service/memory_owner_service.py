@@ -47,7 +47,7 @@ def _inspect_socket_path(path: Path) -> tuple[int, int] | None:
     Returns None when nothing exists at path, and (device, inode) of a socket file
     nothing is listening on. Raises FileExistsError for a symlink, a regular file,
     a directory or any other non-socket, and for a socket another service answers
-    on, so the caller never replaces something it does not own. It deletes nothing.
+    on, and PermissionError for another user's socket. It deletes nothing.
     """
     try:
         found = os.lstat(path)
@@ -55,8 +55,11 @@ def _inspect_socket_path(path: Path) -> tuple[int, int] | None:
         return None
     if not stat.S_ISSOCK(found.st_mode):
         raise FileExistsError(f"{path} exists and is not a socket; refusing to replace it")
+    if found.st_uid != os.geteuid():
+        raise PermissionError(f"{path} belongs to another user; refusing to replace it")
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
+        probe.setblocking(False)
         probe.connect(str(path))
     except (ConnectionRefusedError, FileNotFoundError):
         return found.st_dev, found.st_ino
@@ -121,6 +124,7 @@ class OwnerService:
         socket is remembered by identity, so only it is removed at stop.
         """
         stale = _inspect_socket_path(self.socket_path)
+        listener: socket.socket | None = None
         try:
             # Hold an exclusive single-process file ownership connection for the lifetime of the service.
             self.lifetime_conn = await duckdb_connect(str(self.db_path))
@@ -130,9 +134,6 @@ class OwnerService:
             self.retrieval = MemoryRetrievalService(
                 self.lifetime_conn, self.retrievers, self.policy
             )
-            # Restart: finish whatever the previous run left owed to registered engines.
-            self._spawn_processing(self.dispatcher.process_pending())
-
             # Ensure socket directory exists
             self.socket_path.parent.mkdir(parents=True, exist_ok=True)
             if stale is not None:
@@ -140,18 +141,29 @@ class OwnerService:
                     raise FileExistsError(f"{self.socket_path} changed while starting; refusing")
                 self.socket_path.unlink()
 
-            self.server = await asyncio.start_unix_server(
-                self.handle_client_task, str(self.socket_path)
-            )
+            # Binding ourselves prevents asyncio's path-based server helper from
+            # unlinking a socket that appeared after the stale-path check.
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.setblocking(False)
+            listener.bind(str(self.socket_path))
             made = os.lstat(self.socket_path)
             self._socket_identity = (made.st_dev, made.st_ino)
+            self.server = await asyncio.start_unix_server(self.handle_client_task, sock=listener)
+            listener = None
+            # Restart only after binding succeeds: failed startup must not start
+            # model preparation or projection work.
+            self._spawn_processing(self.dispatcher.process_pending())
         except BaseException:
-            if self.server is not None:
-                self.server.close()
-                await self.server.wait_closed()
-                self.server = None
-            self._remove_own_socket()
-            await self._release_connection()
+            try:
+                if listener is not None:
+                    listener.close()
+                if self.server is not None:
+                    self.server.close()
+                    await self.server.wait_closed()
+                    self.server = None
+                self._remove_own_socket()
+            finally:
+                await self._release_connection()
             raise
         logger.info(f"Owner service listening on {self.socket_path}")
 
@@ -208,6 +220,7 @@ class OwnerService:
         if self.server:
             self.server.close()
             await self.server.wait_closed()
+            self.server = None
 
         # Drain active clients with a bounded timeout
         if self.active_tasks:

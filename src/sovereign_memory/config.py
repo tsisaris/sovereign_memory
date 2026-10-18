@@ -186,22 +186,19 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         embedding = _embedding(relational["embedding"], "tiers.relational.embedding")
     memory = _personalization(tiers["personalization"]) if "personalization" in tiers else None
 
-    socket_file = (base / _text(service, "service", "socket_path")).resolve()
+    # Keep a socket symlink visible to the service's lstat-based refusal.
+    socket_file = (base / _text(service, "service", "socket_path")).absolute()
     database_file = (base / _text(service, "service", "database_path")).resolve()
-    if socket_file == database_file or (
+    if socket_file.resolve() == database_file or (
         socket_file.exists()
         and database_file.exists()
         and os.path.samefile(socket_file, database_file)
     ):
         raise ConfigurationError("service.socket_path and service.database_path name the same file")
 
-    def path(key: str) -> Path:
-        """Resolve one configured path against the configuration file's folder."""
-        return (base / _text(service, "service", key)).resolve()
-
     return RuntimeConfig(
-        socket_path=path("socket_path"),
-        database_path=path("database_path"),
+        socket_path=socket_file,
+        database_path=database_file,
         max_request_bytes=int(_positive(service, "service", "max_request_bytes", True)),
         drain_timeout_seconds=float(_positive(service, "service", "drain_timeout_seconds", False)),
         maintenance_interval_seconds=float(
