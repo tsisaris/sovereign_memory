@@ -1,0 +1,14 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "letta_memory_model"
+version = "0.1.0"
+description = "Letta Memory Model package"
+dependencies = [
+    "sqlalchemy==2.0.39",
+    "duckdb==1.5.6",
+    "duckdb-engine==0.17.0",
+    "pydantic>=2.0.0"
+]
