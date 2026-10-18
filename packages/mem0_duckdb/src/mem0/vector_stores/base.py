@@ -1,7 +1,12 @@
+"""Declare storage operations and the default batch-search implementation."""
+
 from abc import ABC, abstractmethod
+from typing import List
 
 
 class VectorStoreBase(ABC):
+    """Describe vector persistence and search without selecting a storage engine."""
+
     @abstractmethod
     def create_col(self, name, vector_size, distance):
         """Create a new collection."""
@@ -82,7 +87,13 @@ class VectorStoreBase(ABC):
         """
         return None
 
-    def search_batch(self, queries: list, vectors_list: list, top_k: int = 1, filters: dict = None):
+    def search_batch(
+        self,
+        queries: List[str],
+        vectors_list: List[List[float]],
+        top_k: int = 1,
+        filters: dict = None,
+    ):
         """Batch search for multiple queries at once.
 
         Default implementation calls search() sequentially. Override in subclasses
@@ -98,5 +109,6 @@ class VectorStoreBase(ABC):
             List of result lists, one per query.
         """
         return [
-            self.search(q, v, top_k=top_k, filters=filters) for q, v in zip(queries, vectors_list)
+            self.search(q, v, top_k=top_k, filters=filters)
+            for q, v in zip(queries, vectors_list, strict=True)
         ]

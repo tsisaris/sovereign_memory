@@ -1,3 +1,5 @@
+"""Define Mem0 configuration and memory response models."""
+
 import os
 from typing import Any, Dict, Optional
 
@@ -14,21 +16,31 @@ mem0_dir = os.environ.get("MEM0_DIR") or os.path.join(home_dir, ".mem0")
 
 
 class MemoryItem(BaseModel):
+    """Represent a memory result with optional metadata, score and timestamps."""
+
     id: str = Field(..., description="The unique identifier for the text data")
     memory: str = Field(
         ..., description="The memory deduced from the text data"
     )  # TODO After prompt changes from platform, update this
-    hash: Optional[str] = Field(None, description="The hash of the memory")
+    hash: Optional[str] = Field(default=None, description="The hash of the memory")
     # The metadata value can be anything and not just string. Fix it
     metadata: Optional[Dict[str, Any]] = Field(
-        None, description="Additional metadata for the text data"
+        default=None, description="Additional metadata for the text data"
     )
-    score: Optional[float] = Field(None, description="The score associated with the text data")
-    created_at: Optional[str] = Field(None, description="The timestamp when the memory was created")
-    updated_at: Optional[str] = Field(None, description="The timestamp when the memory was updated")
+    score: Optional[float] = Field(
+        default=None, description="The score associated with the text data"
+    )
+    created_at: Optional[str] = Field(
+        default=None, description="The timestamp when the memory was created"
+    )
+    updated_at: Optional[str] = Field(
+        default=None, description="The timestamp when the memory was updated"
+    )
 
 
 class MemoryConfig(BaseModel):
+    """Select storage, model providers and optional memory-processing behavior."""
+
     custom_fact_extraction_prompt: Optional[str] = Field(
         description="Custom prompt for the fact extraction", default=None
     )

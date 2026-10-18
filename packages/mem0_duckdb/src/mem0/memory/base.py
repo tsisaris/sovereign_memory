@@ -1,7 +1,12 @@
+"""Declare the shared public memory API implemented by sync and async clients."""
+
 from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional
 
 
 class MemoryBase(ABC):
+    """Describe memory operations without choosing providers or performing work."""
+
     @abstractmethod
     def get(self, memory_id):
         """
@@ -26,13 +31,24 @@ class MemoryBase(ABC):
         pass
 
     @abstractmethod
-    def update(self, memory_id, data):
+    def update(
+        self,
+        memory_id,
+        text: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        expiration_date: Any = ...,
+        data: Optional[str] = None,
+    ):
         """
         Update a memory by ID.
 
         Args:
             memory_id (str): ID of the memory to update.
-            data (str): New content to update the memory with.
+            text (str, optional): Replacement text.
+            metadata (dict, optional): Metadata changes; identity fields remain immutable.
+            expiration_date (Any, optional): Replacement expiration, or None to clear it.
+                Concrete clients own the sentinel that preserves omitted expiration.
+            data (str, optional): Deprecated alias for text, retained for compatibility.
 
         Returns:
             dict: Success message indicating the memory was updated.
