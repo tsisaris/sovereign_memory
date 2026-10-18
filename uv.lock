@@ -1772,6 +1772,7 @@ source = { editable = "packages/letta_memory_model" }
 dependencies = [
     { name = "duckdb" },
     { name = "duckdb-engine" },
+    { name = "duckdb-sqlalchemy-async" },
     { name = "pydantic" },
     { name = "sqlalchemy" },
 ]
@@ -1780,6 +1781,7 @@ dependencies = [
 requires-dist = [
     { name = "duckdb", specifier = "==1.5.6" },
     { name = "duckdb-engine", specifier = "==0.17.0" },
+    { name = "duckdb-sqlalchemy-async", editable = "packages/duckdb_sqlalchemy_async" },
     { name = "pydantic", specifier = "==2.14.1" },
     { name = "sqlalchemy", specifier = "==2.0.39" },
 ]
@@ -3618,6 +3620,7 @@ source = { editable = "packages/sovereign_memory_owner" }
 dependencies = [
     { name = "duckdb" },
     { name = "duckdb-sqlalchemy-async" },
+    { name = "graphiti-duckdb" },
     { name = "jsonschema" },
 ]
 
@@ -3625,6 +3628,7 @@ dependencies = [
 requires-dist = [
     { name = "duckdb", specifier = "==1.5.6" },
     { name = "duckdb-sqlalchemy-async", editable = "packages/duckdb_sqlalchemy_async" },
+    { name = "graphiti-duckdb", editable = "packages/graphiti_duckdb" },
     { name = "jsonschema", specifier = "==4.25.1" },
 ]
 

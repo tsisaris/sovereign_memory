@@ -1,4 +1,4 @@
-"""Graphiti episodes as the owner's "episodic" tier, written on the owner's own handle.
+"""Graphiti episodes in the owner's temporal tier, written on the owner's own handle.
 
 Every captured event becomes one Graphiti EpisodicNode, stored through the
 maintained DuckDB driver's public episode operations on the owner's borrowed
@@ -6,8 +6,8 @@ native transaction handle, so the episode and its receipt commit together. The
 episode's uuid is derived from the event id, so a replay overwrites the same
 episode instead of adding another, and Graphiti's own add_episode(uuid=...) can
 later extract facts onto exactly this episode. No model is called: this tier
-stores and returns episodes; it extracts no entities or facts, which belong to
-the temporal tier.
+stores and returns episodes; temporal entity and fact extraction still requires
+Graphiti's model pipeline.
 """
 
 import asyncio
@@ -26,7 +26,7 @@ from graphiti_duckdb.duckdb_driver import DuckDBDriver
 from service.memory_owner_core import REMOVAL_EVENT_TYPES, parse_instant
 from service.memory_processor_seam import ProcessorResult, RetrievalScope, TerminalProcessingError
 
-TIER_NAME = "episodic"
+TIER_NAME = "temporal"
 PROCESSOR_ID = "graphiti-duckdb-episodes"
 PROJECTION_VERSION = "graphiti-episode-1"
 EPISODE_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "sovereign-memory-owner/episode")
@@ -98,7 +98,7 @@ def _has_graphiti_schema(handle: duckdb.DuckDBPyConnection) -> bool:
 
 
 class GraphitiEpisodeTier:
-    """Owner processor and retriever for the "episodic" tier, backed by Graphiti episodes.
+    """Owner processor and retriever for the temporal tier, backed by Graphiti episodes.
 
     It never opens, commits, rolls back or closes a connection; the driver it
     builds borrows the owner's handle for one call at a time.
