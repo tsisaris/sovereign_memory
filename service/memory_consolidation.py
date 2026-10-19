@@ -2,8 +2,9 @@
 
 from typing import Any
 
-from service.memory_processor_seam import MemoryProcessor
 from src.duckdb_sqlalchemy_async_bridge import AsyncConnection
+
+from service.memory_processor_seam import MemoryProcessor
 
 
 class MemoryConsolidator:
