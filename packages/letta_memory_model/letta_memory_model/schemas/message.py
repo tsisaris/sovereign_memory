@@ -9,7 +9,7 @@ from pydantic import ConfigDict
 class Message:
     """Class docstring."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
     id: str
     role: str
     text: Optional[str] = None
