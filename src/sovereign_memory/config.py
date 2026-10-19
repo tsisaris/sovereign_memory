@@ -135,6 +135,16 @@ def _personalization(table: Any) -> "MemoryConfig":
         if "model" not in settings["config"]:
             raise ConfigurationError(f"{engine_path}.config is missing: model")
         _text(settings["config"], f"{engine_path}.config", "model")
+    vector_path = f"{where}.memory.vector_store"
+    vector = _take(memory["vector_store"], vector_path, ("provider", "config"))
+    if _text(vector, vector_path, "provider") != "duckdb":
+        raise ConfigurationError(f"{vector_path}.provider must be duckdb")
+    vector_config = vector["config"]
+    if not isinstance(vector_config, dict):
+        raise ConfigurationError(f"{vector_path}.config must be a table")
+    if "embedding_model_dims" not in vector_config:
+        raise ConfigurationError(f"{vector_path}.config is missing: embedding_model_dims")
+    _positive(vector_config, f"{vector_path}.config", "embedding_model_dims", True)
     from mem0.configs.base import MemoryConfig
 
     try:
