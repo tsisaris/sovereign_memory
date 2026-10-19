@@ -4,8 +4,10 @@ import asyncio
 import gc
 import logging
 from os import path
+from pathlib import Path
 
-from sqlalchemy import MetaData, inspect, text
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import make_url
 
 from cognee.infrastructure.databases.relational.sqlalchemy.SqlAlchemyAdapter import (
     SQLAlchemyAdapter,
@@ -17,6 +19,25 @@ logger = logging.getLogger(__name__)
 
 class DuckDBRelationalAdapter(SQLAlchemyAdapter):
     """Adapt Cognee's SQLAlchemy relational operations for DuckDB."""
+
+    def __init__(
+        self,
+        connection_string: str,
+        connect_args: dict | None = None,
+        pool_args: dict | None = None,
+    ):
+        """Retain the actual DuckDB path without applying SQLite connection setup."""
+        database = make_url(connection_string).database
+        if not database:
+            raise ValueError("DuckDB relational storage requires a database path")
+        super().__init__(connection_string, connect_args=connect_args, pool_args=pool_args)
+        self.db_path = database
+
+    async def create_database(self, script_location: str | None = None):
+        """Prepare the local directory, then execute the maintained migration chain."""
+        if self.db_path != ":memory:":
+            await asyncio.to_thread(Path(self.db_path).parent.mkdir, parents=True, exist_ok=True)
+        await super().create_database(script_location)
 
     async def get_schema_list(self) -> list[str]:
         """Return a list of all schema names in the database."""
@@ -100,7 +121,9 @@ class DuckDBRelationalAdapter(SQLAlchemyAdapter):
                         schema[key]["primary_key"] = pk_columns[0]
                     for fk in fks:
                         for col, ref_col in zip(
-                            fk.get("constrained_columns", []), fk.get("referred_columns", [])
+                            fk.get("constrained_columns", []),
+                            fk.get("referred_columns", []),
+                            strict=True,
                         ):
                             if col and ref_col:
                                 schema[key]["foreign_keys"].append(
@@ -111,7 +134,3 @@ class DuckDBRelationalAdapter(SQLAlchemyAdapter):
                                     }
                                 )
             return schema
-
-    def _configure_sqlite_engine(self) -> None:
-        """Override to prevent SQLite WAL/PRAGMA injection on DuckDB connections."""
-        pass

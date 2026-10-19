@@ -29,8 +29,8 @@ class VectorConfig(BaseSettings):
     vector_db_port: int = 1234
     vector_db_name: str = ""
     vector_db_key: str = ""
-    vector_db_provider: str = "lancedb"
-    vector_dataset_database_handler: str = "lancedb"
+    vector_db_provider: str = "duckdb"
+    vector_dataset_database_handler: str = "duckdb_vector"
     vector_db_username: str = ""
     vector_db_password: str = ""
     vector_db_host: str = ""
@@ -81,9 +81,15 @@ class VectorConfig(BaseSettings):
                 self.vector_db_url,
             )
         elif not self.vector_db_url:
+            if self.vector_db_provider == "duckdb":
+                from cognee.infrastructure.databases.relational.config import get_relational_config
+
+                relational = get_relational_config()
+                self.vector_db_url = os.path.join(relational.db_path, relational.db_name)
+                return self
             # Default path
             databases_directory_path = os.path.join(base_config.system_root_directory, "databases")
-            self.vector_db_url = os.path.join(databases_directory_path, "cognee.lancedb")
+            self.vector_db_url = os.path.join(databases_directory_path, "cognee.duckdb")
 
         import sys
 

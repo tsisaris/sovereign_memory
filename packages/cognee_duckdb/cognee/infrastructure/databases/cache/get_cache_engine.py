@@ -5,7 +5,6 @@ from functools import lru_cache
 
 from cognee.infrastructure.databases.cache.cache_db_interface import CacheDBInterface
 from cognee.infrastructure.databases.cache.config import get_cache_config
-from cognee.infrastructure.databases.cache.fscache.FsCacheAdapter import FSCacheAdapter
 from cognee.infrastructure.databases.exceptions import CacheConnectionError
 from cognee.shared.logging_utils import get_logger
 
@@ -27,6 +26,10 @@ def _resolve_cache_db_url(backend: str, cache_db_url: str | None) -> str:
     from cognee.infrastructure.databases.relational.config import get_relational_config
 
     relational_config = get_relational_config()
+
+    if backend == "duckdb":
+        os.makedirs(relational_config.db_path, exist_ok=True)
+        return f"duckdb+aio:///{relational_config.db_path}/{relational_config.db_name}"
 
     if backend in ("sqlite", "turso"):
         db_path = relational_config.db_path
@@ -112,7 +115,19 @@ def create_cache_engine(
     """
     config = get_cache_config()
     if config.caching or config.usage_logging:
-        if config.cache_backend == "redis":
+        if config.cache_backend == "duckdb":
+            from cognee.cognee_duckdb_cache import DuckDBCacheAdapter
+
+            return DuckDBCacheAdapter(
+                connection_string=_resolve_cache_db_url("duckdb", cache_db_url),
+                lock_key=lock_key,
+                log_key=log_key,
+                session_ttl_seconds=session_ttl_seconds,
+                agentic_lock_expire=agentic_lock_expire,
+                agentic_lock_timeout=agentic_lock_timeout,
+                purge_interval_seconds=cache_purge_interval_seconds,
+            )
+        elif config.cache_backend == "redis":
             from cognee.infrastructure.databases.cache.redis.RedisAdapter import RedisAdapter
 
             return RedisAdapter(
@@ -129,6 +144,8 @@ def create_cache_engine(
                 session_ttl_seconds=session_ttl_seconds,
             )
         elif config.cache_backend == "fs":
+            from cognee.infrastructure.databases.cache.fscache.FsCacheAdapter import FSCacheAdapter
+
             return FSCacheAdapter(session_ttl_seconds=session_ttl_seconds)
         elif config.cache_backend == "tapes":
             from cognee.infrastructure.databases.cache.tapes.TapesCacheAdapter import (
@@ -163,6 +180,10 @@ def create_cache_engine(
                     "falling back to the filesystem cache backend. "
                     "Set CACHE_DB_URL or CACHE_BACKEND to override."
                 )
+                from cognee.infrastructure.databases.cache.fscache.FsCacheAdapter import (
+                    FSCacheAdapter,
+                )
+
                 return FSCacheAdapter(session_ttl_seconds=session_ttl_seconds)
 
             return SqlCacheAdapter(
