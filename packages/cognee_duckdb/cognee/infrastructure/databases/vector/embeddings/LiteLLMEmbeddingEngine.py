@@ -148,6 +148,18 @@ def _uses_nvidia_nim(provider: str | None, model: str | None) -> bool:
     )
 
 
+class _LazyTokenizer:
+    """Count tokens through the engine's tokenizer, which loads on the first count only."""
+
+    def __init__(self, engine: "LiteLLMEmbeddingEngine") -> None:
+        """Hold the engine; nothing is loaded here."""
+        self._engine = engine
+
+    def count_tokens(self, text: str) -> int:
+        """Return the engine tokenizer's count of text, loading it now if needed."""
+        return self._engine.tokenizer.count_tokens(text)
+
+
 class LiteLLMEmbeddingEngine(EmbeddingEngine):
     """
     Engine for embedding text using a specific LLM model, supporting mock and actual
@@ -187,6 +199,8 @@ class LiteLLMEmbeddingEngine(EmbeddingEngine):
         self.provider = provider
         self.model = model
         self.dimensions = dimensions
+        # Bound now, called only when a tokenizer is first needed (see `tokenizer`).
+        self._tokenizer_resolver = resolve_embedding_tokenizer
         init_input_limit(self, max_completion_tokens)
         self.retry_count = 0
         self.batch_size = batch_size
@@ -522,11 +536,17 @@ class LiteLLMEmbeddingEngine(EmbeddingEngine):
         Async engine paths access this property in model worker threads so an
         unavailable tokenizer cannot block Owner startup or its event loop.
         """
-        return self.get_tokenizer()
+        return self.get_tokenizer(self._tokenizer_resolver)
 
     def _count_input_tokens(self, response, texts: list[str]) -> int:
-        """Resolve the lazy tokenizer and count the response's input tokens in a worker."""
-        return count_input_tokens(response, texts, self.tokenizer)
+        """Count the response's input tokens in a worker, loading a tokenizer only if needed.
+
+        The provider's own usage count is used when the response carries one, and
+        then no tokenizer is touched. Otherwise the tokenizer loads here, off the
+        event loop; a failure to load it is logged and counted as 0 by the shared
+        count_input_tokens, so a succeeded request is never failed or re-billed.
+        """
+        return count_input_tokens(response, texts, _LazyTokenizer(self))
 
     def _tokenizer_input_limit(self) -> int | None:
         """Resolve the lazy tokenizer and read its declared input limit in a worker."""
@@ -538,12 +558,15 @@ class LiteLLMEmbeddingEngine(EmbeddingEngine):
             self._tokenizer_input_limit
         )
 
-    def get_tokenizer(self):
+    def get_tokenizer(self, resolver=None):
         """
         Load and return the appropriate tokenizer for the specified model based on the provider.
 
         Delegates to :func:`resolve_embedding_tokenizer` so the model to tokenizer
         mapping (and mismatch warnings) live in one place (issue #3646).
+
+        resolver defaults to the module's resolve_embedding_tokenizer; the lazy
+        `tokenizer` property passes the one bound when the engine was built.
 
         Returns:
         --------
@@ -553,6 +576,6 @@ class LiteLLMEmbeddingEngine(EmbeddingEngine):
         logger.debug(f"Loading tokenizer for model {self.model}...")
         # Strip the vLLM routing prefix so the bare HuggingFace repo is resolvable.
         model = self.model.replace("hosted_vllm/", "")
-        tokenizer = resolve_embedding_tokenizer(provider=self.provider, model=model)
+        tokenizer = (resolver or resolve_embedding_tokenizer)(provider=self.provider, model=model)
         logger.debug(f"Tokenizer loaded for model: {self.model}")
         return tokenizer

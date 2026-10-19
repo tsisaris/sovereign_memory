@@ -158,9 +158,10 @@ async def run(service: OwnerService, maintenance_interval_seconds: float) -> Non
     """Start the service and serve until SIGINT or SIGTERM, then stop it cleanly.
 
     Whatever ends the wait (a signal, a failed start, cancellation), the
-    maintenance task is told to stop and awaited, and the service is stopped, so no
-    task or owner connection outlives the call. A failure of maintenance itself
-    is logged by it, never lost.
+    maintenance task is told to stop and awaited for at most the service's declared
+    drain bound, then cancelled (its unfinished receipts stay owed and are retried),
+    and the service is stopped, so no task or owner connection outlives the call.
+    A failure of maintenance itself is logged by it, never lost.
     """
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -174,7 +175,12 @@ async def run(service: OwnerService, maintenance_interval_seconds: float) -> Non
         finally:
             stop.set()
             try:
-                await maintenance
+                _, running = await asyncio.wait(
+                    {maintenance}, timeout=service.drain_timeout_seconds
+                )
+                if running:
+                    maintenance.cancel()
+                    await asyncio.gather(maintenance, return_exceptions=True)
             finally:
                 await service.stop()
     finally:

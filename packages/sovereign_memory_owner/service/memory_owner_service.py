@@ -188,13 +188,25 @@ class OwnerService:
             self.socket_path.unlink()
 
     async def _release_connection(self) -> None:
-        """Let in-flight engine work finish, then close the owner connection; safe to repeat.
+        """Let in-flight engine work finish within the drain bound, then close the connection.
 
-        Cancelling engine work mid-transaction would invalidate the connection, so
-        it is awaited, and an engine failure is logged by its own task callback.
+        Work still running when drain_timeout_seconds ends is cancelled and awaited.
+        A coroutine waiting on a model call stops at once; the call's own thread
+        cannot be interrupted and is left to the provider's request timeout, and the
+        receipt stays "processing", which the next start retries. A job already on
+        the database worker is interrupted and drained by the connection itself, which
+        rolls its uncommitted transaction back before the handle closes, so the
+        connection is never closed under a surviving apply. An engine failure is
+        logged by its own task callback.
         """
         if self.processing_tasks:
-            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
+            _, stragglers = await asyncio.wait(
+                self.processing_tasks, timeout=self.drain_timeout_seconds
+            )
+            for task in stragglers:
+                task.cancel()
+            if stragglers:
+                await asyncio.gather(*stragglers, return_exceptions=True)
         connection, self.lifetime_conn = self.lifetime_conn, None
         if connection is not None:
             await connection.close()
