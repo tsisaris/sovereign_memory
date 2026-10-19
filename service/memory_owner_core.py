@@ -3,8 +3,9 @@
 import json
 from datetime import datetime, timezone
 
-from service.memory_owner_schema import MemoryEventValidator
 from src.duckdb_sqlalchemy_async_bridge import AsyncConnection
+
+from service.memory_owner_schema import MemoryEventValidator
 
 
 class OwnerCore:

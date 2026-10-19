@@ -11,7 +11,7 @@ from cognee.base_config import get_base_config
 
 # Single source of truth for Kuzu defaults lives next to the adapter.
 # Imported here so config-side env Fields and the adapter agree.
-from cognee.infrastructure.databases.graph.kuzu.adapter import (
+from cognee.infrastructure.databases.graph.tuning_defaults import (
     DEFAULT_KUZU_BUFFER_POOL_SIZE,
     DEFAULT_KUZU_MAX_DB_SIZE,
 )
@@ -44,7 +44,7 @@ class GraphConfig(BaseSettings):
 
     # Using Field we are able to dynamically load current GRAPH_DATABASE_PROVIDER value in the model validator part
     # and determine default graph db file and path based on this parameter if no values are provided
-    graph_database_provider: str = Field("ladybug", env="GRAPH_DATABASE_PROVIDER")
+    graph_database_provider: str = Field("duckdb", env="GRAPH_DATABASE_PROVIDER")
 
     graph_database_url: str = ""
     graph_database_name: str = ""
@@ -58,7 +58,7 @@ class GraphConfig(BaseSettings):
     graph_filename: str = ""
     graph_model: object = KnowledgeGraph
     graph_topology: object = KnowledgeGraph
-    graph_dataset_database_handler: str = "ladybug"
+    graph_dataset_database_handler: str = "duckdb_graph"
     graph_database_subprocess_enabled: bool = True
 
     # Kuzu tuning. 0 means "use Kuzu's default" (one thread per CPU).
@@ -112,6 +112,14 @@ class GraphConfig(BaseSettings):
             # Default path
             self.graph_file_path = os.path.join(databases_directory_path, self.graph_filename)
 
+        if provider == "duckdb" and not self.graph_database_url:
+            from cognee.infrastructure.databases.relational.config import get_relational_config
+
+            relational = get_relational_config()
+            if {"graph_file_path", "graph_filename"} & self.model_fields_set:
+                self.graph_database_url = self.graph_file_path
+            else:
+                self.graph_database_url = os.path.join(relational.db_path, relational.db_name)
         return self
 
     def to_dict(self) -> dict:

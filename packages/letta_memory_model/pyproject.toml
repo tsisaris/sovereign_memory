@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "letta_memory_model"
 version = "0.1.0"
 description = "Letta Memory Model package subset of Letta V1 for DuckDB"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12"
 dependencies = [
     "sqlalchemy==2.0.39",
@@ -13,3 +15,6 @@ dependencies = [
     "duckdb-engine==0.17.0",
     "pydantic==2.14.1"
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["letta_memory_model"]

@@ -141,6 +141,9 @@ class SqlCacheAdapter(CacheDBInterface):
         try:
             url = make_url(connection_string)
             self._is_postgres = url.get_backend_name() == "postgresql"
+            self._upsert_insert = (
+                pg_insert if url.get_backend_name() in ("postgresql", "duckdb") else sqlite_insert
+            )
 
             is_sqlite = url.get_backend_name() == "sqlite"
             # Turso uses the sqlite dialect through cognee's own driver; it needs its
@@ -250,6 +253,19 @@ class SqlCacheAdapter(CacheDBInterface):
     def _session_filter(self, table, user_id: str, session_id: str):
         """WHERE clause for one session's rows (StringKey columns stringify the binds)."""
         return (table.c.user_id == user_id) & (table.c.session_id == session_id)
+
+    async def _delete_session_rows(self, session, table, *criteria) -> int:
+        """Delete matching session rows and return the actual affected count.
+
+        DuckDB reports an unknown DB-API rowcount. Its returned sequence keys
+        establish the count without changing the predicate or guessing success.
+        """
+        statement = delete(table).where(*criteria)
+        if self.engine.dialect.name == "duckdb":
+            result = await session.execute(statement.returning(table.c.seq))
+            return len(result.fetchall())
+        result = await session.execute(statement)
+        return result.rowcount
 
     async def _lock_session_writes(self, session, table, user_id: str, session_id: str) -> None:
         """Serialize same-session write transactions on Postgres.
@@ -675,21 +691,20 @@ class SqlCacheAdapter(CacheDBInterface):
             raise CacheConnectionError(error_msg) from error
 
     async def _update_qa_payload(self, user_id: str, session_id: str, qa_id: str, merge_fn) -> bool:
-        """Shared FOR UPDATE read-merge-write transaction for QA updates."""
+        """Merge QA changes in one native transaction, with row locks on Postgres."""
         attempt = 0
         while True:
             try:
                 async with self.sessionmaker() as session, session.begin():
                     await self._lock_session_writes(session, cache_qa_entries, user_id, session_id)
-                    result = await session.execute(
-                        select(cache_qa_entries.c.payload)
-                        .where(
-                            self._session_filter(cache_qa_entries, user_id, session_id),
-                            cache_qa_entries.c.qa_id == qa_id,
-                            self._not_expired(cache_qa_entries),
-                        )
-                        .with_for_update()
+                    statement = select(cache_qa_entries.c.payload).where(
+                        self._session_filter(cache_qa_entries, user_id, session_id),
+                        cache_qa_entries.c.qa_id == qa_id,
+                        self._not_expired(cache_qa_entries),
                     )
+                    if self._is_postgres:
+                        statement = statement.with_for_update()
+                    result = await session.execute(statement)
                     payload = result.scalar_one_or_none()
                     if payload is None:
                         return False
@@ -778,14 +793,14 @@ class SqlCacheAdapter(CacheDBInterface):
         try:
             async with self.sessionmaker() as session, session.begin():
                 await self._lock_session_writes(session, cache_qa_entries, user_id, session_id)
-                result = await session.execute(
-                    delete(cache_qa_entries).where(
-                        self._session_filter(cache_qa_entries, user_id, session_id),
-                        cache_qa_entries.c.qa_id == qa_id,
-                        self._not_expired(cache_qa_entries),
-                    )
+                deleted_rows = await self._delete_session_rows(
+                    session,
+                    cache_qa_entries,
+                    self._session_filter(cache_qa_entries, user_id, session_id),
+                    cache_qa_entries.c.qa_id == qa_id,
+                    self._not_expired(cache_qa_entries),
                 )
-                deleted = result.rowcount > 0
+                deleted = deleted_rows > 0
                 if deleted:
                     await self._refresh_session_ttl(session, cache_qa_entries, user_id, session_id)
                 return deleted
@@ -811,10 +826,9 @@ class SqlCacheAdapter(CacheDBInterface):
                     # Expired rows are invisible — drop them first so they don't
                     # count toward "session existed".
                     await self._purge_session_expired(session, table, user_id, session_id)
-                    result = await session.execute(
-                        delete(table).where(self._session_filter(table, user_id, session_id))
+                    deleted_rows += await self._delete_session_rows(
+                        session, table, self._session_filter(table, user_id, session_id)
                     )
-                    deleted_rows += result.rowcount
                 return deleted_rows > 0
         except Exception as error:
             error_msg = f"Unexpected error while deleting session from SQL cache: {error}"
@@ -942,7 +956,7 @@ class SqlCacheAdapter(CacheDBInterface):
         # targetable by update). Mirror that: fall back to a synthetic entry_id
         # only to satisfy the NOT NULL column; the stored payload is untouched.
         entry_id = entry_dump.get("id") or str(uuid.uuid4())
-        insert_into = pg_insert if self._is_postgres else sqlite_insert
+        insert_into = self._upsert_insert
         statement = insert_into(cache_session_context).values(
             user_id=user_id,
             session_id=session_id,
@@ -1011,7 +1025,7 @@ class SqlCacheAdapter(CacheDBInterface):
                     # MultipleResultsFound — the permanent per-session 503 of issue
                     # #4226. The UPDATE below still targets every duplicate, so
                     # stragglers converge on the merged payload.
-                    result = await session.execute(
+                    statement = (
                         select(cache_session_context.c.payload)
                         .where(
                             self._session_filter(cache_session_context, user_id, session_id),
@@ -1020,8 +1034,10 @@ class SqlCacheAdapter(CacheDBInterface):
                         )
                         .order_by(cache_session_context.c.seq.desc())
                         .limit(1)
-                        .with_for_update()
                     )
+                    if self._is_postgres:
+                        statement = statement.with_for_update()
+                    result = await session.execute(statement)
                     payload = result.scalars().first()
                     if payload is None:
                         return False
@@ -1059,14 +1075,14 @@ class SqlCacheAdapter(CacheDBInterface):
         try:
             async with self.sessionmaker() as session, session.begin():
                 await self._lock_session_writes(session, cache_session_context, user_id, session_id)
-                result = await session.execute(
-                    delete(cache_session_context).where(
-                        self._session_filter(cache_session_context, user_id, session_id),
-                        cache_session_context.c.entry_id == entry_id,
-                        self._not_expired(cache_session_context),
-                    )
+                deleted_rows = await self._delete_session_rows(
+                    session,
+                    cache_session_context,
+                    self._session_filter(cache_session_context, user_id, session_id),
+                    cache_session_context.c.entry_id == entry_id,
+                    self._not_expired(cache_session_context),
                 )
-                return result.rowcount > 0
+                return deleted_rows > 0
         except Exception as error:
             error_msg = (
                 f"Unexpected error while deleting session context entry from SQL cache: {error}"
@@ -1083,12 +1099,12 @@ class SqlCacheAdapter(CacheDBInterface):
                 await self._purge_session_expired(
                     session, cache_session_context, user_id, session_id
                 )
-                result = await session.execute(
-                    delete(cache_session_context).where(
-                        self._session_filter(cache_session_context, user_id, session_id)
-                    )
+                deleted_rows = await self._delete_session_rows(
+                    session,
+                    cache_session_context,
+                    self._session_filter(cache_session_context, user_id, session_id),
                 )
-                return result.rowcount > 0
+                return deleted_rows > 0
         except Exception as error:
             error_msg = f"Unexpected error while deleting session context from SQL cache: {error}"
             logger.error(error_msg)
@@ -1208,13 +1224,10 @@ class SqlCacheAdapter(CacheDBInterface):
         """Upsert a string value under key; ttl=None stores it without expiry."""
         await self._ensure_initialized()
         try:
-            if self._is_postgres:
-                from sqlalchemy.dialects.postgresql import insert as upsert_insert
-            else:
-                from sqlalchemy.dialects.sqlite import insert as upsert_insert
-
             expires_at = self._now() + timedelta(seconds=ttl) if ttl else None
-            statement = upsert_insert(cache_kv).values(key=key, value=value, expires_at=expires_at)
+            statement = self._upsert_insert(cache_kv).values(
+                key=key, value=value, expires_at=expires_at
+            )
             statement = statement.on_conflict_do_update(
                 index_elements=[cache_kv.c.key],
                 set_={

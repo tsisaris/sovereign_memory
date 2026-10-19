@@ -14,8 +14,12 @@ Common entrypoints include:
     delete: Remove data from Cognee-managed storage.
 """
 
-# ruff: noqa: E402
-from cognee.version import get_cognee_version
+from importlib import import_module
+
+# Preserve Cognee 1.6.5 initialization order as executable imports.
+# Import sorting must not move registration ahead of its prerequisites.
+
+get_cognee_version = import_module("cognee.version", __name__).get_cognee_version
 
 # NOTE: __version__ extraction must be at the top of the __init__.py otherwise
 #       there will be circular import issues
@@ -24,12 +28,13 @@ __version__ = get_cognee_version()
 # The .env must be loaded before logging is configured, because LOG_LEVEL comes
 # from it. One resolver for the whole process — see cognee.shared.env_file for
 # the search order (working directory first, then the package's own tree).
-from cognee.shared.env_file import describe_resolution, load_env_file
+load_env_file = import_module("cognee.shared.env_file", __name__).load_env_file
+describe_resolution = import_module("cognee.shared.env_file", __name__).describe_resolution
 
 _env_file = load_env_file()
 
 # NOTE: Log level can be set with the LOG_LEVEL env variable
-from cognee.shared.logging_utils import setup_logging
+setup_logging = import_module("cognee.shared.logging_utils", __name__).setup_logging
 
 logger = setup_logging()
 logger.info(describe_resolution(_env_file))
@@ -37,84 +42,104 @@ logger.info(describe_resolution(_env_file))
 # ---------------------------------------------------------------------------
 # V1 API
 # ---------------------------------------------------------------------------
-import cognee.modules.migrations.models  # registers global_database_version
-import cognee.modules.provenance.edge_evidence.models  # registers provenance_edge_evidence
-import cognee.modules.tools.models  # registers tool_connections
+add = import_module(".api.v1.add", __name__).add
+delete = import_module(".api.v1.delete", __name__).delete
+cognify = import_module(".api.v1.cognify", __name__).cognify
+memify = import_module(".api.v1.memify", __name__).memify
+run_custom_pipeline = import_module(".modules.run_custom_pipeline", __name__).run_custom_pipeline
+update = import_module(".api.v1.update", __name__).update
+config = import_module(".api.v1.config.config", __name__).config
+datasets = import_module(".api.v1.datasets.datasets", __name__).datasets
+agents = import_module(".api.v1.agents.agents", __name__).agents
+prune = import_module(".api.v1.prune", __name__).prune
+SearchType = import_module(".api.v1.search", __name__).SearchType
+search = import_module(".api.v1.search", __name__).search
+report = import_module(".api.v1.report", __name__).report
+validate = import_module(".api.v1.validate", __name__).validate
+ValidationReport = import_module(".api.v1.validate", __name__).ValidationReport
+ValidationIssue = import_module(".api.v1.validate", __name__).ValidationIssue
+ValidationStatus = import_module(".api.v1.validate", __name__).ValidationStatus
+visualize_graph = import_module(".api.v1.visualize", __name__).visualize_graph
+start_visualization_server = import_module(".api.v1.visualize", __name__).start_visualization_server
+get_schema_inventory = import_module(".api.v1.visualize", __name__).get_schema_inventory
+get_memory_provenance_graph = import_module(
+    ".api.v1.visualize", __name__
+).get_memory_provenance_graph
+visualize_memory_provenance = import_module(
+    ".api.v1.visualize", __name__
+).visualize_memory_provenance
+cognee_network_visualization = import_module(
+    "cognee.modules.visualization.cognee_network_visualization", __name__
+).cognee_network_visualization
+start_ui = import_module(".api.v1.ui", __name__).start_ui
+session = import_module(".api.v1.session", __name__).session
 
-# Background work: wait for fire-and-forget tasks (background remember, the
-# session-to-graph improve bridge) before the process exits.
-from cognee.infrastructure.background_tasks import wait_for_background_tasks
-
-# Agent memory
-from cognee.modules.agent_memory import agent_memory
-
-# Tracing / Observability
-from cognee.modules.observability.trace_context import (
-    clear_traces,
-    disable_tracing,
-    enable_tracing,
-    get_all_traces,
-    get_last_trace,
-)
-
-# Relational DB models
-from cognee.modules.session_lifecycle.models import SessionModelUsage, SessionRecord
-from cognee.modules.visualization.cognee_network_visualization import (
-    cognee_network_visualization,
-)
+# Pipelines
+pipelines = import_module(".modules.pipelines", __name__)
+Drop = import_module(".pipelines", __name__).Drop
 
 # Migrations
-from cognee.run_migrations import run_migrations
-
-# Memory migration (cognee.migration has the provider sources:
-# Mem0Source, ZepSource/GraphitiSource, LettaSource, COGXArchiveSource)
-from . import migration
+run_migrations = import_module("cognee.run_migrations", __name__).run_migrations
 
 # ---------------------------------------------------------------------------
 # V2 memory-oriented API
 # ---------------------------------------------------------------------------
-from .api.v1 import (
-    ExportResult,
-    PushResult,
-    RememberResult,
-    disconnect,
-    export,
-    forget,
-    improve,
-    push,
-    recall,
-    remember,
-    serve,
-    visualize,
-)
-from .api.v1.add import add
-from .api.v1.agents.agents import agents
-from .api.v1.cognify import cognify
-from .api.v1.config.config import config
-from .api.v1.datasets.datasets import datasets
-from .api.v1.delete import delete
-from .api.v1.memify import memify  # deprecated (SDK-1115), removed in the next release
-from .api.v1.prune import prune
-from .api.v1.report import report
-from .api.v1.search import SearchType, search
-from .api.v1.session import session
+remember = import_module(".api.v1", __name__).remember
+RememberResult = import_module(".api.v1", __name__).RememberResult
+recall = import_module(".api.v1", __name__).recall
+improve = import_module(".api.v1", __name__).improve
+forget = import_module(".api.v1", __name__).forget
+serve = import_module(".api.v1", __name__).serve
+disconnect = import_module(".api.v1", __name__).disconnect
+visualize = import_module(".api.v1", __name__).visualize
+push = import_module(".api.v1", __name__).push
+PushResult = import_module(".api.v1", __name__).PushResult
+export = import_module(".api.v1", __name__).export
+ExportResult = import_module(".api.v1", __name__).ExportResult
+MemoryEntry = import_module(".memory", __name__).MemoryEntry
+QAEntry = import_module(".memory", __name__).QAEntry
+TraceEntry = import_module(".memory", __name__).TraceEntry
+FeedbackEntry = import_module(".memory", __name__).FeedbackEntry
+SessionNodeSetConflictError = import_module(
+    ".infrastructure.session.session_node_set", __name__
+).SessionNodeSetConflictError
+
+# Background work: wait for fire-and-forget tasks (background remember, the
+# session-to-graph improve bridge) before the process exits.
+wait_for_background_tasks = import_module(
+    "cognee.infrastructure.background_tasks", __name__
+).wait_for_background_tasks
+
+# Memory migration (cognee.migration has the provider sources:
+# Mem0Source, ZepSource/GraphitiSource, LettaSource, COGXArchiveSource)
+migration = import_module(".migration", __name__)
+
+# Tracing / Observability
+enable_tracing = import_module(
+    "cognee.modules.observability.trace_context", __name__
+).enable_tracing
+disable_tracing = import_module(
+    "cognee.modules.observability.trace_context", __name__
+).disable_tracing
+get_last_trace = import_module(
+    "cognee.modules.observability.trace_context", __name__
+).get_last_trace
+get_all_traces = import_module(
+    "cognee.modules.observability.trace_context", __name__
+).get_all_traces
+clear_traces = import_module("cognee.modules.observability.trace_context", __name__).clear_traces
+
+# Agent memory
+agent_memory = import_module("cognee.modules.agent_memory", __name__).agent_memory
 
 # Tool connections (authorized external databases for recall's "tools" scope)
-from .api.v1.tools import tools
-from .api.v1.ui import start_ui
-from .api.v1.update import update
-from .api.v1.validate import ValidationIssue, ValidationReport, ValidationStatus, validate
-from .api.v1.visualize import (
-    get_memory_provenance_graph,
-    get_schema_inventory,
-    start_visualization_server,
-    visualize_graph,
-    visualize_memory_provenance,
-)
-from .infrastructure.session.session_node_set import SessionNodeSetConflictError
-from .memory import FeedbackEntry, MemoryEntry, QAEntry, TraceEntry
+tools = import_module(".api.v1.tools", __name__).tools
 
-# Pipelines
-from .modules import pipelines
-from .modules.run_custom_pipeline import run_custom_pipeline
-from .pipelines import Drop
+# Relational DB models
+SessionModelUsage = import_module(
+    "cognee.modules.session_lifecycle.models", __name__
+).SessionModelUsage
+SessionRecord = import_module("cognee.modules.session_lifecycle.models", __name__).SessionRecord
+import_module("cognee.modules.migrations.models")
+import_module("cognee.modules.tools.models")
+import_module("cognee.modules.provenance.edge_evidence.models")
