@@ -56,19 +56,35 @@ class EmbeddingIndexMismatch(RuntimeError):
 
 
 def embedding_identity(config: MemoryConfig) -> str:
-    """Return the configured embedding model's identity (provider, model, dimensions); pure.
+    """Return the declared provider, model, revision and dimensions as unambiguous JSON.
 
     It is stamped on every stored memory and compared before any write or search.
-    Raises ValueError when the configuration does not name a model.
+    Raises ValueError for missing revision/model or invalid dimensions. A declaration
+    is not proof of the served revision; a provider must verify its response separately.
     """
     settings = config.embedder.config
     model = (
         settings.get("model") if isinstance(settings, dict) else getattr(settings, "model", None)
     )
-    if not model:
+    if not isinstance(model, str) or not model:
         raise ValueError("The embedder configuration names no model")
     dims = getattr(config.vector_store.config, "embedding_model_dims", None)
-    return f"{config.embedder.provider}|{model}|{dims}"
+    revision = config.embedder.revision
+    if not isinstance(revision, str) or not revision:
+        raise ValueError("The Owner embedder configuration names no model revision")
+    if isinstance(dims, bool) or not isinstance(dims, int) or dims <= 0:
+        raise ValueError("The Owner embedder needs positive integer dimensions")
+    return json.dumps(
+        {
+            "format": "mem0-embedding-v2",
+            "provider": config.embedder.provider,
+            "model": model,
+            "revision": revision,
+            "dimensions": dims,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 class TerminalCaptureError(Exception):
@@ -196,6 +212,7 @@ class Mem0Tier:
         Memories stored before identities were recorded count as unknown, so they
         also need a rebuild. Reads only, on the owner's handle.
         """
+        self._require_embedding_identity(memory)
         table = memory.vector_store.collection_name
         (other,) = memory.vector_store.connection.execute(
             f"SELECT count(*) FROM {table} "
@@ -207,6 +224,15 @@ class Mem0Tier:
                 f"{other} stored memories were embedded by a model other than "
                 f"{self.embedding_identity!r}; rebuild the index from the source events"
             )
+
+    def _require_embedding_identity(self, memory: Memory) -> None:
+        """Refuse changed configuration or a conflicting exposed revision; never create clients."""
+        if embedding_identity(self.config) != self.embedding_identity:
+            raise EmbeddingIndexMismatch("The embedding configuration changed after tier creation")
+        engine = memory._embedding_model
+        revision = getattr(engine, "revision", None)
+        if revision is not None and revision != self.config.embedder.revision:
+            raise EmbeddingIndexMismatch("The served embedding revision differs from configuration")
 
     async def _read(self, func: Callable[[Memory], Any]) -> Any:
         """Run func(memory) on the owner's worker through the attached reader."""
@@ -253,12 +279,14 @@ class Mem0Tier:
         if not infer:
             texts = [m["content"] for m in messages if m.get("role") != "system"]
             raw = [await asyncio.to_thread(memory.embedding_model.embed, t, "add") for t in texts]
+            self._require_embedding_identity(memory)
             return PreparedWork(
                 "raw", scope_id, event_id, messages, metadata, filters, {}, {}, {}, raw
             )
 
         facts = await asyncio.to_thread(memory._extract_facts, messages, metadata, filters)
         embeddings = await asyncio.to_thread(memory._embed_facts, facts)
+        self._require_embedding_identity(memory)
         existing = await self._read(lambda m: m._find_existing_memories(facts, embeddings, filters))
         decisions, mapping = await asyncio.to_thread(memory._decide_memory_actions, existing, facts)
         for action in decisions.get("memory", []):
@@ -272,6 +300,7 @@ class Mem0Tier:
             memory,
             [a["text"] for a in decisions.get("memory", []) if a["event"] in ("ADD", "UPDATE")],
         )
+        self._require_embedding_identity(memory)
         return PreparedWork(
             "actions",
             scope_id,
@@ -465,6 +494,7 @@ class Mem0Tier:
         memory = await self._read(lambda m: m)
         await self._read(self._require_matching_index)
         vector = await asyncio.to_thread(memory.embedding_model.embed, query, "search")
+        self._require_embedding_identity(memory)
         return {"query": query, "vector": vector, "limit": limit}
 
     def retrieve(
@@ -488,6 +518,7 @@ class Mem0Tier:
         else:
             raise ValueError(f"Unsupported visibility mode: {visibility.mode!r}")
         memory = self._memory_for(native_handle)
+        self._require_matching_index(memory)
         found = memory.vector_store.search(
             query=prepared_query["query"],
             vectors=prepared_query["vector"],

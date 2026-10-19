@@ -36,6 +36,7 @@ class EmbeddingSettings:
     provider: str
     model: str
     dimensions: int
+    revision: str
     endpoint: str | None
     api_key: str | None
 
@@ -99,7 +100,9 @@ def _positive(table: dict, where: str, key: str, integer: bool) -> float:
 
 def _embedding(table: Any, where: str) -> EmbeddingSettings:
     """Read the embedding model table; api_key_env names an environment variable that must be set."""
-    table = _take(table, where, ("provider", "model", "dimensions"), ("endpoint", "api_key_env"))
+    table = _take(
+        table, where, ("provider", "model", "dimensions", "revision"), ("endpoint", "api_key_env")
+    )
     api_key = None
     if "api_key_env" in table:
         name = _text(table, where, "api_key_env")
@@ -111,6 +114,7 @@ def _embedding(table: Any, where: str) -> EmbeddingSettings:
         _text(table, where, "provider"),
         _text(table, where, "model"),
         int(_positive(table, where, "dimensions", True)),
+        _text(table, where, "revision"),
         endpoint,
         api_key,
     )
@@ -128,8 +132,13 @@ def _personalization(table: Any) -> "MemoryConfig":
     )
     for engine in ("llm", "embedder"):
         engine_path = f"{where}.memory.{engine}"
-        settings = _take(memory[engine], engine_path, ("provider", "config"))
+        required = (
+            ("provider", "config", "revision") if engine == "embedder" else ("provider", "config")
+        )
+        settings = _take(memory[engine], engine_path, required)
         _text(settings, engine_path, "provider")
+        if engine == "embedder":
+            _text(settings, engine_path, "revision")
         if not isinstance(settings["config"], dict):
             raise ConfigurationError(f"{engine_path}.config must be a table")
         if "model" not in settings["config"]:

@@ -75,7 +75,7 @@ def build_tiers(config: RuntimeConfig) -> list[Any]:
                 api_key=settings.api_key,
                 endpoint=settings.endpoint,
             )
-            return CogneeChunkTier(engine, database_name)
+            return CogneeChunkTier(engine, database_name, revision=settings.revision)
 
         tiers.append(_built("relational.embedding", relational))
     if config.personalization is not None:

@@ -15,6 +15,8 @@ relationship or summary exists, and every hit says so in "ranking".
 """
 
 import asyncio
+import json
+import math
 import uuid
 from dataclasses import dataclass
 from importlib.metadata import version
@@ -60,17 +62,40 @@ class EmbeddingIndexMismatch(RuntimeError):
     """
 
 
-def embedding_identity(engine: Any) -> str:
-    """Return the embedding engine's identity: provider, model, dimensions and API version.
+def embedding_identity(engine: Any, revision: str | None = None) -> str:
+    """Identify the declared model revision, refusing conflicting exposed engine metadata.
 
     It is stamped on every stored chunk and compared before any write or search.
-    Raises ValueError when the engine does not name its model and dimensions.
+    The engine's revision takes precedence when exposed and must match an explicit
+    declaration. With no served metadata the declaration remains unverified. Missing
+    model/revision or invalid dimensions raises ValueError. API version is separate.
     """
     model, dimensions = getattr(engine, "model", None), getattr(engine, "dimensions", None)
-    if not model or not dimensions:
+    if not isinstance(model, str) or not model:
         raise ValueError("The embedding engine does not name its model and dimensions")
+    if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions <= 0:
+        raise ValueError("The embedding engine needs positive integer dimensions")
+    served_revision = getattr(engine, "revision", None)
+    if served_revision is not None and revision is not None and served_revision != revision:
+        raise ValueError("The embedding engine revision differs from the configured revision")
+    revision = served_revision if served_revision is not None else revision
+    if not isinstance(revision, str) or not revision:
+        raise ValueError("The embedding engine does not name a model revision")
     provider, version_ = getattr(engine, "provider", None), getattr(engine, "api_version", None)
-    return f"{provider}|{model}|{dimensions}|{version_ or ''}"
+    if not isinstance(provider, str) or not provider:
+        raise ValueError("The embedding engine does not name its provider")
+    return json.dumps(
+        {
+            "format": "cognee-embedding-v2",
+            "provider": provider,
+            "model": model,
+            "revision": revision,
+            "dimensions": dimensions,
+            "api_version": version_,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def chunk_id(event_id: str) -> str:
@@ -102,12 +127,15 @@ class CogneeChunkTier:
 
     tier_name = TIER_NAME
 
-    def __init__(self, embedding_engine: Any, database_name: str) -> None:
+    def __init__(
+        self, embedding_engine: Any, database_name: str, *, revision: str | None = None
+    ) -> None:
         """Keep the engine and schema name; nothing is opened until the first owner call."""
         if not isinstance(database_name, str) or not database_name:
             raise ValueError("CogneeChunkTier needs a non-empty database_name")
         self.embedding_engine = embedding_engine
-        self.embedding_identity = embedding_identity(embedding_engine)
+        self.embedding_revision = revision
+        self.embedding_identity = embedding_identity(embedding_engine, revision)
         self.database_name = database_name
 
     def _adapter(self, handle: duckdb.DuckDBPyConnection) -> DuckDBAdapter:
@@ -120,6 +148,13 @@ class CogneeChunkTier:
 
     def _require_matching_index(self, adapter: DuckDBAdapter) -> None:
         """Raise EmbeddingIndexMismatch if any stored chunk has another embedding identity; reads only."""
+        if (
+            embedding_identity(self.embedding_engine, self.embedding_revision)
+            != self.embedding_identity
+        ):
+            raise EmbeddingIndexMismatch(
+                "The embedding engine identity changed after tier creation"
+            )
         (exists,) = adapter.connection.execute(
             "SELECT count(*) FROM information_schema.tables WHERE table_catalog = "
             "current_database() AND table_schema = ? AND table_name = ?",
@@ -140,6 +175,21 @@ class CogneeChunkTier:
 
     # ---- write seam -------------------------------------------------------------
 
+    async def _embed(self, text: str) -> list[float]:
+        """Embed one text and refuse changed identity, wrong width or nonfinite numbers."""
+        vectors = await self.embedding_engine.embed_text([text])
+        if (
+            embedding_identity(self.embedding_engine, self.embedding_revision)
+            != self.embedding_identity
+        ):
+            raise EmbeddingIndexMismatch("The embedding engine identity changed while embedding")
+        if len(vectors) != 1 or len(vectors[0]) != self.embedding_engine.dimensions:
+            raise RuntimeError("The embedding engine returned an unexpected vector count or width")
+        vector = [float(value) for value in vectors[0]]
+        if not all(math.isfinite(value) for value in vector):
+            raise RuntimeError("The embedding engine returned a nonfinite vector")
+        return vector
+
     async def prepare(
         self, event_envelope: dict[str, Any], verified_payload_bytes: bytes | None
     ) -> PreparedChunk:
@@ -156,9 +206,7 @@ class CogneeChunkTier:
         event_id = event_envelope["event_id"]
         actor = actor_of(event_envelope)
         text, _, _ = event_text(event_envelope, verified_payload_bytes)
-        vectors = await self.embedding_engine.embed_text([text])
-        if len(vectors) != 1 or not vectors[0]:
-            raise RuntimeError("The embedding engine did not return one vector for the chunk")
+        vector = await self._embed(text)
         identifier = chunk_id(event_id)
         properties = {
             "name": event_id,
@@ -176,7 +224,7 @@ class CogneeChunkTier:
             },
             "event_type": event_envelope.get("event_type", event_envelope.get("content_type")),
         }
-        return PreparedChunk(identifier, properties, [float(x) for x in vectors[0]])
+        return PreparedChunk(identifier, properties, vector)
 
     def apply(
         self, native_tx_handle: duckdb.DuckDBPyConnection, prepared_work: PreparedChunk
@@ -211,10 +259,7 @@ class CogneeChunkTier:
 
     async def prepare_query(self, scope: RetrievalScope, query: str, limit: int) -> dict[str, Any]:
         """Embed the question outside the database worker."""
-        vectors = await self.embedding_engine.embed_text([query])
-        if len(vectors) != 1 or not vectors[0]:
-            raise RuntimeError("The embedding engine did not return one vector for the query")
-        return {"vector": [float(x) for x in vectors[0]], "limit": limit}
+        return {"vector": await self._embed(query), "limit": limit}
 
     def retrieve(
         self,
