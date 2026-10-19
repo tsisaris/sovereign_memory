@@ -11,7 +11,7 @@ packages and its checkers. Install nothing else by hand.
 ## Before you submit, run the same checks GitHub runs
 
     uv run pre-commit run --all-files
-    uv run deptry src tests
+    uv run deptry . tests
     uv run pytest
 
 All three must pass, and deptry must not print a line starting with "Assuming". Your pull request is checked again on GitHub, and a

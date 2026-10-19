@@ -12,7 +12,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 uv --version
 
-step "this project's packages and its gating checkers"
-uv sync --group dev
+step "this project's packages (sovereign_memory, Python 3.12) and its gating checkers"
+uv sync --python "3.12" --group dev
 
 step "ready: run uv run pre-commit run --all-files, then uv run pytest"

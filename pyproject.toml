@@ -7,7 +7,7 @@
 name = "sovereign_memory"
 version = "0.1.0"
 description = "One large, connected, seamless local memory system on DuckDB: every useful kind of memory welded into one suite that works with DuckDB, a true superset of Letta, Zep/Graphiti, Cognee and Mem0, modular so new kinds of memory can be added as they appear, free and open for everyone to use and maintain."
-requires-python = ">=3.12"
+requires-python = "~=3.12.0"
 # The packages this project's code needs, as name==version, one per line.
 dependencies = [
     "duckdb==1.5.6",
@@ -39,12 +39,9 @@ dev = [
     "cognee==1.6.5",
     "pytest-asyncio==1.4.0",
 ]
-# Reported, never blocking.
-advisory = [
-    "vulture==2.16",
-    "radon==6.0.1",
-    "semgrep==1.172.0",
-]
+# Reported, never blocking: vulture==2.16, radon==6.0.1, and semgrep==1.172.0
+# run isolated via uvx in the advisory workflow job so their transitive pins
+# never conflict with the project's own declared environment dependencies.
 
 [tool.ruff]
 line-length = 100
@@ -88,11 +85,11 @@ exclude = ["data/sovereign", "local", ".venv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["packages/duckdb_sqlalchemy_async/duckdb_sqlalchemy_async"]
+pythonpath = [".", "."]
 addopts = "-ra"
 
 [tool.coverage.run]
-source = ["packages"]
+source = ["."]
 
 [tool.deptry]
 # exclude REPLACES deptry's defaults, which would silently skip every folder
