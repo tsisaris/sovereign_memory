@@ -255,10 +255,18 @@ class CogneeChunkTier:
             raise EmbeddingIndexMismatch("The embedding engine identity changed while embedding")
         if len(vectors) != 1 or len(vectors[0]) != self.embedding_engine.dimensions:
             raise RuntimeError("The embedding engine returned an unexpected vector count or width")
-        vector = [float(value) for value in vectors[0]]
-        if not all(math.isfinite(value) for value in vector):
-            raise RuntimeError("The embedding engine returned a nonfinite vector")
-        return vector
+        try:
+            numeric = all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                for value in vectors[0]
+            )
+        except OverflowError as error:
+            raise RuntimeError("The embedding engine returned an oversized vector value") from error
+        if not numeric:
+            raise RuntimeError("The embedding engine returned a nonfinite or nonnumeric vector")
+        return [float(value) for value in vectors[0]]
 
     async def prepare(
         self, event_envelope: dict[str, Any], verified_payload_bytes: bytes | None
