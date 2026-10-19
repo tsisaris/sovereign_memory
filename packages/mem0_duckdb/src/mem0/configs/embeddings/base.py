@@ -1,3 +1,5 @@
+"""Keep explicit provider options for Mem0's embedding factories."""
+
 import os
 from abc import ABC
 from typing import Dict, Optional, Union
@@ -40,6 +42,7 @@ class BaseEmbedderConfig(ABC):
         aws_secret_access_key: Optional[str] = None,
         aws_session_token: Optional[str] = None,
         aws_region: Optional[str] = None,
+        agent_embedding: Optional[dict] = None,
     ):
         """
         Initializes a configuration class instance for the Embeddings.
@@ -75,6 +78,7 @@ class BaseEmbedderConfig(ABC):
         """
 
         self.model = model
+        self.agent_embedding = agent_embedding
         self.api_key = api_key
         self.openai_base_url = openai_base_url
         self.embedding_dims = embedding_dims

@@ -18,6 +18,7 @@ refused with a terminal failure rather than reported as processed.
 
 import asyncio
 import json
+import math
 from dataclasses import dataclass, field
 from importlib.metadata import version
 from typing import Any, Callable, Dict, List, Optional
@@ -74,14 +75,21 @@ def embedding_identity(config: MemoryConfig) -> str:
         raise ValueError("The Owner embedder configuration names no model revision")
     if isinstance(dims, bool) or not isinstance(dims, int) or dims <= 0:
         raise ValueError("The Owner embedder needs positive integer dimensions")
+    identity = {
+        "format": "mem0-embedding-v2",
+        "provider": config.embedder.provider,
+        "model": model,
+        "revision": revision,
+        "dimensions": dims,
+    }
+    if config.embedder.provider == "agent_embedding":
+        agent = settings.get("agent_embedding", {})
+        capability = agent.get("capability_id")
+        if not isinstance(capability, str) or not capability:
+            raise ValueError("The Agent Embedding configuration names no capability")
+        identity["capability_id"] = capability
     return json.dumps(
-        {
-            "format": "mem0-embedding-v2",
-            "provider": config.embedder.provider,
-            "model": model,
-            "revision": revision,
-            "dimensions": dims,
-        },
+        identity,
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -272,14 +280,26 @@ class Mem0Tier:
             raise RuntimeError("Mem0Tier has no owner reader attached; register it with the owner")
         return await self._reader(lambda handle: func(self._memory_for(handle)))
 
-    @staticmethod
-    def _embed_text(memory: Memory, text: str, purpose: str) -> List[float]:
+    def _embed_text(self, memory: Memory, text: str, purpose: str) -> List[float]:
         """Resolve the lazy client and embed text inside the calling model worker thread.
 
         Call through asyncio.to_thread so SDK construction never runs on the event
         loop or the owner's database worker. Provider errors propagate unchanged.
         """
-        return memory.embedding_model.embed(text, purpose)
+        return self._validate_vector(memory.embedding_model.embed(text, purpose))
+
+    def _validate_vector(self, vector: Any) -> List[float]:
+        """Refuse wrong-width or nonfinite provider vectors before projection or search."""
+        dimensions = self.config.vector_store.config.embedding_model_dims
+        if not isinstance(vector, (list, tuple)) or len(vector) != dimensions:
+            raise ValueError("Mem0 embedding provider returned an unexpected vector width")
+        try:
+            valid = all(type(v) in (int, float) and math.isfinite(v) for v in vector)
+        except OverflowError as error:
+            raise ValueError("Mem0 embedding provider returned an oversized value") from error
+        if not valid:
+            raise ValueError("Mem0 embedding provider returned a nonfinite or nonnumeric vector")
+        return [float(value) for value in vector]
 
     # ---- write seam -------------------------------------------------------------
 
@@ -326,7 +346,10 @@ class Mem0Tier:
             )
 
         facts = await asyncio.to_thread(memory._extract_facts, messages, metadata, filters)
-        embeddings = await asyncio.to_thread(memory._embed_facts, facts)
+        embeddings = {
+            text: self._validate_vector(vector)
+            for text, vector in (await asyncio.to_thread(memory._embed_facts, facts)).items()
+        }
         self._require_embedding_identity(memory)
         existing = await self._read(lambda m: m._find_existing_memories(facts, embeddings, filters))
         decisions, mapping = await asyncio.to_thread(memory._decide_memory_actions, existing, facts)

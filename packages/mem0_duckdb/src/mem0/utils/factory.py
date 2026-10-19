@@ -1,6 +1,8 @@
+"""Resolve the registered Mem0 provider classes and their declared configurations."""
+
 import importlib
 import inspect
-from typing import Dict, Optional, Union
+from typing import ClassVar, Dict, Optional, Union
 
 from mem0.configs.embeddings.base import BaseEmbedderConfig
 from mem0.configs.llms.anthropic import AnthropicConfig
@@ -27,6 +29,7 @@ from mem0.embeddings.mock import MockEmbeddings
 
 
 def load_class(class_type):
+    """Import a registered fully qualified provider class; propagate import failures."""
     module_path, class_name = class_type.rsplit(".", 1)
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
@@ -39,7 +42,7 @@ class LlmFactory:
     """
 
     # Provider mappings with their config classes
-    provider_to_class = {
+    provider_to_class: ClassVar[dict] = {
         "ollama": ("mem0.llms.ollama.OllamaLLM", OllamaConfig),
         "openai": ("mem0.llms.openai.OpenAILLM", OpenAIConfig),
         "groq": ("mem0.llms.groq.GroqLLM", BaseLlmConfig),
@@ -155,7 +158,10 @@ class LlmFactory:
 
 
 class EmbedderFactory:
-    provider_to_class = {
+    """Construct the selected registered embedding provider without substituting models."""
+
+    provider_to_class: ClassVar[dict] = {
+        "agent_embedding": "mem0.embeddings.agent_embedding.AgentEmbedding",
         "openai": "mem0.embeddings.openai.OpenAIEmbedding",
         "ollama": "mem0.embeddings.ollama.OllamaEmbedding",
         "huggingface": "mem0.embeddings.huggingface.HuggingFaceEmbedding",
@@ -171,6 +177,7 @@ class EmbedderFactory:
 
     @classmethod
     def create(cls, provider_name, config, vector_config: Optional[dict]):
+        """Build the provider from its explicit options and vector-store configuration."""
         if provider_name == "upstash_vector" and vector_config and vector_config.enable_embeddings:
             return MockEmbeddings()
         class_type = cls.provider_to_class.get(provider_name)
@@ -183,7 +190,9 @@ class EmbedderFactory:
 
 
 class VectorStoreFactory:
-    provider_to_class = {
+    """Construct the selected vector store, including caller-owned runtime handles."""
+
+    provider_to_class: ClassVar[dict] = {
         "duckdb": "mem0.vector_stores.duckdb.DuckDBVectorStore",
         "qdrant": "mem0.vector_stores.qdrant.Qdrant",
         "chroma": "mem0.vector_stores.chroma.ChromaDB",
@@ -226,6 +235,7 @@ class VectorStoreFactory:
 
     @classmethod
     def reset(cls, instance):
+        """Reset the supplied store through its own API and return that same store."""
         instance.reset()
         return instance
 
@@ -237,7 +247,7 @@ class RerankerFactory:
     """
 
     # Provider mappings with their config classes
-    provider_to_class = {
+    provider_to_class: ClassVar[dict] = {
         "cohere": ("mem0.reranker.cohere_reranker.CohereReranker", CohereRerankerConfig),
         "sentence_transformer": (
             "mem0.reranker.sentence_transformer_reranker.SentenceTransformerReranker",

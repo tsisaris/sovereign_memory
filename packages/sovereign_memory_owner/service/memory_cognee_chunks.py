@@ -84,15 +84,21 @@ def embedding_identity(engine: Any, revision: str | None = None) -> str:
     provider, version_ = getattr(engine, "provider", None), getattr(engine, "api_version", None)
     if not isinstance(provider, str) or not provider:
         raise ValueError("The embedding engine does not name its provider")
+    identity = {
+        "format": "cognee-embedding-v2",
+        "provider": provider,
+        "model": model,
+        "revision": revision,
+        "dimensions": dimensions,
+        "api_version": version_,
+    }
+    if provider == "agent_embedding":
+        capability = getattr(engine, "capability_id", None)
+        if not isinstance(capability, str) or not capability:
+            raise ValueError("The Agent Embedding engine names no capability")
+        identity["capability_id"] = capability
     return json.dumps(
-        {
-            "format": "cognee-embedding-v2",
-            "provider": provider,
-            "model": model,
-            "revision": revision,
-            "dimensions": dimensions,
-            "api_version": version_,
-        },
+        identity,
         sort_keys=True,
         separators=(",", ":"),
     )

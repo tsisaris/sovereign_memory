@@ -39,6 +39,7 @@ class EmbeddingSettings:
     revision: str
     endpoint: str | None
     api_key: str | None
+    agent_embedding: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -101,7 +102,10 @@ def _positive(table: dict, where: str, key: str, integer: bool) -> float:
 def _embedding(table: Any, where: str) -> EmbeddingSettings:
     """Read the embedding model table; api_key_env names an environment variable that must be set."""
     table = _take(
-        table, where, ("provider", "model", "dimensions", "revision"), ("endpoint", "api_key_env")
+        table,
+        where,
+        ("provider", "model", "dimensions", "revision"),
+        ("endpoint", "api_key_env", "agent_embedding"),
     )
     api_key = None
     if "api_key_env" in table:
@@ -110,13 +114,25 @@ def _embedding(table: Any, where: str) -> EmbeddingSettings:
         if not api_key:
             raise ConfigurationError(f"{where}.api_key_env names {name}, which is not set")
     endpoint = _text(table, where, "endpoint") if "endpoint" in table else None
+    provider = _text(table, where, "provider")
+    agent = table.get("agent_embedding")
+    if provider == "agent_embedding":
+        if not isinstance(agent, dict) or agent.get("revision") != table["revision"]:
+            raise ConfigurationError(f"{where}.agent_embedding must declare the same revision")
+        if endpoint is not None or api_key is not None:
+            raise ConfigurationError(
+                f"{where} uses shared AgentClient settings, not endpoint/api_key_env"
+            )
+    elif agent is not None:
+        raise ConfigurationError(f"{where}.agent_embedding requires provider agent_embedding")
     return EmbeddingSettings(
-        _text(table, where, "provider"),
+        provider,
         _text(table, where, "model"),
         int(_positive(table, where, "dimensions", True)),
         _text(table, where, "revision"),
         endpoint,
         api_key,
+        agent,
     )
 
 
@@ -167,6 +183,18 @@ def _personalization(table: Any) -> "MemoryConfig":
             f"{where}.memory.enable_update_delete_branches must be true: the tier "
             "refuses Mem0's ADD-only pipeline"
         )
+    if config.embedder.provider == "agent_embedding":
+        options = config.embedder.config
+        agent = options.get("agent_embedding")
+        if (
+            not isinstance(agent, dict)
+            or agent.get("revision") != config.embedder.revision
+            or type(options.get("embedding_dims")) is not int
+            or options["embedding_dims"] != config.vector_store.config.embedding_model_dims
+        ):
+            raise ConfigurationError(
+                f"{where}.memory.embedder must match the declared revision and vector-store dimensions"
+            )
     return config
 
 

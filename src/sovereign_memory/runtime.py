@@ -71,18 +71,31 @@ def build_tiers(config: RuntimeConfig, only_tier: str | None = None) -> list[Any
 
         def relational() -> Any:
             """Build the Cognee embedding engine from the configured model and the chunk tier."""
-            from cognee.infrastructure.databases.vector.embeddings.LiteLLMEmbeddingEngine import (
-                LiteLLMEmbeddingEngine,
-            )
             from service.memory_cognee_chunks import CogneeChunkTier
 
-            engine = LiteLLMEmbeddingEngine(
-                model=settings.model,
-                provider=settings.provider,
-                dimensions=settings.dimensions,
-                api_key=settings.api_key,
-                endpoint=settings.endpoint,
-            )
+            if settings.provider == "agent_embedding":
+                from mem0.configs.embeddings.base import BaseEmbedderConfig
+                from mem0.embeddings.agent_embedding import AgentEmbedding
+
+                engine = AgentEmbedding(
+                    BaseEmbedderConfig(
+                        model=settings.model,
+                        embedding_dims=settings.dimensions,
+                        agent_embedding=settings.agent_embedding,
+                    )
+                )
+            else:
+                from cognee.infrastructure.databases.vector.embeddings.LiteLLMEmbeddingEngine import (
+                    LiteLLMEmbeddingEngine,
+                )
+
+                engine = LiteLLMEmbeddingEngine(
+                    model=settings.model,
+                    provider=settings.provider,
+                    dimensions=settings.dimensions,
+                    api_key=settings.api_key,
+                    endpoint=settings.endpoint,
+                )
             return CogneeChunkTier(engine, database_name, revision=settings.revision)
 
         tiers.append(_built("relational.embedding", relational))
