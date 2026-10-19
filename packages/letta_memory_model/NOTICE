@@ -1,0 +1,16 @@
+Letta Memory Model DuckDB Port
+Copyright 2026
+
+This product includes software developed by Letta (https://github.com/letta-ai/letta).
+Original source licensed under Apache License, Version 2.0.
+
+Ported from Letta archive commit: 56ba9c255
+Subset included: 
+- letta/orm/block.py
+- letta/orm/passage.py 
+- letta/orm/passage_tag.py
+- letta/orm/message.py
+- letta/orm/conversation.py
+- letta/orm/blocks_agents.py
+- Minimal base Mixins and schemas strictly to support standard attachments.
+- Block memory tool semantics directly extracted from letta/functions/function_sets/base.py

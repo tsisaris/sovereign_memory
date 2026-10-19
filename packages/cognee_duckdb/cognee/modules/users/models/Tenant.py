@@ -1,6 +1,8 @@
 from sqlalchemy import Column, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, relationship
 
+import cognee
+
 from .Principal import Principal
 from .Role import Role
 from .UserTenant import UserTenant
@@ -14,8 +16,8 @@ class Tenant(Principal):
 
     owner_id = Column(Uuid, index=True)
 
-    users: Mapped[list["User"]] = relationship(  # noqa: F821
-        "User",
+    users: Mapped[list["cognee.modules.users.models.User.User"]] = relationship(  # noqa: F821
+        "cognee.modules.users.models.User.User",
         secondary=UserTenant.__tablename__,
         back_populates="tenants",
     )

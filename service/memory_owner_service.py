@@ -5,8 +5,9 @@ import json
 import logging
 from pathlib import Path
 
-from service.memory_owner_core import OwnerCore
 from src.duckdb_sqlalchemy_async_bridge import connect as duckdb_connect
+
+from service.memory_owner_core import OwnerCore
 
 logger = logging.getLogger(__name__)
 

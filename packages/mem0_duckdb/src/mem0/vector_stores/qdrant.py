@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from qdrant_client import QdrantClient, models
 from qdrant_client.models import (
@@ -88,7 +88,7 @@ class Qdrant(VectorStoreBase):
         # Pre-v3 collections lack it; writing a `bm25` sparse vector into such a
         # collection is rejected by Qdrant ("Not existing vector name error: bm25").
         self._has_bm25_slot = False
-        self.create_col(embedding_model_dims, on_disk)
+        self.create_col(self.collection_name, embedding_model_dims, on_disk=on_disk)
 
     def _get_bm25_encoder(self):
         """Lazy-load the BM25 sparse text encoder (fastembed)."""
@@ -126,7 +126,13 @@ class Qdrant(VectorStoreBase):
             logger.debug(f"BM25 encoding failed: {e}")
         return None
 
-    def create_col(self, vector_size: int, on_disk: bool, distance: Distance = Distance.COSINE):
+    def create_col(
+        self,
+        name: Any,
+        vector_size: int,
+        distance: Distance = Distance.COSINE,
+        on_disk: bool = False,
+    ):
         """
         Create a new collection with dense vectors and BM25 sparse vectors.
 
@@ -600,7 +606,7 @@ class Qdrant(VectorStoreBase):
         """Reset the index by deleting and recreating it."""
         logger.warning(f"Resetting index {self.collection_name}...")
         self.delete_col()
-        self.create_col(self.embedding_model_dims, self.on_disk)
+        self.create_col(self.collection_name, self.embedding_model_dims, on_disk=self.on_disk)
         if self.is_local:
             # Local delete_collection() rmtree's with ignore_errors=True and leaves its
             # sqlite handle open, so where an open file blocks unlink (Windows, NFS) the

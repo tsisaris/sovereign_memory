@@ -7,8 +7,9 @@ name = "graphiti-duckdb"
 version = "0.1.0"
 description = "Graphiti DuckDB Driver Backend"
 dependencies = [
-    "duckdb>=1.5.0",
-    "pydantic>=2.0.0"
+    "duckdb==1.5.6",
+    "pydantic==2.14.1",
+    "graphiti-core==0.31.1"
 ]
 
 [tool.hatch.build.targets.wheel]

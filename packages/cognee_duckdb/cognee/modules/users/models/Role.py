@@ -1,6 +1,8 @@
 from sqlalchemy import Column, ForeignKey, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, relationship
 
+import cognee
+
 from .Principal import Principal
 from .UserRole import UserRole
 
@@ -12,8 +14,8 @@ class Role(Principal):
 
     name = Column(String, nullable=False, index=True)
 
-    users: Mapped[list["User"]] = relationship(  # noqa: F821
-        "User",
+    users: Mapped[list["cognee.modules.users.models.User.User"]] = relationship(  # noqa: F821
+        "cognee.modules.users.models.User.User",
         secondary=UserRole.__tablename__,
         back_populates="roles",
     )
