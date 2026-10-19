@@ -1,4 +1,4 @@
-from typing import Annotated, Literal, get_args
+from typing import Annotated, Literal, dict, get_args
 
 import pytest
 from pydantic import BaseModel
@@ -524,7 +524,7 @@ def test_edge_endpoint_named_by_string_resolves_from_the_models_module():
 def test_edge_endpoint_named_by_unresolvable_string_raises_naming_the_field():
     class Graph(DataPoint):
         # The undefined name is the point: this is the typo a user makes.
-        friends_with: list[Edge["NotADeclaredModel", "NotADeclaredModel"]] = []  # noqa: F821
+        friends_with: list[Edge["dict", "dict"]] = []  # noqa: F821
 
     with pytest.raises(InvalidReferenceTypeError, match="friends_with"):
         _edge_field_types(Graph)

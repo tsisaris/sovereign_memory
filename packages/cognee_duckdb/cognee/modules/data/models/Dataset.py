@@ -5,6 +5,7 @@ from uuid import uuid4
 from sqlalchemy import Column, DateTime, Text, Uuid
 from sqlalchemy.orm import Mapped, relationship
 
+import cognee
 from cognee.infrastructure.databases.relational import Base
 
 
@@ -32,8 +33,8 @@ class Dataset(Base):
     # Data rows are dataset-scoped (Data.dataset_id); this is a read-only view
     # over that column — membership no longer has its own table. Writes go
     # through Data.dataset_id directly.
-    data: Mapped[List["Data"]] = relationship(
-        "Data",
+    data: Mapped[List["cognee.modules.data.models.Data.Data"]] = relationship(
+        "cognee.modules.data.models.Data.Data",
         primaryjoin="Dataset.id == foreign(Data.dataset_id)",
         lazy="noload",
         viewonly=True,

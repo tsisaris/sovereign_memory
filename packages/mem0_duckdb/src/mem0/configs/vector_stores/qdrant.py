@@ -4,15 +4,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class QdrantConfig(BaseModel):
-    from qdrant_client import QdrantClient
-
-    QdrantClient: ClassVar[type] = QdrantClient
+    QdrantClient: ClassVar[type] = __import__("qdrant_client").QdrantClient
 
     collection_name: str = Field("mem0", description="Name of the collection")
     embedding_model_dims: Optional[int] = Field(
         1536, description="Dimensions of the embedding model"
     )
-    client: Optional[QdrantClient] = Field(None, description="Existing Qdrant client instance")
+    client: Optional[Any] = Field(None, description="Existing Qdrant client instance")
     host: Optional[str] = Field(None, description="Host address for Qdrant server")
     port: Optional[int] = Field(None, description="Port for Qdrant server")
     path: Optional[str] = Field("/tmp/qdrant", description="Path for local Qdrant database")
