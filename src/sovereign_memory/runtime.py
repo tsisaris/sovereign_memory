@@ -161,7 +161,9 @@ async def run(service: OwnerService, maintenance_interval_seconds: float) -> Non
     maintenance task is told to stop and awaited for at most the service's declared
     drain bound, then cancelled (its unfinished receipts stay owed and are retried),
     and the service is stopped, so no task or owner connection outlives the call.
-    A failure of maintenance itself is logged by it, never lost.
+    A failed round is logged by maintenance itself; any other failure of the
+    maintenance task is raised from here, and only the cancellation this call
+    requests is suppressed.
     """
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -180,7 +182,9 @@ async def run(service: OwnerService, maintenance_interval_seconds: float) -> Non
                 )
                 if running:
                     maintenance.cancel()
-                    await asyncio.gather(maintenance, return_exceptions=True)
+                    await asyncio.wait({maintenance})
+                if not maintenance.cancelled():
+                    maintenance.result()
             finally:
                 await service.stop()
     finally:

@@ -543,8 +543,10 @@ class LiteLLMEmbeddingEngine(EmbeddingEngine):
 
         The provider's own usage count is used when the response carries one, and
         then no tokenizer is touched. Otherwise the tokenizer loads here, off the
-        event loop; a failure to load it is logged and counted as 0 by the shared
-        count_input_tokens, so a succeeded request is never failed or re-billed.
+        event loop. If no tokenizer can load, the shared count_input_tokens logs the
+        failure and returns 0 as a best-effort sentinel. That 0 is unknown, not a
+        measured or provider-reported count; it exists so a succeeded request is
+        never failed or re-billed.
         """
         return count_input_tokens(response, texts, _LazyTokenizer(self))
 
