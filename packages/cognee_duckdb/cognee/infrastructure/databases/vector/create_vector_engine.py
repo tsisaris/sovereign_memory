@@ -45,7 +45,7 @@ def _normalize_optional_create_vector_engine_params(params: dict) -> dict:
     if not normalized.get("vector_dataset_database_handler"):
         # We use lancedb as the default, otherwise it is expected that the user defined VECTOR_DATASET_DATABASE_HANDLER
         normalized["vector_dataset_database_handler"] = os.getenv(
-            "VECTOR_DATASET_DATABASE_HANDLER", "lancedb"
+            "VECTOR_DATASET_DATABASE_HANDLER", "duckdb_vector"
         )
 
     return normalized
@@ -164,6 +164,13 @@ def _create_vector_engine(
 
         An instance of the corresponding database adapter class for the specified provider.
     """
+    if vector_db_provider == "duckdb" and vector_db_provider not in supported_databases:
+        from cognee_community_hybrid_adapter_duckdb.duckdb_adapter import DuckDBAdapter
+
+        from .use_vector_adapter import use_vector_adapter
+
+        use_vector_adapter("duckdb", DuckDBAdapter)
+
     embedding_engine = EmbeddingGateway(get_embedding_engine())
 
     if vector_db_provider in supported_databases:

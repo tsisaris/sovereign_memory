@@ -9,12 +9,6 @@ Create Date: 2025-07-24 17:11:52.174737
 import os
 from collections.abc import Sequence
 
-import kuzu
-from cognee.infrastructure.databases.graph.kuzu.kuzu_migrate import (
-    kuzu_migration,
-    read_kuzu_storage_version,
-)
-
 # revision identifiers, used by Alembic.
 revision: str = "b9274c27a25a"
 down_revision: str | None = "e4ebee1091e7"
@@ -23,6 +17,19 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """Migrate legacy Kuzu files only when Kuzu is the configured graph backend."""
+    from cognee.infrastructure.databases.graph import get_graph_config
+
+    graph_config = get_graph_config()
+    if graph_config.graph_database_provider.lower() != "kuzu":
+        return
+
+    import kuzu
+    from cognee.infrastructure.databases.graph.kuzu.kuzu_migrate import (
+        kuzu_migration,
+        read_kuzu_storage_version,
+    )
+
     # This migration is only for multi-user Cognee mode
     if os.getenv("ENABLE_BACKEND_ACCESS_CONTROL", "false").lower() == "true":
         from cognee.base_config import get_base_config
@@ -49,9 +56,6 @@ def upgrade() -> None:
                         overwrite=True,
                     )
     else:
-        from cognee.infrastructure.databases.graph import get_graph_config
-
-        graph_config = get_graph_config()
         if graph_config.graph_database_provider.lower() == "kuzu" and os.path.exists(
             graph_config.graph_file_path
         ):

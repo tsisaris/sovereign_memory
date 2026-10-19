@@ -1,9 +1,71 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "cognee"
 version = "1.6.5"
-description = "Cognee fork for DuckDB backend"
-dependencies = []
+description = "Cognee 1.6.5 source for DuckDB integration"
+requires-python = ">=3.12,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+# Base requirements from the hash-verified Cognee 1.6.5 sdist, pinned to the
+# declared project prefix. DuckDB is the required replacement for
+# aiosqlite/diskcache and the bundled
+# Ladybug/Lance database engines. Their remaining source paths are unaccepted
+# integration work; omitting dependencies does not prove their removal.
+dependencies = [
+    "openai==2.54.0",
+    "python-dotenv==1.2.4",
+    "pydantic==2.14.1",
+    "pydantic-settings==2.16.0",
+    "typing_extensions==4.16.0",
+    "numpy==2.5.4",
+    "sqlalchemy==2.0.39",
+    "filelock==3.32.7",
+    "packaging==26.3",
+    "huggingface-hub==0.36.2",
+    "tokenizers==0.22.2",
+    "tiktoken==0.14.0",
+    "litellm==1.105.1",
+    "instructor==1.15.1",
+    "filetype==1.2.0",
+    "aiohttp==3.14.5",
+    "aiofiles==25.1.0",
+    "cryptography==50.0.2",
+    "rdflib==7.1.4",
+    "pypdf==6.21.1",
+    "jinja2==3.1.6",
+    "dateparser==1.4.3",
+    "nbformat==5.11.1",
+    "alembic==1.13.3",
+    "limits==5.8.0",
+    "fastapi==0.141.1",
+    "starlette==1.8.0",
+    "python-multipart==0.0.32",
+    "fastapi-users[sqlalchemy]==15.0.5",
+    "fastembed==0.8.0",
+    "onnxruntime==1.23.2",
+    "structlog==25.5.0",
+    "pympler==1.1",
+    "networkx==3.7",
+    "uvicorn==0.54.0",
+    "gunicorn==23.0.0",
+    "websockets==15.0.1",
+    "tenacity==9.2.1",
+    "fakeredis[lua]==2.40.0",
+    "aiolimiter==1.3.0",
+    "urllib3==2.8.0",
+    "cbor2==6.1.5",
+    "langdetect==1.0.9",
+    "datamodel-code-generator==0.85.0",
+    "enola-cli==0.4.30",
+    "dlt[sqlalchemy]==1.30.0",
+    "pandas==2.3.3",
+    "duckdb==1.5.6",
+    "duckdb-engine==0.17.0",
+    "duckdb_sqlalchemy_async==0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["cognee", "cognee_community_hybrid_adapter_duckdb"]
