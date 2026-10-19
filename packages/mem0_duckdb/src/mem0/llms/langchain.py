@@ -54,7 +54,6 @@ class LangchainLLM(LLMBase):
     def generate_response(
         self,
         messages: List[Dict[str, str]],
-        response_format=None,
         tools: Optional[List[Dict]] = None,
         tool_choice: str = "auto",
         **kwargs,

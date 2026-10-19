@@ -17,6 +17,10 @@ dependencies = [
 ]
 
 [tool.uv.sources]
+cognee = { workspace = true }
+mem0 = { workspace = true }
+letta = { workspace = true }
+graphiti = { workspace = true }
 duckdb_sqlalchemy_async = { workspace = true }
 
 [tool.uv.workspace]
@@ -106,3 +110,8 @@ package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "sem
 [tool.deptry.per_rule_ignores]
 # The test runner is declared as a development package and imported by tests.
 DEP004 = ["pytest", "pytest_asyncio"]
+
+cognee = { workspace = true }
+mem0 = { workspace = true }
+letta = { workspace = true }
+graphiti = { workspace = true }

@@ -92,7 +92,6 @@ class OllamaLLM(LLMBase):
     def generate_response(
         self,
         messages: List[Dict[str, str]],
-        response_format=None,
         tools: Optional[List[Dict]] = None,
         tool_choice: str = "auto",
         **kwargs,
@@ -117,6 +116,7 @@ class OllamaLLM(LLMBase):
         }
 
         # Handle JSON response format by using Ollama's native format parameter
+        response_format = kwargs.pop("response_format", None)
         if response_format and response_format.get("type") == "json_object":
             params["format"] = "json"
             messages = [dict(m) for m in messages]

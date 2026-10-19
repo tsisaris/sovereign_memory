@@ -4,6 +4,7 @@ from uuid import uuid4
 from sqlalchemy import Column, DateTime, String, Text, Uuid
 from sqlalchemy.orm import Mapped, relationship
 
+import cognee
 from cognee.infrastructure.databases.relational import Base
 
 from .PipelineTask import PipelineTask
@@ -22,6 +23,6 @@ class Task(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
 
-    datasets: Mapped[list["Pipeline"]] = relationship(
+    datasets: Mapped[list["cognee.modules.pipelines.models.Pipeline.Pipeline"]] = relationship(
         secondary=PipelineTask.__tablename__, back_populates="task"
     )

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Mapped, relationship
 
 from .Principal import Principal
 from .Role import Role
+from .User import User
 from .UserTenant import UserTenant
 
 
