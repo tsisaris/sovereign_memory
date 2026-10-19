@@ -1,9 +1,12 @@
+"""Embed text through LiteLLM, resolving tokenizers only when model work needs them."""
+
 import asyncio
 import logging
 import math
 import os
 import re
 import warnings
+from functools import cached_property
 from urllib.parse import urlparse
 
 import httpx
@@ -177,13 +180,13 @@ class LiteLLMEmbeddingEngine(EmbeddingEngine):
         input_type: str | None = None,
         encoding_format: EncodingFormat | None = None,
     ):
+        """Keep provider settings and validate the endpoint without loading a tokenizer."""
         self.api_key = api_key
         self.endpoint = endpoint
         self.api_version = api_version
         self.provider = provider
         self.model = model
         self.dimensions = dimensions
-        self.tokenizer = self.get_tokenizer()
         init_input_limit(self, max_completion_tokens)
         self.retry_count = 0
         self.batch_size = batch_size
@@ -340,7 +343,9 @@ class LiteLLMEmbeddingEngine(EmbeddingEngine):
                 ]
                 return EmbeddingResult(
                     vectors=handle_embedding_response(text, embedding_response, self.dimensions),
-                    tokens=count_input_tokens(response, sanitized_text_input, self.tokenizer),
+                    tokens=await asyncio.to_thread(
+                        self._count_input_tokens, response, sanitized_text_input
+                    ),
                 )
 
         except litellm.exceptions.BadRequestError as error:
@@ -501,7 +506,7 @@ class LiteLLMEmbeddingEngine(EmbeddingEngine):
 
     def get_batch_size(self) -> int:
         """
-        Return the desired batch size for embedding calls
+        Return the desired batch size for embedding calls.
 
         Returns:
 
@@ -510,11 +515,27 @@ class LiteLLMEmbeddingEngine(EmbeddingEngine):
 
     input_limit_source = "litellm model table or the model's tokenizer"
 
+    @cached_property
+    def tokenizer(self):
+        """Load the tokenizer on first use, never while constructing the engine.
+
+        Async engine paths access this property in model worker threads so an
+        unavailable tokenizer cannot block Owner startup or its event loop.
+        """
+        return self.get_tokenizer()
+
+    def _count_input_tokens(self, response, texts: list[str]) -> int:
+        """Resolve the lazy tokenizer and count the response's input tokens in a worker."""
+        return count_input_tokens(response, texts, self.tokenizer)
+
+    def _tokenizer_input_limit(self) -> int | None:
+        """Resolve the lazy tokenizer and read its declared input limit in a worker."""
+        return sane_limit(self.tokenizer.model_input_limit)
+
     async def input_limit(self) -> int | None:
-        """litellm's model table knows the hosted models; a HuggingFace-repo model
-        served elsewhere (vLLM, TEI, ...) at least carries its limit on its tokenizer."""
-        return litellm_input_limit(self.model, self.provider) or sane_limit(
-            self.tokenizer.model_input_limit
+        """Read the model table's limit, falling back to the tokenizer in a worker."""
+        return litellm_input_limit(self.model, self.provider) or await asyncio.to_thread(
+            self._tokenizer_input_limit
         )
 
     def get_tokenizer(self):
