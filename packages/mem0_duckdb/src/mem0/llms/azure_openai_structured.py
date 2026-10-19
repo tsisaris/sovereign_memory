@@ -54,7 +54,6 @@ class AzureOpenAIStructuredLLM(LLMBase):
     def generate_response(
         self,
         messages: List[Dict[str, str]],
-        response_format: Optional[str] = None,
         tools: Optional[List[Dict]] = None,
         tool_choice: str = "auto",
     ) -> str:
@@ -95,6 +94,8 @@ class AzureOpenAIStructuredLLM(LLMBase):
             reasoning_effort = getattr(self.config, "reasoning_effort", None)
             if reasoning_effort:
                 params["reasoning_effort"] = reasoning_effort
+        response_format = kwargs.pop("response_format", None)
+
         if response_format:
             params["response_format"] = response_format
         if tools:

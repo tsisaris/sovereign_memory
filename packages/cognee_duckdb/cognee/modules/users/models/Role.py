@@ -2,6 +2,7 @@ from sqlalchemy import Column, ForeignKey, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, relationship
 
 from .Principal import Principal
+from .User import User
 from .UserRole import UserRole
 
 

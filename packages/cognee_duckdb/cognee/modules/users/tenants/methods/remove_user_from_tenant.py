@@ -8,6 +8,7 @@ from cognee.modules.users.models.UserTenant import UserTenant
 from cognee.modules.users.permissions.methods import get_tenant, has_user_management_permission
 from cognee.modules.users.tenants.methods.revoke_tenant_access import revoke_tenant_access
 from fastapi import status
+from fastapi_users import models, schemas
 from sqlalchemy import select
 
 

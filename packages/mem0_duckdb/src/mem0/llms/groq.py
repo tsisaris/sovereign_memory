@@ -76,7 +76,6 @@ class GroqLLM(LLMBase):
     def generate_response(
         self,
         messages: List[Dict[str, str]],
-        response_format=None,
         tools: Optional[List[Dict]] = None,
         tool_choice: str = "auto",
     ):
@@ -99,6 +98,8 @@ class GroqLLM(LLMBase):
             "max_tokens": self.config.max_tokens,
             "top_p": self.config.top_p,
         }
+        response_format = kwargs.pop("response_format", None)
+
         if response_format:
             requests_json = isinstance(response_format, dict) and response_format.get("type") in (
                 "json_object",
