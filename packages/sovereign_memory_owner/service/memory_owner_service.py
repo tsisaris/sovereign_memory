@@ -111,7 +111,7 @@ class OwnerService:
         self.processing_tasks: set[asyncio.Task] = set()
         self.lifetime_conn: AsyncConnection | None = None
 
-    async def start(self) -> None:
+    async def start(self, *, process_pending: bool = True) -> None:
         """Initialize database connection and start UNIX socket server.
 
         If any step fails, the owner connection is released (after in-flight
@@ -122,6 +122,8 @@ class OwnerService:
         never replaced). A stale socket is removed only once the database is owned
         and only if it is still the same file that was checked. This service's own
         socket is remembered by identity, so only it is removed at stop.
+        process_pending=False is reserved for trusted maintenance that must not
+        start ordinary engine preparation before it changes projection state.
         """
         stale = _inspect_socket_path(self.socket_path)
         listener: socket.socket | None = None
@@ -153,7 +155,8 @@ class OwnerService:
             listener = None
             # Restart only after binding succeeds: failed startup must not start
             # model preparation or projection work.
-            self._spawn_processing(self.dispatcher.process_pending())
+            if process_pending:
+                self._spawn_processing(self.dispatcher.process_pending())
         except BaseException:
             try:
                 if listener is not None:
@@ -346,6 +349,15 @@ class OwnerService:
         """
         async with self._transaction_connection() as conn:
             return await MemoryConsolidator(conn).enforce_scope_and_expiry(self.dispatcher)
+
+    async def rebuild_projection(self, tier: str, request_id: str, max_items: int) -> dict:
+        """Rebuild one embedding tier through a trusted deployment call, never a socket client.
+
+        Expiry is durably captured first, then the dispatcher validates source recovery,
+        archives receipts and resets/replays only the selected derived projection.
+        """
+        await self.enforce_expiry()
+        return await self.dispatcher.rebuild(tier, request_id, max_items)
 
     async def _authenticate(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

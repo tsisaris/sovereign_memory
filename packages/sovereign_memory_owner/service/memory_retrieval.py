@@ -68,8 +68,27 @@ class MemoryRetrievalService:
                 }
                 continue
             try:
+
+                def ready(tier=tier):
+                    """Refuse partial rebuilds on the same worker that performs retrieval."""
+                    handle = self.conn.native
+                    active = handle.execute(
+                        "SELECT request_id FROM memory_rebuilds WHERE tier = ? "
+                        "AND status IN ('processing', 'failed')",
+                        [tier],
+                    ).fetchone()
+                    if active is not None:
+                        raise RuntimeError(f"Projection rebuild {active[0]} is not complete")
+
+                await self.conn.run(ready)
                 prepared = await retriever.prepare_query(scope, query, limit)
-                hits = await self.conn.run(retriever.retrieve, self.conn.native, scope, prepared)
+
+                def read(ready=ready, retriever=retriever, prepared=prepared):
+                    """Check rebuilding again after preparation, before the actual index read."""
+                    ready()
+                    return retriever.retrieve(self.conn.native, scope, prepared)
+
+                hits = await self.conn.run(read)
                 answers[tier] = await self._filter(tier, hits, scope)
             except Exception as error:
                 logger.exception("Retrieval for tier %s failed", tier)

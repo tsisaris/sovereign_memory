@@ -11,6 +11,7 @@ owed receipts end as terminal failures naming the removal.
 """
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -136,7 +137,172 @@ class MemoryDispatcher:
         outcomes = {}
         for event_id, tier in await self.core.pending_work(self.registry.tiers()):
             outcomes[(event_id, tier)] = await self.process(event_id, tier)
+        await self._finish_rebuilds()
         return outcomes
+
+    async def rebuild(self, tier: str, request_id: str, max_items: int) -> dict[str, Any]:
+        """Reset a bounded source-backed projection once, then replay through normal receipts.
+
+        This is a trusted Owner operation. The request id makes retries resume without
+        clearing completed work. Old receipts are archived before being made pending;
+        originals and removals never change. A new id explicitly supersedes an older
+        rebuild. Model work remains in the normal prepare/apply path.
+        """
+        processor = self.registry.get(tier)
+        reset = getattr(processor, "reset_projection", None)
+        identity = getattr(processor, "embedding_identity", None)
+        if not callable(reset) or not isinstance(identity, str):
+            raise ValueError(f"Tier {tier!r} has no supported embedding projection rebuild")
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("A nonempty rebuild request id is required")
+        if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items <= 0:
+            raise ValueError("Rebuild max_items must be a positive integer")
+
+        def begin() -> str:
+            """Validate recoverability and reset projections/receipts in one owner transaction."""
+            handle = self.conn.native
+            handle.begin()
+            ended = False
+            try:
+                transaction_id = handle.execute("SELECT current_transaction_id()").fetchone()[0]
+                previous = handle.execute(
+                    "SELECT tier, embedding_identity, status FROM memory_rebuilds WHERE request_id = ?",
+                    [request_id],
+                ).fetchone()
+                if previous is not None:
+                    if previous[:2] != (tier, identity):
+                        raise ValueError(
+                            "Rebuild request id was already used with another identity"
+                        )
+                    handle.commit()
+                    return previous[2]
+                sources = handle.execute(
+                    "SELECT e.raw_event, e.schema_version, p.payload, p.payload_sha256 "
+                    "FROM memory_events e JOIN memory_receipts r USING (event_id) "
+                    "LEFT JOIN memory_payloads p USING (event_id) WHERE r.tier = ? "
+                    "AND (e.schema_version LIKE '2.%' OR json_extract_string(e.raw_event, '$.tier') = r.tier) "
+                    "ORDER BY e.rowid LIMIT ?",
+                    [tier, max_items + 1],
+                ).fetchall()
+                if len(sources) > max_items:
+                    raise ValueError("Source events exceed the requested rebuild item limit")
+                event_ids = [OwnerCore.verify_stored_event(*row)[0]["event_id"] for row in sources]
+                handle.execute(
+                    "INSERT INTO memory_rebuilds VALUES (?, ?, ?, 'processing', ?)",
+                    [request_id, tier, identity, _now()],
+                )
+                if event_ids:
+                    cursor = handle.execute(
+                        "SELECT * FROM memory_receipts WHERE tier = ? AND event_id IN (SELECT unnest(?))",
+                        [tier, event_ids],
+                    )
+                    columns = [column[0] for column in cursor.description]
+                    receipts = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+                    handle.executemany(
+                        "INSERT INTO memory_rebuild_receipts VALUES (?, ?, ?, ?)",
+                        [
+                            (request_id, receipt["event_id"], tier, json.dumps(receipt))
+                            for receipt in receipts
+                        ],
+                    )
+                reset(handle, max_items)
+                if (
+                    handle.execute("SELECT current_transaction_id()").fetchone()[0]
+                    != transaction_id
+                ):
+                    ended = True
+                    raise RuntimeError(
+                        "Processor ended the Owner rebuild transaction; committed changes cannot be undone"
+                    )
+                if event_ids:
+                    handle.execute(
+                        "UPDATE memory_receipts SET status = CASE WHEN event_id IN "
+                        "(SELECT target_event_id FROM memory_removals) THEN 'terminal_failure' ELSE 'pending' END, "
+                        "attempt_id = NULL, attempted_at = NULL, completed_at = NULL, error_ref = CASE "
+                        "WHEN event_id IN (SELECT target_event_id FROM memory_removals) "
+                        "THEN 'Source was removed; excluded from rebuild' ELSE NULL END "
+                        "WHERE tier = ? AND event_id IN (SELECT unnest(?))",
+                        [tier, event_ids],
+                    )
+                handle.execute(
+                    "UPDATE memory_rebuilds SET status = 'superseded' "
+                    "WHERE tier = ? AND request_id != ? AND status IN ('processing', 'failed')",
+                    [tier, request_id],
+                )
+                handle.commit()
+                return "processing"
+            except BaseException:
+                if not ended:
+                    handle.rollback()
+                raise
+
+        state = await self.conn.run(begin)
+        if state == "processing":
+            for event_id, selected in (await self.core.pending_work([tier]))[:max_items]:
+                await self.process(event_id, selected)
+            await self._finish_rebuilds()
+        rows = await self.conn.run(
+            lambda: self.conn.native.execute(
+                "SELECT status FROM memory_rebuilds WHERE request_id = ?", [request_id]
+            ).fetchone()
+        )
+        return {
+            "request_id": request_id,
+            "tier": tier,
+            "embedding_identity": identity,
+            "status": rows[0],
+        }
+
+    async def _finish_rebuilds(self) -> None:
+        """Finish durable rebuild requests only after their current live receipts finish."""
+
+        def job() -> None:
+            """Update status on the owner worker without touching any source or projection."""
+            handle = self.conn.native
+            handle.begin()
+            try:
+                active = handle.execute(
+                    "SELECT request_id, tier, embedding_identity FROM memory_rebuilds WHERE status = 'processing'"
+                ).fetchall()
+                for request_id, tier, identity in active:
+                    processor = self.registry.get(tier)
+                    if processor is None:
+                        continue
+                    if getattr(processor, "embedding_identity", None) != identity:
+                        handle.execute(
+                            "UPDATE memory_rebuilds SET status = 'failed' WHERE request_id = ?",
+                            [request_id],
+                        )
+                        continue
+                    states = [
+                        row[0]
+                        for row in handle.execute(
+                            "SELECT r.status FROM memory_receipts r JOIN memory_events e USING (event_id) "
+                            "LEFT JOIN memory_removals m ON m.target_event_id = e.event_id "
+                            "WHERE r.tier = ? AND m.target_event_id IS NULL AND "
+                            "(e.schema_version LIKE '2.%' OR json_extract_string(e.raw_event, '$.tier') = r.tier)",
+                            [tier],
+                        ).fetchall()
+                    ]
+                    if any(
+                        state in ("pending", "processing", "retryable_failure") for state in states
+                    ):
+                        continue
+                    status = (
+                        "completed"
+                        if all(state in SUCCESS_STATUSES for state in states)
+                        else "failed"
+                    )
+                    handle.execute(
+                        "UPDATE memory_rebuilds SET status = ? WHERE request_id = ?",
+                        [status, request_id],
+                    )
+                handle.commit()
+            except BaseException:
+                handle.rollback()
+                raise
+
+        await self.conn.run(job)
 
     async def process_event(self, event_id: str) -> dict[str, str]:
         """Process one event for every registered tier and return tier -> receipt status."""

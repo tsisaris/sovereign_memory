@@ -123,6 +123,25 @@ class OwnerCore:
                 );
                 """,
             )
+            await self.conn.run(
+                self.conn.native.execute,
+                """
+                CREATE TABLE IF NOT EXISTS memory_rebuilds (
+                    request_id VARCHAR PRIMARY KEY,
+                    tier VARCHAR NOT NULL,
+                    embedding_identity VARCHAR NOT NULL,
+                    status VARCHAR NOT NULL,
+                    requested_at VARCHAR NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS memory_rebuild_receipts (
+                    request_id VARCHAR,
+                    event_id VARCHAR,
+                    tier VARCHAR,
+                    receipt JSON NOT NULL,
+                    PRIMARY KEY (request_id, event_id, tier)
+                );
+                """,
+            )
             await self.conn.commit()
         except Exception:
             await self.conn.rollback()
@@ -243,8 +262,15 @@ class OwnerCore:
         row = await cursor.fetchone()
         if row is None:
             raise ValueError(f"Unknown event {event_id}")
-        raw_event, schema_version, payload, stored_hash = row
+        return self.verify_stored_event(*row)
+
+    @staticmethod
+    def verify_stored_event(
+        raw_event, schema_version, payload, stored_hash
+    ) -> tuple[dict, bytes | None]:
+        """Decode one stored event and verify its bytes, without repairing or rewriting it."""
         event = json.loads(raw_event)
+        event_id = event["event_id"]
         if payload is None:
             if schema_version.startswith("2."):
                 raise ValueError(

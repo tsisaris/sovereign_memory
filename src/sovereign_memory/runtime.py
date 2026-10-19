@@ -11,7 +11,9 @@ opens the database only through the OwnerService and never calls a model
 itself.
 """
 
+import argparse
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -24,7 +26,7 @@ from service.memory_owner_service import OwnerService
 from service.memory_processor_seam import TerminalProcessingError
 from service.memory_visibility import RestrictedPolicy, ScopeLabelPolicy
 
-from .config import ConfigurationError, RuntimeConfig, load
+from .config import TIER_KEYS, ConfigurationError, RuntimeConfig, load
 
 CONFIG_ENVIRONMENT_VARIABLE = "SOVEREIGN_MEMORY_CONFIG"
 logger = logging.getLogger(__name__)
@@ -38,7 +40,7 @@ def _built(tier: str, make: Callable[[], Any]) -> Any:
         raise ConfigurationError(f"tiers.{tier} cannot be built: {error}") from error
 
 
-def build_tiers(config: RuntimeConfig) -> list[Any]:
+def build_tiers(config: RuntimeConfig, only_tier: str | None = None) -> list[Any]:
     """Build one engine object per configured tier; each is both processor and retriever.
 
     An engine's package is imported only when its tier is configured, so a
@@ -47,17 +49,23 @@ def build_tiers(config: RuntimeConfig) -> list[Any]:
     naming the tier when an engine cannot be built from its settings. It opens no
     database.
     """
+    if only_tier is not None and only_tier not in TIER_KEYS:
+        raise ConfigurationError(f"Unknown tier {only_tier!r}")
     tiers: list[Any] = []
-    if config.episodic_organization is not None:
+    if config.episodic_organization is not None and only_tier in (None, "episodic"):
         from service.memory_letta_recall import LettaRecallTier
 
         organization = config.episodic_organization
         tiers.append(_built("episodic", lambda: LettaRecallTier(organization)))
-    if config.temporal_enabled:
+    if config.temporal_enabled and only_tier in (None, "temporal"):
         from service.memory_graphiti_episodes import GraphitiEpisodeTier
 
         tiers.append(_built("temporal", GraphitiEpisodeTier))
-    if config.relational_embedding is not None and config.relational_database_name is not None:
+    if (
+        config.relational_embedding is not None
+        and config.relational_database_name is not None
+        and only_tier in (None, "relational")
+    ):
         settings = config.relational_embedding
         database_name = config.relational_database_name
 
@@ -78,7 +86,7 @@ def build_tiers(config: RuntimeConfig) -> list[Any]:
             return CogneeChunkTier(engine, database_name, revision=settings.revision)
 
         tiers.append(_built("relational.embedding", relational))
-    if config.personalization is not None:
+    if config.personalization is not None and only_tier in (None, "personalization"):
         from mem0.memory.owner_tier import Mem0Tier
 
         memory = config.personalization
@@ -88,12 +96,14 @@ def build_tiers(config: RuntimeConfig) -> list[Any]:
                 lambda: Mem0Tier(memory, terminal_error=TerminalProcessingError),
             )
         )
+    if only_tier is not None and not tiers:
+        raise ConfigurationError(f"tiers.{only_tier} is not configured")
     return tiers
 
 
-def build_service(config: RuntimeConfig) -> OwnerService:
+def build_service(config: RuntimeConfig, only_tier: str | None = None) -> OwnerService:
     """Return an OwnerService wired to the configured tiers and visibility policy; not started."""
-    tiers = build_tiers(config)
+    tiers = build_tiers(config, only_tier)
     registry = ProcessorRegistry()
     for tier in tiers:
         registry.register(tier)
@@ -159,6 +169,15 @@ async def run(service: OwnerService, maintenance_interval_seconds: float) -> Non
             loop.remove_signal_handler(signum)
 
 
+async def rebuild(service: OwnerService, tier: str, request_id: str, max_items: int) -> dict:
+    """Acquire the Owner normally and run one bounded trusted rebuild, always releasing it."""
+    try:
+        await service.start(process_pending=False)
+        return await service.rebuild_projection(tier, request_id, max_items)
+    finally:
+        await service.stop()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the runtime from a configuration file; return the process exit status.
 
@@ -166,17 +185,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     An invalid or missing configuration prints the reason and returns 2 before
     anything starts (the service is built, which validates every engine, but not started).
     """
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    path = arguments[0] if arguments else os.environ.get(CONFIG_ENVIRONMENT_VARIABLE)
+    parser = argparse.ArgumentParser(
+        description="Run the configured memory Owner or rebuild one embedding tier"
+    )
+    parser.add_argument("config", nargs="?")
+    parser.add_argument("--rebuild-tier", choices=("relational", "personalization"))
+    parser.add_argument("--rebuild-id")
+    parser.add_argument("--rebuild-limit", type=int)
+    args = parser.parse_args(argv)
+    if args.rebuild_tier and (
+        not args.rebuild_id or args.rebuild_limit is None or args.rebuild_limit <= 0
+    ):
+        parser.error("rebuilding requires --rebuild-id and a positive --rebuild-limit")
+    if not args.rebuild_tier and (args.rebuild_id is not None or args.rebuild_limit is not None):
+        parser.error("rebuild options require --rebuild-tier")
+    path = args.config or os.environ.get(CONFIG_ENVIRONMENT_VARIABLE)
     if not path:
         print(f"Give the configuration file or set {CONFIG_ENVIRONMENT_VARIABLE}", file=sys.stderr)
         return 2
     try:
         config = load(path)
-        service = build_service(config)
+        service = build_service(config, args.rebuild_tier)
     except ConfigurationError as error:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2
     logging.basicConfig(level=logging.INFO)
+    if args.rebuild_tier:
+        try:
+            result = asyncio.run(
+                rebuild(service, args.rebuild_tier, args.rebuild_id, args.rebuild_limit)
+            )
+        except (ValueError, RuntimeError) as error:
+            print(f"Rebuild failed: {error}", file=sys.stderr)
+            return 1
+        print(json.dumps(result))
+        return 0 if result["status"] == "completed" else 1
     asyncio.run(run(service, config.maintenance_interval_seconds))
     return 0

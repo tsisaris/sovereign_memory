@@ -206,6 +206,38 @@ class Mem0Tier:
             raise RuntimeError("Mem0Tier was bound to a different owner handle")
         return self._memory
 
+    def reset_projection(self, handle: duckdb.DuckDBPyConnection, max_items: int) -> None:
+        """Reset bounded, source-backed memory/entity vectors on the caller's transaction.
+
+        Refuse unmanaged memories or entity links rather than discard records without
+        recoverable Owner sources. History and source messages are never reset.
+        """
+        memory = self._memory_for(handle)
+        store, entities = memory.vector_store, memory.entity_store
+        for table in (store.collection_name, entities.collection_name):
+            if handle.execute(f"SELECT count(*) FROM {table}").fetchone()[0] > max_items:
+                raise ValueError("Projection exceeds the requested rebuild item limit")
+        rows = handle.execute(f"SELECT id, payload FROM {store.collection_name}").fetchall()
+        identifiers = {row[0] for row in rows}
+        for _, payload in rows:
+            data = json.loads(payload or "{}")
+            source = handle.execute(
+                "SELECT e.actor_agent_id FROM memory_events e JOIN memory_receipts r USING (event_id) "
+                "WHERE e.event_id = ? AND r.tier = ? AND (e.schema_version LIKE '2.%' "
+                "OR json_extract_string(e.raw_event, '$.tier') = r.tier)",
+                [data.get("event_id"), TIER_NAME],
+            ).fetchone()
+            if source is None or source[0] != data.get("actor_agent_id"):
+                raise ValueError("Mem0 projection contains a memory without Owner provenance")
+        for (payload,) in handle.execute(
+            f"SELECT payload FROM {entities.collection_name}"
+        ).fetchall():
+            links = json.loads(payload or "{}").get("linked_memory_ids")
+            if not isinstance(links, list) or not links or not set(links).issubset(identifiers):
+                raise ValueError("Mem0 entity projection contains unmanaged or orphaned links")
+        entities.reset()
+        store.reset()
+
     def _require_matching_index(self, memory: Memory) -> None:
         """Raise EmbeddingIndexMismatch if any stored memory has another embedding identity.
 

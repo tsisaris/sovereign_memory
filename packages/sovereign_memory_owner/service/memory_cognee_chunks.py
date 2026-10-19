@@ -146,6 +146,70 @@ class CogneeChunkTier:
             embedding_engine=self.embedding_engine,
         )
 
+    def reset_projection(self, handle: duckdb.DuckDBPyConnection, max_items: int) -> None:
+        """Replace only source-backed Owner chunks, preserving other Cognee graph records.
+
+        Every vector must have matching Owner provenance before its collection can
+        be recreated at a new width. Unknown data or excessive rows refuse the reset.
+        The caller owns the transaction; this method never commits or calls a model.
+        """
+        adapter = self._adapter(handle)
+        asyncio.run(adapter.initialize())
+        table = adapter._table(COLLECTION)
+        exists = handle.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
+            [self.database_name, COLLECTION],
+        ).fetchone()
+        if exists:
+            if handle.execute(f"SELECT count(*) FROM {table}").fetchone()[0] > max_items:
+                raise ValueError("Cognee projection exceeds the requested rebuild item limit")
+            for identifier, payload in handle.execute(
+                f"SELECT id, payload FROM {table}"
+            ).fetchall():
+                data = json.loads(payload or "{}")
+                event_id = data.get("event_id")
+                source = handle.execute(
+                    "SELECT e.actor_agent_id FROM memory_events e JOIN memory_receipts r USING (event_id) "
+                    "WHERE e.event_id = ? AND r.tier = ? AND (e.schema_version LIKE '2.%' "
+                    "OR json_extract_string(e.raw_event, '$.tier') = r.tier)",
+                    [event_id, TIER_NAME],
+                ).fetchone()
+                if (
+                    source is None
+                    or source[0] != data.get("actor_agent_id")
+                    or identifier != chunk_id(event_id)
+                ):
+                    raise ValueError("Cognee collection contains a chunk without Owner provenance")
+        nodes = handle.execute(
+            f"SELECT id, properties FROM {adapter._node_table} "
+            "WHERE type = ? AND json_extract_string(properties, '$.event_id') IS NOT NULL "
+            "LIMIT ?",
+            [NODE_TYPE, max_items + 1],
+        ).fetchall()
+        if len(nodes) > max_items:
+            raise ValueError("Cognee graph projection exceeds the requested rebuild item limit")
+        identifiers = []
+        for identifier, payload in nodes:
+            data = json.loads(payload)
+            event_id = data.get("event_id")
+            if identifier != chunk_id(event_id):
+                raise ValueError("Cognee graph contains ambiguous Owner chunk provenance")
+            if (
+                handle.execute(
+                    "SELECT 1 FROM memory_events e JOIN memory_receipts r USING (event_id) "
+                    "WHERE e.event_id = ? AND r.tier = ? AND (e.schema_version LIKE '2.%' "
+                    "OR json_extract_string(e.raw_event, '$.tier') = r.tier)",
+                    [event_id, TIER_NAME],
+                ).fetchone()
+                is None
+            ):
+                raise ValueError("Cognee graph chunk has no recoverable Owner source")
+            identifiers.append(identifier)
+        asyncio.run(adapter.delete_nodes(identifiers))
+        if exists:
+            handle.execute(f"DROP TABLE {table}")
+        asyncio.run(adapter.create_collection(COLLECTION, self.embedding_engine.dimensions))
+
     def _require_matching_index(self, adapter: DuckDBAdapter) -> None:
         """Raise EmbeddingIndexMismatch if any stored chunk has another embedding identity; reads only."""
         if (
