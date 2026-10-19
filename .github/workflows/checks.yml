@@ -21,14 +21,16 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.12"
-      - name: install the project (sovereign_tools) and its checkers
-        run: uv sync --group dev
+      - name: install the project (sovereign_memory, Python 3.12) and its checkers
+        run: |
+          uv run python -c 'import sys; assert f"{sys.version_info.major}.{sys.version_info.minor}" == "3.12", f"Expected Python 3.12 for environment sovereign_memory, got {sys.version}"'
+          uv sync --group dev
       - name: every check in .pre-commit-config.yaml
         run: uv run pre-commit run --all-files --show-diff-on-failure
       - name: every import declared, every declaration used (deptry)
         run: |
           set -o pipefail
-          uv run deptry packages tests 2>&1 | tee deptry_output.txt
+          uv run deptry . tests 2>&1 | tee deptry_output.txt
           if grep -q '^Assuming' deptry_output.txt; then
             echo "FAIL: deptry guessed a package's module name instead of reading it from an installed package."
             exit 1
@@ -40,8 +42,8 @@ jobs:
           status=$?
           set -e
           if [ "$status" -eq 5 ]; then
-            if find packages -name '*.py' -print -quit | grep -q .; then
-              echo "FAIL: src/ holds code but no test was collected from tests/."
+            if find . -name '*.py' -print -quit | grep -q .; then
+              echo "FAIL: ./ holds code but no test was collected from tests/."
               exit 1
             fi
             echo "NO CODE AND NO TESTS YET: nothing to test in an empty project."
@@ -58,13 +60,11 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.12"
-      - name: install the advisory checkers
-        run: uv sync --only-group advisory
       - name: unused code (vulture)
-        run: uv run --no-sync vulture packages --min-confidence 80
+        run: uvx --from vulture==2.16 vulture . --min-confidence 80
       - name: complexity (radon)
         run: |
-          uv run --no-sync radon cc -n C packages
-          uv run --no-sync radon mi -n B packages
+          uvx --from radon==6.0.1 radon cc -n C .
+          uvx --from radon==6.0.1 radon mi -n B .
       - name: rule files (semgrep)
-        run: uv run --no-sync semgrep scan --config rules --metrics off --error packages
+        run: uvx --from semgrep==1.172.0 semgrep scan --config rules --metrics off --error .
