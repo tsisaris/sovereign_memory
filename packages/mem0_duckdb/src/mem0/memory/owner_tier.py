@@ -272,6 +272,15 @@ class Mem0Tier:
             raise RuntimeError("Mem0Tier has no owner reader attached; register it with the owner")
         return await self._reader(lambda handle: func(self._memory_for(handle)))
 
+    @staticmethod
+    def _embed_text(memory: Memory, text: str, purpose: str) -> List[float]:
+        """Resolve the lazy client and embed text inside the calling model worker thread.
+
+        Call through asyncio.to_thread so SDK construction never runs on the event
+        loop or the owner's database worker. Provider errors propagate unchanged.
+        """
+        return memory.embedding_model.embed(text, purpose)
+
     # ---- write seam -------------------------------------------------------------
 
     async def prepare(
@@ -310,7 +319,7 @@ class Mem0Tier:
         metadata, filters = _build_filters_and_metadata(user_id=scope_id, input_metadata=provenance)
         if not infer:
             texts = [m["content"] for m in messages if m.get("role") != "system"]
-            raw = [await asyncio.to_thread(memory.embedding_model.embed, t, "add") for t in texts]
+            raw = [await asyncio.to_thread(self._embed_text, memory, t, "add") for t in texts]
             self._require_embedding_identity(memory)
             return PreparedWork(
                 "raw", scope_id, event_id, messages, metadata, filters, {}, {}, {}, raw
@@ -325,9 +334,7 @@ class Mem0Tier:
             text = action["text"]
             if action["event"] in ("ADD", "UPDATE") and text not in embeddings:
                 purpose = "add" if action["event"] == "ADD" else "update"
-                embeddings[text] = await asyncio.to_thread(
-                    memory.embedding_model.embed, text, purpose
-                )
+                embeddings[text] = await asyncio.to_thread(self._embed_text, memory, text, purpose)
         entity_embeddings = await self._embed_entities(
             memory,
             [a["text"] for a in decisions.get("memory", []) if a["event"] in ("ADD", "UPDATE")],
@@ -358,7 +365,7 @@ class Mem0Tier:
         """
         needed = memory._entity_texts_to_embed(new_texts)
         return {
-            key: await asyncio.to_thread(memory.embedding_model.embed, *key)
+            key: await asyncio.to_thread(self._embed_text, memory, *key)
             for key in dict.fromkeys(needed)
         }
 
@@ -525,7 +532,7 @@ class Mem0Tier:
         """Embed the question outside the database worker."""
         memory = await self._read(lambda m: m)
         await self._read(self._require_matching_index)
-        vector = await asyncio.to_thread(memory.embedding_model.embed, query, "search")
+        vector = await asyncio.to_thread(self._embed_text, memory, query, "search")
         self._require_embedding_identity(memory)
         return {"query": query, "vector": vector, "limit": limit}
 
