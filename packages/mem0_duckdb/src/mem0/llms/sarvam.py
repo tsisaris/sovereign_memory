@@ -30,9 +30,7 @@ class SarvamLLM(LLMBase):
             or "https://api.sarvam.ai/v1"
         )
 
-    def generate_response(
-        self, messages: List[Dict[str, str]], response_format=None, **kwargs
-    ) -> str:
+    def generate_response(self, messages: List[Dict[str, str]], **kwargs) -> str:
         """
         Generate a response based on the given messages using Sarvam-M.
 

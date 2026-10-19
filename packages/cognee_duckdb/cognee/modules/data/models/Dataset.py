@@ -7,6 +7,8 @@ from sqlalchemy.orm import Mapped, relationship
 
 from cognee.infrastructure.databases.relational import Base
 
+from .Data import Data
+
 
 class Dataset(Base):
     __tablename__ = "datasets"

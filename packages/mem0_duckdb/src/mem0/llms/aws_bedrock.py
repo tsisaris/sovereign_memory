@@ -467,7 +467,6 @@ class AWSBedrockLLM(LLMBase):
     def generate_response(
         self,
         messages: List[Dict[str, str]],
-        response_format: Optional[str] = None,
         tools: Optional[List[Dict]] = None,
         tool_choice: str = "auto",
         stream: bool = False,

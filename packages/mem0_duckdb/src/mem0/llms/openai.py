@@ -89,7 +89,6 @@ class OpenAILLM(LLMBase):
     def generate_response(
         self,
         messages: List[Dict[str, str]],
-        response_format=None,
         tools: Optional[List[Dict]] = None,
         tool_choice: str = "auto",
         **kwargs,
@@ -138,6 +137,8 @@ class OpenAILLM(LLMBase):
             # reject unknown fields, so `store` must be opt-in, not opt-out.
             if self.config.store is not None:
                 params["store"] = self.config.store
+
+        response_format = kwargs.pop("response_format", None)
 
         if response_format:
             params["response_format"] = response_format

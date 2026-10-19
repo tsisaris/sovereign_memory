@@ -57,7 +57,6 @@ class TogetherLLM(LLMBase):
     def generate_response(
         self,
         messages: List[Dict[str, str]],
-        response_format=None,
         tools: Optional[List[Dict]] = None,
         tool_choice: str = "auto",
         **kwargs,
@@ -84,6 +83,8 @@ class TogetherLLM(LLMBase):
             "top_p": self.config.top_p,
         }
         params.update(kwargs)
+        response_format = kwargs.pop("response_format", None)
+
         if response_format:
             params["response_format"] = response_format
         if tools:  # TODO: Remove tools if no issues found with new memory addition logic
