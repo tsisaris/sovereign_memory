@@ -152,8 +152,8 @@ class OwnerCore:
         """Replace the rebuilds table's single embedding identity by a list of model labels.
 
         A file created before models became registry rows has the column
-        embedding_identity. Its value is kept as the one entry of model_labels
-        and the column is dropped, so no earlier record is lost. A file already
+        embedding_identity. The table is rebuilt in the new shape with each value kept
+        as the one entry of model_labels, so no earlier record is lost. A file already
         in the new shape is left alone. It runs inside the caller's transaction.
         """
         cursor = await self.conn.cursor()
@@ -164,10 +164,16 @@ class OwnerCore:
         columns = {row[0] for row in await cursor.fetchall()}
         if "embedding_identity" not in columns:
             return
+        # DuckDB cannot commit a transaction that updates a table and then drops one of
+        # its columns, so the rows are copied into a table of the new shape instead.
         for statement in (
-            "ALTER TABLE memory_rebuilds ADD COLUMN IF NOT EXISTS model_labels VARCHAR DEFAULT '[]'",
-            "UPDATE memory_rebuilds SET model_labels = json_array(embedding_identity)::VARCHAR",
-            "ALTER TABLE memory_rebuilds DROP COLUMN embedding_identity",
+            "CREATE TABLE memory_rebuilds_migrated (request_id VARCHAR PRIMARY KEY, "
+            "tier VARCHAR NOT NULL, model_labels VARCHAR NOT NULL DEFAULT '[]', "
+            "status VARCHAR NOT NULL, requested_at VARCHAR NOT NULL)",
+            "INSERT INTO memory_rebuilds_migrated SELECT request_id, tier, "
+            "json_array(embedding_identity)::VARCHAR, status, requested_at FROM memory_rebuilds",
+            "DROP TABLE memory_rebuilds",
+            "ALTER TABLE memory_rebuilds_migrated RENAME TO memory_rebuilds",
         ):
             await self.conn.run(self.conn.native.execute, statement)
 
