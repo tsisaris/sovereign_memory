@@ -23,6 +23,10 @@ SETTING_NAMES = (
     "merging_constant",
 )
 
+# Optional: absent means the feature is off. decay_time_constant_seconds turns on the
+# recency bias on search scores; no source publishes a value, so there is no default.
+OPTIONAL_SETTING_NAMES = ("decay_time_constant_seconds",)
+
 SETTINGS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_settings (
     name VARCHAR NOT NULL,
@@ -41,13 +45,16 @@ class SearchSettings:
     is the fraction of cases held back, strictly between 0 and 1;
     smallest_held_back_set is the fewest held-back cases that may decide a
     comparison; merging_constant is the constant added to a rank in reciprocal
-    rank fusion. None has a default.
+    rank fusion. None has a default. decay_time_constant_seconds is optional: when
+    the deployment declares it, search scores are biased by the age of their event;
+    when it does not, search ordering is exactly what the combiner gave.
     """
 
     comparison_score: str
     held_back_share: float
     smallest_held_back_set: int
     merging_constant: float
+    decay_time_constant_seconds: float | None = None
 
     @classmethod
     def from_mapping(cls, table: Any, known_scores: tuple[str, ...]) -> "SearchSettings":
@@ -63,7 +70,7 @@ class SearchSettings:
         missing = [name for name in SETTING_NAMES if name not in table]
         if missing:
             raise ValueError(f"The search settings are missing: {', '.join(missing)}")
-        unknown = sorted(set(table) - set(SETTING_NAMES))
+        unknown = sorted(set(table) - set(SETTING_NAMES) - set(OPTIONAL_SETTING_NAMES))
         if unknown:
             raise ValueError(f"The search settings have unknown keys: {', '.join(unknown)}")
         score = table["comparison_score"]
@@ -80,7 +87,21 @@ class SearchSettings:
             raise ValueError("merging_constant must be a number")
         if not math.isfinite(constant) or constant <= 0:
             raise ValueError("merging_constant must be a finite number above 0")
-        return cls(score, float(share), smallest, float(constant))
+        decay = table.get("decay_time_constant_seconds")
+        if decay is not None and (
+            isinstance(decay, bool)
+            or not isinstance(decay, (int, float))
+            or not math.isfinite(decay)
+            or decay <= 0
+        ):
+            raise ValueError("decay_time_constant_seconds must be a finite number above 0")
+        return cls(
+            score,
+            float(share),
+            smallest,
+            float(constant),
+            None if decay is None else float(decay),
+        )
 
     def report(self) -> dict[str, Any]:
         """Return the values as a plain dict, for reporting the value achieved with an answer."""
