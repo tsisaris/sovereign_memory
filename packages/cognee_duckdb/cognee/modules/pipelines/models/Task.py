@@ -31,5 +31,5 @@ class Task(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
 
     datasets: Mapped[list["Pipeline"]] = relationship(
-        secondary=PipelineTask.__tablename__, back_populates="task"
+        secondary=PipelineTask.__tablename__, back_populates="tasks"
     )
