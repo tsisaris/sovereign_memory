@@ -37,7 +37,16 @@ ROLE_TYPES = ("norole", "system", "assistant", "user", "function", "tool")
 NO_GRAPH_REASON = "no graph service is attached, so no facts can be retrieved"
 
 _ORDERABLE_COLUMNS = {
-    "users": ("id", "uuid", "created_at", "updated_at", "user_id", "email", "first_name", "last_name"),
+    "users": (
+        "id",
+        "uuid",
+        "created_at",
+        "updated_at",
+        "user_id",
+        "email",
+        "first_name",
+        "last_name",
+    ),
     "sessions": ("id", "uuid", "created_at", "updated_at", "ended_at", "session_id", "user_id"),
 }
 
@@ -440,9 +449,7 @@ class ZepCeStore:
             created = self.get_user(user_id)
             created.session_count = 0
             name = f"User {first_name} {last_name}"
-            self._graph_step(
-                "add_node", user_id, {"uuid": user_id, "name": name, "summary": name}
-            )
+            self._graph_step("add_node", user_id, {"uuid": user_id, "name": name, "summary": name})
             return created
 
     def get_user(self, user_id: str) -> User:
@@ -484,7 +491,11 @@ class ZepCeStore:
                     raise NotFoundError(f"user_id {user_id} not found")
                 merged = merge_metadata(_load(stored[0]) or {}, metadata, is_privileged)
             sets, values = ["updated_at = ?"], [_now()]
-            for column, value in (("email", email), ("first_name", first_name), ("last_name", last_name)):
+            for column, value in (
+                ("email", email),
+                ("first_name", first_name),
+                ("last_name", last_name),
+            ):
                 if value:
                     sets.append(f"{column} = ?")
                     values.append(value)
@@ -780,9 +791,12 @@ class ZepCeStore:
             ).fetchone():
                 raise BadRequestError("session does not exist: " + session_id)
             ids = [m.uuid or uuid4() for m in messages]
-            if len(set(ids)) != len(ids) or self._db.execute(
-                f"SELECT 1 FROM {self._messages} WHERE uuid IN (SELECT unnest(?))", [ids]
-            ).fetchone():
+            if (
+                len(set(ids)) != len(ids)
+                or self._db.execute(
+                    f"SELECT 1 FROM {self._messages} WHERE uuid IN (SELECT unnest(?))", [ids]
+                ).fetchone()
+            ):
                 raise BadRequestError("message_uuid already exists")
             for message in messages:
                 if message.role_type not in ROLE_TYPES:
@@ -856,9 +870,7 @@ class ZepCeStore:
             rows = self._db.execute(query, args).fetchall()
             return [self._message_from_row(r) for r in reversed(rows)]
 
-    def get_messages_by_uuid(
-        self, session_id: str, message_uuids: Sequence[UUID]
-    ) -> list[Message]:
+    def get_messages_by_uuid(self, session_id: str, message_uuids: Sequence[UUID]) -> list[Message]:
         """Return the named live messages of a session, in storage order, not in the order asked."""
         if not message_uuids:
             return []
