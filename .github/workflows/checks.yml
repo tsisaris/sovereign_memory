@@ -15,7 +15,7 @@ permissions:
 jobs:
   gating:
     name: gating checks
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && 'self-hosted' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.2.0
@@ -51,7 +51,7 @@ jobs:
 
   advisory:
     name: advisory checks (reported, never blocking)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && 'self-hosted' || 'ubuntu-latest' }}
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7.0.1
