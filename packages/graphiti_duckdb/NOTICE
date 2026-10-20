@@ -1,2 +1,3 @@
 Graphiti core maintained fork from getzep/graphiti commit d50741d1bf463cbe3859eb73914cbff1b66839e6 (version0.31.1), Apache-2.0, Copyright Zep Software, Inc.
 Sovereign Memory adds a DuckDB provider and adapter; upstream behavior remains subject to integration validation.
+src/graphiti_duckdb/zep_ce_store.py is a translation to Python and DuckDB of the store layer of Zep Community Edition v1.0.2 (getzep/zep, tag v1.0.2, Go), Apache-2.0, Copyright Zep Software, Inc.
