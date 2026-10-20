@@ -17,14 +17,20 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from os import PathLike
 from typing import Any, Optional, TypeVar
+from zoneinfo import ZoneInfo
 
 import duckdb
 from duckdb_sqlalchemy_async.native import connect_native, require_native_connection
 from sqlalchemy import ARRAY, Float, Select, cast, delete, exists, func, literal, select, update
 from sqlalchemy.orm import Session
 
+from letta_memory_model.constants import (
+    CONVERSATION_SEARCH_TOOL_NAME,
+    RETRIEVAL_QUERY_DEFAULT_PAGE_SIZE,
+)
 from letta_memory_model.letta_duckdb_schema import LegacyPolicy, LegacyTable, engine_for
 from letta_memory_model.letta_duckdb_schema import ensure_schema as _ensure_schema
 from letta_memory_model.orm import (
@@ -44,6 +50,63 @@ from letta_memory_model.schemas.message import Message as PydanticMessage
 from letta_memory_model.schemas.passage import Passage as PydanticPassage
 
 T = TypeVar("T")
+
+# A search by meaning that also filters by date reads this many times the wanted count first,
+# because the date filter is applied to the nearest passages after they are found.
+_DATE_FILTER_OVERFETCH = 20
+
+
+def _parse_search_date(
+    text: Optional[str], name: str, zone: Optional[ZoneInfo], *, end_of_day: bool
+) -> Optional[datetime]:
+    """Read an ISO date or datetime the way Letta's search tools do.
+
+    Goes in: the text (or None), the parameter's name for error messages, an optional time
+    zone for a naive value, and whether a bare date means the end of its day; comes out: the
+    moment, or None when no text was given. It never guesses: text that is not ISO 8601 is
+    refused with the accepted forms named.
+    """
+    if not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            moment = datetime.strptime(text, "%Y-%m-%d")
+        except ValueError as error:
+            raise ValueError(
+                f"Invalid {name} format: {text}. Use ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM)"
+            ) from error
+        moment = (
+            moment.replace(hour=23, minute=59, second=59, microsecond=999999)
+            if end_of_day
+            else moment.replace(hour=0, minute=0, second=0, microsecond=0)
+        )
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=zone or timezone.utc)
+    return moment
+
+
+def _time_ago(delta: timedelta) -> str:
+    """Say how long ago in Letta's short form: seconds, minutes, hours or days ago."""
+    seconds = int(delta.total_seconds())
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+def _message_text(message: PydanticMessage) -> str:
+    """Return a message's text, or its text content parts joined, or an empty string."""
+    if message.text:
+        return message.text
+    return "\n".join(
+        str(part.get("text", "")) for part in message.content or [] if part.get("text")
+    )
+
 
 _BLOCK_CHANGES = frozenset(
     {"value", "label", "limit", "description", "metadata", "read_only", "hidden"}
@@ -506,13 +569,16 @@ class LettaMemoryStore:
         otid: Optional[str] = None,
         limit: Optional[int] = None,
         newest_first: bool = False,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None,
     ) -> list[PydanticMessage]:
         """Return the agent's messages in stored order, filtered as asked.
 
         query_text matches message text case-insensitively as a substring and
-        otid matches the message's offline threading id exactly. limit, when
-        given, keeps the earliest matching messages, or with newest_first the
-        latest ones, returned latest first.
+        otid matches the message's offline threading id exactly. created_after
+        and created_before keep messages stored at or after, or at or before,
+        that moment. limit, when given, keeps the earliest matching messages,
+        or with newest_first the latest ones, returned latest first.
         """
         statement = select(Message).where(
             Message.organization_id == organization_id,
@@ -529,6 +595,10 @@ class LettaMemoryStore:
             statement = statement.where(Message.text.icontains(query_text, autoescape=True))
         if otid is not None:
             statement = statement.where(Message.otid == otid)
+        if created_after is not None:
+            statement = statement.where(Message.created_at >= created_after)
+        if created_before is not None:
+            statement = statement.where(Message.created_at <= created_before)
         statement = statement.order_by(
             Message.sequence_id.desc() if newest_first else Message.sequence_id
         )
@@ -774,6 +844,206 @@ class LettaMemoryStore:
             return [
                 (row.to_pydantic(), float(distance)) for row, distance in session.execute(statement)
             ]
+
+    # Agent-facing tools: conversation_search, archival_memory_insert/search ------
+
+    def conversation_search(
+        self,
+        organization_id: str,
+        agent_id: str,
+        query: Optional[str] = None,
+        *,
+        roles: Optional[Sequence[str]] = None,
+        limit: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        timezone_name: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Search an agent's past messages the way Letta's conversation_search tool does.
+
+        Goes in: the agent, an optional text to find (case-insensitive substring), optional
+        roles, a limit (default 5), optional start and end dates in ISO form (a bare date
+        means the start or the end of that day), an optional conversation, and an optional
+        time zone name for naive dates and for the printed times. Comes out: a dictionary
+        with a "message" line and the newest matching "results", each with its timestamp,
+        how long ago, role and text. Tool messages and the agent's own conversation_search
+        calls are never returned. It never changes a message.
+        """
+        zone = ZoneInfo(timezone_name) if timezone_name else None
+        created_after = _parse_search_date(start_date, "start_date", zone, end_of_day=False)
+        created_before = _parse_search_date(end_date, "end_date", zone, end_of_day=True)
+        wanted = [role for role in (roles or ["user", "assistant"]) if role != "tool"]
+        found = self.list_messages(
+            organization_id,
+            agent_id,
+            conversation_id=conversation_id,
+            roles=wanted,
+            query_text=query or None,
+            newest_first=True,
+            created_after=created_after,
+            created_before=created_before,
+        )
+        kept = [
+            message
+            for message in found
+            if not any(
+                (call.get("function") or {}).get("name") == CONVERSATION_SEARCH_TOOL_NAME
+                for call in message.tool_calls or []
+            )
+        ][: limit if limit is not None else RETRIEVAL_QUERY_DEFAULT_PAGE_SIZE]
+        if not kept:
+            return {"message": "No results found.", "results": []}
+        now = datetime.now(timezone.utc)
+        results: list[dict[str, Any]] = []
+        for message in kept:
+            stamp = message.created_at
+            shown = stamp.astimezone(zone) if stamp and zone else stamp
+            results.append(
+                {
+                    "timestamp": shown.isoformat() if shown else "Unknown",
+                    "time_ago": _time_ago(now - stamp) if stamp else "",
+                    "role": message.role,
+                    "content": _message_text(message),
+                }
+            )
+        return {"message": f"Showing {len(results)} results:", "results": results}
+
+    def archival_memory_insert(
+        self,
+        organization_id: str,
+        archive_id: str,
+        content: str,
+        tags: Optional[Sequence[str]] = None,
+        *,
+        embedding: Optional[Sequence[float]] = None,
+        embedding_config: Optional[dict[str, Any]] = None,
+        actor_id: Optional[str] = None,
+    ) -> PydanticPassage:
+        """Store one archival passage with its tags, as Letta's archival_memory_insert tool does.
+
+        Goes in: the archive, the text, optional tags, and, when the supplier has already
+        made them, the embedding and the description of how it was made. Comes out: the stored
+        passage. It never makes an embedding itself: a passage stored without one is found by
+        its text and tags but not by meaning until numbers are supplied.
+        """
+        if not content or not content.strip():
+            raise LettaIntegrityError("An archival passage needs text")
+        return self.insert_archival_passage(
+            organization_id,
+            archive_id,
+            PydanticPassage(
+                text=content,
+                tags=list(dict.fromkeys(tags or [])),
+                embedding=list(embedding) if embedding is not None else None,
+                embedding_config=embedding_config,
+                archive_id=archive_id,
+            ),
+            actor_id=actor_id,
+        )
+
+    def archival_memory_search(
+        self,
+        organization_id: str,
+        archive_id: str,
+        query: str,
+        *,
+        query_embedding: Optional[Sequence[float]] = None,
+        tags: Optional[Sequence[str]] = None,
+        tag_match_mode: str = "any",
+        top_k: Optional[int] = None,
+        start_datetime: Optional[str] = None,
+        end_datetime: Optional[str] = None,
+        timezone_name: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Search an archive the way Letta's archival_memory_search tool does.
+
+        Goes in: the archive, the query text, and, for a search by meaning, the query's
+        embedding already made by the supplier; optional tags with "any" or "all" matching,
+        top_k (default 5), ISO start and end datetimes, and a time zone name. Comes out: a list
+        of results, nearest first, each with its text, tags, timestamp and, for a search by
+        meaning, its cosine distance. Without an embedding it matches the query as a
+        case-insensitive substring of the text, newest first, as Letta does when the agent has
+        no embedding setting. It never makes an embedding and never returns a deleted or
+        corrected passage's old text.
+        """
+        if tag_match_mode not in ("any", "all"):
+            raise ValueError(f"tag_match_mode must be 'any' or 'all', not {tag_match_mode!r}")
+        if not query or not query.strip():
+            return []
+        zone = ZoneInfo(timezone_name) if timezone_name else None
+        after = _parse_search_date(start_datetime, "start_datetime", zone, end_of_day=False)
+        before = _parse_search_date(end_datetime, "end_datetime", zone, end_of_day=True)
+        count = top_k if top_k is not None else RETRIEVAL_QUERY_DEFAULT_PAGE_SIZE
+        wanted = list(dict.fromkeys(tags or []))
+        pairs: list[tuple[PydanticPassage, Optional[float]]]
+        if query_embedding is not None:
+            pairs = list(
+                self.search_archival_passages(
+                    organization_id,
+                    archive_id,
+                    query_embedding,
+                    count if not (after or before) else _DATE_FILTER_OVERFETCH * count,
+                    tags=wanted,
+                    match_all_tags=tag_match_mode == "all",
+                )
+            )
+        else:
+            pairs = [
+                (passage, None)
+                for passage in self._text_search_passages(
+                    organization_id, archive_id, query, wanted, tag_match_mode == "all"
+                )
+            ]
+        results: list[dict[str, Any]] = []
+        for passage, distance in pairs:
+            stamp = passage.created_at
+            if stamp is not None and (
+                (after is not None and stamp < after) or (before is not None and stamp > before)
+            ):
+                continue
+            shown = stamp.astimezone(zone) if stamp and zone else stamp
+            entry: dict[str, Any] = {
+                "timestamp": shown.isoformat() if shown else "Unknown",
+                "content": passage.text,
+                "tags": passage.tags or [],
+            }
+            if distance is not None:
+                entry["distance"] = distance
+            results.append(entry)
+        return results[:count]
+
+    def _text_search_passages(
+        self,
+        organization_id: str,
+        archive_id: str,
+        query: str,
+        tags: list[str],
+        match_all_tags: bool,
+    ) -> list[PydanticPassage]:
+        """Return the archive's current passages whose text contains query, newest first."""
+        statement = select(ArchivalPassage).where(
+            ArchivalPassage.organization_id == organization_id,
+            ArchivalPassage.archive_id == archive_id,
+            ArchivalPassage.is_deleted.is_(False),
+            ArchivalPassage.text.icontains(query, autoescape=True),
+        )
+        if tags and match_all_tags:
+            for tag in tags:
+                statement = statement.where(
+                    exists().where(
+                        PassageTag.passage_id == ArchivalPassage.id, PassageTag.tag == tag
+                    )
+                )
+        elif tags:
+            statement = statement.where(
+                exists().where(
+                    PassageTag.passage_id == ArchivalPassage.id, PassageTag.tag.in_(tags)
+                )
+            )
+        statement = statement.order_by(ArchivalPassage.created_at.desc(), ArchivalPassage.id)
+        with self.transaction() as session:
+            return [row.to_pydantic() for row in session.scalars(statement)]
 
     def insert_source_passage(
         self,
