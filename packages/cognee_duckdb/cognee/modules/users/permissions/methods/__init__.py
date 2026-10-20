@@ -43,3 +43,24 @@ from .give_permission_on_dataset import give_permission_on_dataset
 from .has_grant_permission import has_grant_permission
 from .has_user_management_permission import has_user_management_permission
 from .require_tenant_membership import require_tenant_membership
+
+__all__ = [
+    "authorized_get_principal_datasets",
+    "authorized_give_permission_on_datasets",
+    "authorized_revoke_permission_on_datasets",
+    "check_permission_on_dataset",
+    "get_all_user_permission_datasets",
+    "get_document_ids_for_user",
+    "get_effective_capabilities",
+    "get_permitted_dataset_ids",
+    "get_principal",
+    "get_principal_datasets",
+    "get_readable_datasets",
+    "get_role",
+    "get_specific_user_permission_datasets",
+    "get_tenant",
+    "give_permission_on_dataset",
+    "has_grant_permission",
+    "has_user_management_permission",
+    "require_tenant_membership",
+]

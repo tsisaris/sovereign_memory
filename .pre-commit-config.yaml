@@ -1313,7 +1313,6 @@ exclude: |
     packages/cognee_duckdb/cognee/modules/users/models/UserTenant\.py|
     packages/cognee_duckdb/cognee/modules/users/models/__init__\.py|
     packages/cognee_duckdb/cognee/modules/users/permissions/__init__\.py|
-    packages/cognee_duckdb/cognee/modules/users/permissions/methods/__init__\.py|
     packages/cognee_duckdb/cognee/modules/users/permissions/methods/authorized_get_principal_datasets\.py|
     packages/cognee_duckdb/cognee/modules/users/permissions/methods/authorized_give_permission_on_datasets\.py|
     packages/cognee_duckdb/cognee/modules/users/permissions/methods/authorized_revoke_permission_on_datasets\.py|
