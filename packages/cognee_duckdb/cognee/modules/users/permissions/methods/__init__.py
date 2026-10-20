@@ -1,3 +1,30 @@
+"""Collect the permission functions in one place so callers can import them from this package.
+
+Goes in: nothing; comes out: each function named below as an attribute of the package. It
+never runs a query by itself.
+"""
+
+
+def __getattr__(name):
+    """Give check_permission_on_dataset the function, not the module, of the same name.
+
+    Goes in: the name of an attribute the package does not have yet; comes out: the function
+    get_specific_user_permission_datasets, which is then also stored as that attribute. The
+    imports below are in alphabetical order, so check_permission_on_dataset is imported before
+    the function exists as an attribute, and Python would hand it the module of that name and
+    make its permission check fail with "module object is not callable". It never answers any
+    other name.
+    """
+    if name == "get_specific_user_permission_datasets":
+        from .get_specific_user_permission_datasets import (
+            get_specific_user_permission_datasets as function,
+        )
+
+        globals()[name] = function
+        return function
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 from .authorized_get_principal_datasets import authorized_get_principal_datasets
 from .authorized_give_permission_on_datasets import authorized_give_permission_on_datasets
 from .authorized_revoke_permission_on_datasets import authorized_revoke_permission_on_datasets
