@@ -11,8 +11,9 @@ and never begins, commits, rolls back or closes the handle it is given.
 from dataclasses import dataclass
 from typing import Literal, Optional
 
+from duckdb import DuckDBPyConnection
 from duckdb_sqlalchemy_async.native import borrowed_engine
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection, Engine, text
 
 from letta_memory_model.orm import Base
 from letta_memory_model.orm.base import LETTA_SCHEMA
@@ -50,8 +51,24 @@ class LegacyTable:
     embedding_type: Optional[str]
 
 
-# The shared borrowed-handle engine lives in the foundation; the old name stays importable.
-engine_for = borrowed_engine
+def engine_for(native: DuckDBPyConnection) -> Engine:
+    """Return the shared borrowed-handle engine, made safe for a file named like the schema.
+
+    Goes in: a native DuckDB handle; comes out: an engine whose only connection is that handle.
+    DuckDB names the database after the file, so a file called letta.duckdb makes the name
+    "letta" mean both a database and Letta's schema, and every unqualified table name fails as
+    ambiguous. In that case, and only then, every Letta table is written as
+    database.schema.table. It never changes the handle's default schema and never opens
+    another connection.
+    """
+    engine = borrowed_engine(native)
+    row = native.execute("SELECT current_database()").fetchone()
+    catalog = row[0] if row else None
+    if catalog != LETTA_SCHEMA:
+        return engine
+    return engine.execution_options(
+        schema_translate_map={LETTA_SCHEMA: f"{catalog}.{LETTA_SCHEMA}"}
+    )
 
 
 def _expected_columns(connection: Connection) -> dict[str, dict[str, str]]:
