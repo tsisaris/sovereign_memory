@@ -204,9 +204,7 @@ def register_model(
     )
 
 
-def list_models(
-    handle: duckdb.DuckDBPyConnection, kind: str | None = None
-) -> list[ModelRow]:
+def list_models(handle: duckdb.DuckDBPyConnection, kind: str | None = None) -> list[ModelRow]:
     """Return the registered models in registration order, optionally of one kind. Reads only."""
     where, params = ("WHERE kind = ?", [kind]) if kind is not None else ("", [])
     rows = handle.execute(
@@ -216,9 +214,7 @@ def list_models(
     return [_row(row) for row in rows]
 
 
-def get_model(
-    handle: duckdb.DuckDBPyConnection, model_id: str, revision: str
-) -> ModelRow | None:
+def get_model(handle: duckdb.DuckDBPyConnection, model_id: str, revision: str) -> ModelRow | None:
     """Return one registered model revision, or None when it is not registered. Reads only."""
     row = handle.execute(
         f"SELECT {_COLUMNS} FROM memory_models WHERE model_id = ? AND revision = ?",

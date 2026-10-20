@@ -2,12 +2,12 @@
 
 The runtime takes every deployment choice from one TOML file: where the socket
 and database live, request and shutdown bounds, who shares the memory pool, and
-which tier engines to run with the models they use. Nothing here has a default
-for a model, a bound or a tuning number: a missing or unknown key, a wrong type
-or a tier that cannot be built is a ConfigurationError that names the key, and
-the service never starts on a half-valid file. It reads only the file and
-environment variable names the file points to; it never opens the database,
-calls a model or touches the network.
+which tier engines to run, the models to register (as rows of data), and the
+four tunable search settings. Nothing here has a default for a model, a bound or
+a tuning number: a missing or unknown key, a wrong type or a tier that cannot be
+built is a ConfigurationError that names the key, and the service never starts on
+a half-valid file. It reads only the file and environment variable names the file
+points to; it never opens the database, calls a model or touches the network.
 """
 
 import math
@@ -30,19 +30,6 @@ class ConfigurationError(ValueError):
 
 
 @dataclass(frozen=True)
-class EmbeddingSettings:
-    """The embedding model of the relational tier, exactly as the deployment named it."""
-
-    provider: str
-    model: str
-    dimensions: int
-    revision: str
-    endpoint: str | None
-    api_key: str | None
-    agent_embedding: dict | None = None
-
-
-@dataclass(frozen=True)
 class RuntimeConfig:
     """Everything the runtime needs, validated; the tier fields are None when not configured."""
 
@@ -55,7 +42,9 @@ class RuntimeConfig:
     episodic_organization: str | None
     temporal_enabled: bool
     relational_database_name: str | None
-    relational_embedding: EmbeddingSettings | None
+    relational_embedding_model: tuple[str, str] | None
+    ranking: dict[str, Any] | None
+    models: tuple[dict[str, Any], ...]
     personalization: "MemoryConfig | None"
 
 
@@ -99,41 +88,48 @@ def _positive(table: dict, where: str, key: str, integer: bool) -> float:
     return value
 
 
-def _embedding(table: Any, where: str) -> EmbeddingSettings:
-    """Read the embedding model table; api_key_env names an environment variable that must be set."""
-    table = _take(
-        table,
-        where,
-        ("provider", "model", "dimensions", "revision"),
-        ("endpoint", "api_key_env", "agent_embedding"),
+def _embedding_model(table: Any, where: str) -> tuple[str, str]:
+    """Read which registered model revision Cognee's own embedder object is bound to.
+
+    The table names a model id and a revision only; the model itself is a row in the
+    registry, never code, and the embedder answers from received numbers.
+    """
+    table = _take(table, where, ("model_id", "revision"))
+    return _text(table, where, "model_id"), _text(table, where, "revision")
+
+
+def _ranking(table: Any) -> dict[str, Any]:
+    """Read the four search settings table; every setting is required and none has a default.
+
+    Types and ranges are checked by the Owner when it is built, which raises a
+    named error; here the shape (exactly these four keys) is enforced.
+    """
+    return dict(
+        _take(
+            table,
+            "ranking",
+            ("comparison_score", "held_back_share", "smallest_held_back_set", "merging_constant"),
+        )
     )
-    api_key = None
-    if "api_key_env" in table:
-        name = _text(table, where, "api_key_env")
-        api_key = os.environ.get(name)
-        if not api_key:
-            raise ConfigurationError(f"{where}.api_key_env names {name}, which is not set")
-    endpoint = _text(table, where, "endpoint") if "endpoint" in table else None
-    provider = _text(table, where, "provider")
-    agent = table.get("agent_embedding")
-    if provider == "agent_embedding":
-        if not isinstance(agent, dict) or agent.get("revision") != table["revision"]:
-            raise ConfigurationError(f"{where}.agent_embedding must declare the same revision")
-        if endpoint is not None or api_key is not None:
-            raise ConfigurationError(
-                f"{where} uses shared AgentClient settings, not endpoint/api_key_env"
-            )
-    elif agent is not None:
-        raise ConfigurationError(f"{where}.agent_embedding requires provider agent_embedding")
-    return EmbeddingSettings(
-        provider,
-        _text(table, where, "model"),
-        int(_positive(table, where, "dimensions", True)),
-        _text(table, where, "revision"),
-        endpoint,
-        api_key,
-        agent,
-    )
+
+
+def _models(rows: Any) -> tuple[dict[str, Any], ...]:
+    """Read the [[models]] rows to register at start: id, revision, width, kind, supplier collection and recipe."""
+    if not isinstance(rows, list):
+        raise ConfigurationError("[[models]] must be an array of tables")
+    result = []
+    for index, row in enumerate(rows):
+        where = f"models[{index}]"
+        row = _take(
+            row,
+            where,
+            ("model_id", "revision", "width", "kind", "supplier_collection", "supplier_recipe"),
+        )
+        _positive(row, where, "width", True)
+        for key in ("model_id", "revision", "kind", "supplier_collection", "supplier_recipe"):
+            _text(row, where, key)
+        result.append(dict(row))
+    return tuple(result)
 
 
 def _personalization(table: Any) -> "MemoryConfig":
@@ -183,24 +179,28 @@ def _personalization(table: Any) -> "MemoryConfig":
             f"{where}.memory.enable_update_delete_branches must be true: the tier "
             "refuses Mem0's ADD-only pipeline"
         )
-    if config.embedder.provider == "agent_embedding":
-        options = config.embedder.config
-        agent = options.get("agent_embedding")
-        if (
-            not isinstance(agent, dict)
-            or agent.get("revision") != config.embedder.revision
-            or type(options.get("embedding_dims")) is not int
-            or options["embedding_dims"] != config.vector_store.config.embedding_model_dims
-        ):
-            raise ConfigurationError(
-                f"{where}.memory.embedder must match the declared revision and vector-store dimensions"
-            )
+    if config.embedder.provider != "received_numbers":
+        raise ConfigurationError(
+            f"{where}.memory.embedder.provider must be received_numbers: "
+            "memory never makes numbers, so no model-calling embedder is accepted"
+        )
+    options = config.embedder.config
+    received = options.get("received_numbers")
+    if (
+        not isinstance(received, dict)
+        or received.get("revision") != config.embedder.revision
+        or type(options.get("embedding_dims")) is not int
+        or options["embedding_dims"] != config.vector_store.config.embedding_model_dims
+    ):
+        raise ConfigurationError(
+            f"{where}.memory.embedder must match the declared revision and vector-store dimensions"
+        )
     return config
 
 
 def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
     """Validate parsed TOML and return the RuntimeConfig; relative paths resolve against base."""
-    data = _take(data, "file", ("service", "tiers"), ("visibility",))
+    data = _take(data, "file", ("service", "tiers"), ("visibility", "ranking", "models"))
     service = _take(
         data["service"],
         "service",
@@ -226,12 +226,25 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         organization = _text(episodic, "tiers.episodic", "organization_id")
     if "temporal" in tiers:
         _take(tiers["temporal"], "tiers.temporal", ())
-    database_name, embedding = None, None
+    database_name, embedding_model = None, None
     if "relational" in tiers:
-        relational = _take(tiers["relational"], "tiers.relational", ("database_name", "embedding"))
+        relational = _take(
+            tiers["relational"], "tiers.relational", ("database_name",), ("embedding_model",)
+        )
         database_name = _text(relational, "tiers.relational", "database_name")
-        embedding = _embedding(relational["embedding"], "tiers.relational.embedding")
+        if "embedding_model" in relational:
+            embedding_model = _embedding_model(
+                relational["embedding_model"], "tiers.relational.embedding_model"
+            )
     memory = _personalization(tiers["personalization"]) if "personalization" in tiers else None
+    ranks_by_models = "relational" in tiers or "personalization" in tiers
+    if ranks_by_models and "ranking" not in data:
+        raise ConfigurationError(
+            "[ranking] is required when a tier ranks by models' numbers: declare "
+            "comparison_score, held_back_share, smallest_held_back_set and merging_constant"
+        )
+    ranking = _ranking(data["ranking"]) if "ranking" in data else None
+    models = _models(data.get("models", []))
 
     # Keep a socket symlink visible to the service's lstat-based refusal.
     socket_file = (base / _text(service, "service", "socket_path")).absolute()
@@ -255,7 +268,9 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         episodic_organization=organization,
         temporal_enabled="temporal" in tiers,
         relational_database_name=database_name,
-        relational_embedding=embedding,
+        relational_embedding_model=embedding_model,
+        ranking=ranking,
+        models=models,
         personalization=memory,
     )
 

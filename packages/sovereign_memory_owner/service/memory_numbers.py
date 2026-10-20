@@ -109,9 +109,12 @@ def receive_numbers(
             raise ValueError(f"Piece {piece.piece_id} has an unknown source {piece.source!r}")
         if text_fingerprint(piece.text) != piece.text_fingerprint:
             raise ValueError(f"Piece {piece.piece_id} fingerprint is not that of its text")
-        if handle.execute(
-            "SELECT 1 FROM memory_events WHERE event_id = ?", [piece.event_id]
-        ).fetchone() is None:
+        if (
+            handle.execute(
+                "SELECT 1 FROM memory_events WHERE event_id = ?", [piece.event_id]
+            ).fetchone()
+            is None
+        ):
             raise ValueError(f"Piece {piece.piece_id} names unknown event {piece.event_id}")
         stored = handle.execute(
             "SELECT event_id, position, text_fingerprint, source FROM memory_pieces "
@@ -358,7 +361,7 @@ class NumbersStore:
         """Bind the owner's long-lived connection."""
         self.conn = conn
 
-    async def _job(self, work):
+    async def run_in_transaction(self, work):
         """Run work(handle) inside one transaction on the owner's worker and return its result."""
 
         def job():
@@ -377,27 +380,29 @@ class NumbersStore:
 
     async def initialize_schema(self) -> None:
         """Create the registry, pieces and request tables if they do not exist."""
-        await self._job(initialize_numbers_schema)
+        await self.run_in_transaction(initialize_numbers_schema)
 
     async def register(self, **fields: Any) -> ModelRow:
         """Register a model revision (see register_model); registered_at defaults to now."""
         fields.setdefault("registered_at", _now())
-        return await self._job(lambda handle: register_model(handle, **fields))
+        return await self.run_in_transaction(lambda handle: register_model(handle, **fields))
 
     async def models(self, kind: str | None = None) -> list[ModelRow]:
         """Return the registered models, optionally of one kind."""
-        return await self._job(lambda handle: list_models(handle, kind))
+        return await self.run_in_transaction(lambda handle: list_models(handle, kind))
 
     async def states(self) -> list[ModelState]:
         """Return the freshness state of every registered model."""
-        return await self._job(
+        return await self.run_in_transaction(
             lambda handle: [model_state(handle, m) for m in list_models(handle)]
         )
 
     async def receive(self, batch: SuppliedNumbers) -> dict[str, int]:
         """Receive one supplied batch into its model's table (see receive_numbers)."""
         received_at = _now()
-        return await self._job(lambda handle: receive_numbers(handle, batch, received_at))
+        return await self.run_in_transaction(
+            lambda handle: receive_numbers(handle, batch, received_at)
+        )
 
     async def mark_stale(self, model_id: str, revision: str, reason: str) -> int:
         """Mark every row of one registered model stale and return how many changed."""
@@ -409,19 +414,19 @@ class NumbersStore:
                 raise ValueError(f"Model {model_label(model_id, revision)} is not registered")
             return mark_stale(handle, model, reason)
 
-        return await self._job(work)
+        return await self.run_in_transaction(work)
 
     async def request(
         self, model: ModelRow, event_id: str | None, text: str | None, reason: str
     ) -> str:
         """Record numbers (or pieces) as owed by the supplier and return the request id."""
-        return await self._job(
+        return await self.run_in_transaction(
             lambda handle: request_numbers(handle, model, event_id, text, reason, _now())
         )
 
     async def pending(self) -> list[dict[str, Any]]:
         """Return the numbers still owed by the supplier."""
-        return await self._job(pending_requests)
+        return await self.run_in_transaction(pending_requests)
 
     async def sync(self, supplier: NumbersSupplier) -> dict[str, Any]:
         """Compare every model's label with the supplier's, then pull what it can hand over.
@@ -439,9 +444,11 @@ class NumbersStore:
             summary: dict[str, Any] = {"received_events": 0, "pending": None}
             report[model.label] = summary
             try:
-                current = await supplier.current_row(model.supplier_collection, model.supplier_recipe)
+                current = await supplier.current_row(
+                    model.supplier_collection, model.supplier_recipe
+                )
             except NumbersNotYetSupplied as pending:
-                await self._job(
+                await self.run_in_transaction(
                     lambda h, m=model, p=pending: record_label_check(
                         h, m, "unverified", str(p), None, _now()
                     )
@@ -459,10 +466,10 @@ class NumbersStore:
                     f"; recompute request not delivered: {undelivered}" if undelivered else ""
                 )
                 continue
-            await self._job(
+            await self.run_in_transaction(
                 lambda h, m=model, s=supplied: record_label_check(h, m, "current", None, s, _now())
             )
-            events = await self._job(lambda h, m=model: events_needing_numbers(h, m))
+            events = await self.run_in_transaction(lambda h, m=model: events_needing_numbers(h, m))
             for event_id in events:
                 try:
                     batch = await supplier.saved_numbers(
@@ -501,8 +508,8 @@ class NumbersStore:
             request_numbers(handle, model, None, None, reason, _now())
             return mark_stale_count
 
-        await self._job(work)
-        events = await self._job(lambda h: events_needing_numbers(h, model))
+        await self.run_in_transaction(work)
+        events = await self.run_in_transaction(lambda h: events_needing_numbers(h, model))
         try:
             await supplier.recompute(
                 model.supplier_collection,

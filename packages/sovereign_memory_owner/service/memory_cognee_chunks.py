@@ -165,9 +165,7 @@ class CogneeChunkTier:
             raise RuntimeError("CogneeChunkTier has no numbers services attached")
         return self._services
 
-    def _adapter(
-        self, handle: duckdb.DuckDBPyConnection, engine: Any = None
-    ) -> DuckDBAdapter:
+    def _adapter(self, handle: duckdb.DuckDBPyConnection, engine: Any = None) -> DuckDBAdapter:
         """Build Cognee's adapter on the owner's handle for one call; it borrows, never owns."""
         return DuckDBAdapter(
             connection=handle, database_name=self.database_name, embedding_engine=engine
@@ -356,6 +354,8 @@ class CogneeChunkTier:
         unknown visibility mode. It never writes and never ranks across models.
         """
         visibility = scope.visibility
+        condition: str
+        params: list[Any]
         if visibility.mode == "own":
             condition, params = "e.actor_agent_id = ?", [scope.agent_id]
         elif visibility.mode == "granted":
@@ -399,4 +399,3 @@ class CogneeChunkTier:
                 for row in rows
             ]
         return TierRankings(rankings, dict(prepared_query["left_out"]))
-

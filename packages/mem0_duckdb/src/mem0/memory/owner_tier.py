@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 import duckdb
 
 from mem0.configs.base import MemoryConfig
+from mem0.embeddings.received_numbers import NumbersMissing
 from mem0.memory.main import (
     Memory,
     _build_filters_and_metadata,
@@ -48,7 +49,10 @@ PROVENANCE_FIELDS = (
 
 
 class EmbeddingIndexMismatch(RuntimeError):
-    """The stored memories were embedded by a different model than the configured one.
+    """Mem0's own vector table holds memories from a different model than the configured one.
+
+    Mem0 keeps its vectors in one table of one fixed width, so this guard stays
+    for that table only; the owner's per-model numbers tables have no such rule.
 
     Mixing them in one search would compare vectors from different models (even at
     the same dimension), so the tier refuses to write or search until the index is
@@ -82,12 +86,6 @@ def embedding_identity(config: MemoryConfig) -> str:
         "revision": revision,
         "dimensions": dims,
     }
-    if config.embedder.provider == "agent_embedding":
-        agent = settings.get("agent_embedding", {})
-        capability = agent.get("capability_id")
-        if not isinstance(capability, str) or not capability:
-            raise ValueError("The Agent Embedding configuration names no capability")
-        identity["capability_id"] = capability
     return json.dumps(
         identity,
         sort_keys=True,
@@ -173,8 +171,17 @@ class Mem0Tier:
         """
         if config.vector_store.provider != "duckdb":
             raise ValueError("Mem0Tier needs the duckdb vector store provider")
+        if config.embedder.provider != "received_numbers":
+            raise ValueError(
+                "Mem0Tier needs the received_numbers embedder: memory never makes numbers, "
+                "so no model-calling embedder is accepted"
+            )
         self.config = config
         self.embedding_identity = embedding_identity(config)
+        self.model_id: str = config.embedder.config["model"]
+        self.revision: str = config.embedder.revision
+        self.label = f"{self.model_id}@{self.revision}"
+        self._services: Any = None
         self.terminal_error = terminal_error
         self.scope_of = scope_of
         self.may_modify = may_modify
@@ -185,6 +192,34 @@ class Mem0Tier:
     def attach_reader(self, reader: Callable[..., Any]) -> None:
         """Receive the owner's reader; every read before a decision goes through it."""
         self._reader = reader
+
+    def attach_numbers(self, services: Any) -> None:
+        """Receive the owner's numbers services: lookup of received numbers, owed requests, question door."""
+        self._services = services
+
+    def model_labels(self) -> List[str]:
+        """Return the identity of the one model whose numbers Mem0's own vector table holds."""
+        return [self.embedding_identity]
+
+    def _need_services(self) -> Any:
+        """Return the numbers services or raise RuntimeError if the owner never attached them."""
+        if self._services is None:
+            raise RuntimeError(
+                "Mem0Tier has no numbers services attached; register it with the owner"
+            )
+        return self._services
+
+    def _bind_embedder(self, memory: Memory) -> None:
+        """Give Mem0's received-numbers embedder the owner's lookup; it makes no numbers itself."""
+        services = self._need_services()
+        embedder = memory.embedding_model
+        embedder.attach_lookup(services.lookup)
+
+    async def _owe(self, event_id: str, missing: NumbersMissing) -> None:
+        """Record every text whose numbers are owed, so the supplier can be asked for them."""
+        services = self._need_services()
+        for text in missing.texts:
+            await services.request(self.model_id, self.revision, event_id, text, str(missing))
 
     def initialize_storage(self, native_tx_handle: duckdb.DuckDBPyConnection) -> None:
         """Bind Memory to the owner's handle and create its tables, in the owner's transaction.
@@ -306,13 +341,25 @@ class Mem0Tier:
     async def prepare(
         self, event_envelope: Dict[str, Any], verified_payload_bytes: Optional[bytes]
     ) -> PreparedWork:
-        """Do all model work for one event, outside any write transaction.
+        """Prepare one event from received numbers, outside any write transaction.
 
-        Raises the terminal error for payloads this tier cannot read, and any
-        model error unchanged (the owner records it as a retryable failure).
-        Model clients are created and called in worker threads, never on the
-        owner's database worker and never inside a write transaction.
+        Raises the terminal error for payloads this tier cannot read. When a
+        text has no received numbers it records the owed numbers and raises
+        NumbersMissing ("numbers not yet supplied"), which the owner records as a
+        retryable failure; no vector is ever invented. Language-model work
+        (fact extraction) runs in worker threads, never on the owner's database
+        worker and never inside a write transaction.
         """
+        try:
+            return await self._prepare(event_envelope, verified_payload_bytes)
+        except NumbersMissing as missing:
+            await self._owe(event_envelope["event_id"], missing)
+            raise
+
+    async def _prepare(
+        self, event_envelope: Dict[str, Any], verified_payload_bytes: Optional[bytes]
+    ) -> PreparedWork:
+        """Do the work of prepare; NumbersMissing from the embedder propagates to prepare."""
         event_id = event_envelope["event_id"]
         operation = REMOVAL_OPERATIONS.get(event_envelope.get("event_type"))
         if operation is not None:
@@ -325,6 +372,7 @@ class Mem0Tier:
                 "Mem0Tier requires enable_update_delete_branches (the action flow)"
             )
         memory = await self._read(lambda m: m)
+        self._bind_embedder(memory)
         await self._read(self._require_matching_index)
         actor = event_envelope.get("actor_agent_id", event_envelope.get("agent_id"))
         scope_id = self.scope_of(actor)
@@ -552,17 +600,37 @@ class Mem0Tier:
     # ---- read seam --------------------------------------------------------------
 
     async def prepare_query(self, scope: Any, query: str, limit: int) -> Dict[str, Any]:
-        """Embed the question outside the database worker."""
-        memory = await self._read(lambda m: m)
+        """Fetch the question's numbers from the supplier's door, unless the model is left out.
+
+        The model is left out, with its reason, when it is not a fresh registered
+        embedding model or when the supplier cannot give the question's numbers;
+        that is never reported as an empty ranking. Memory never embeds the question.
+        """
+        services = self._need_services()
         await self._read(self._require_matching_index)
-        vector = await asyncio.to_thread(self._embed_text, memory, query, "search")
-        self._require_embedding_identity(memory)
-        return {"query": query, "vector": vector, "limit": limit}
+        fresh, left_out = await services.fresh_models()
+        prepared: Dict[str, Any] = {"query": query, "vector": None, "limit": limit, "left_out": {}}
+        if self.label not in {m.label for m in fresh}:
+            prepared["left_out"] = {
+                self.label: left_out.get(self.label, "not a registered embedding model")
+            }
+            return prepared
+        try:
+            vector = await services.question_numbers(self.model_id, self.revision, query)
+        except services.pending_error as pending:
+            prepared["left_out"] = {self.label: f"question numbers not supplied: {pending}"}
+            return prepared
+        prepared["vector"] = self._validate_vector(vector)
+        return prepared
 
     def retrieve(
         self, native_handle: duckdb.DuckDBPyConnection, scope: Any, prepared_query: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """Search the memories the scope's visibility permits on the owner's handle; expired ones are left out.
+    ) -> Any:
+        """Rank the memories the scope's visibility permits with the model's numbers; expired ones are left out.
+
+        Returns the owner's TierRankings-shaped object: {label: hits} under
+        the one model Mem0's own table holds, or the model left out with its
+        reason. The rest of the contract is unchanged:
 
         The search is limited to the producers the visibility names ("own": the
         principal; "granted": the granted actors; "pool": no producer limit).
@@ -579,6 +647,8 @@ class Mem0Tier:
             filters = {}
         else:
             raise ValueError(f"Unsupported visibility mode: {visibility.mode!r}")
+        if prepared_query["vector"] is None:
+            return self._rankings({}, prepared_query["left_out"])
         memory = self._memory_for(native_handle)
         self._require_matching_index(memory)
         found = memory.vector_store.search(
@@ -596,6 +666,7 @@ class Mem0Tier:
                 continue
             hits.append(
                 {
+                    "item_id": item.id,
                     "id": item.id,
                     "event_id": payload.get("event_id"),
                     "actor_agent_id": payload.get("actor_agent_id"),
@@ -605,7 +676,20 @@ class Mem0Tier:
                     "source_revision": payload.get("source_revision"),
                 }
             )
-        return hits
+        return self._rankings({self.label: hits}, {})
+
+    @staticmethod
+    def _rankings(rankings: Dict[str, List[Dict[str, Any]]], left_out: Dict[str, str]) -> Any:
+        """Return the rankings in the owner's TierRankings shape without importing the owner package."""
+        return _TierRankings(rankings, left_out)
+
+
+@dataclass(frozen=True)
+class _TierRankings:
+    """Per-model rankings and the models left out, matching the owner's TierRankings by shape."""
+
+    rankings: Dict[str, List[Dict[str, Any]]]
+    left_out: Dict[str, str]
 
 
 def _scope(work: PreparedWork) -> str:

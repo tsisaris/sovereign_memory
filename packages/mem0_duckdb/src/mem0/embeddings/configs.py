@@ -36,7 +36,7 @@ class EmbedderConfig(BaseModel):
             "langchain",
             "aws_bedrock",
             "fastembed",
-            "agent_embedding",
+            "received_numbers",
         ]:
             return v
         else:

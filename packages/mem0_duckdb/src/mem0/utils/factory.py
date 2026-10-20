@@ -161,7 +161,7 @@ class EmbedderFactory:
     """Construct the selected registered embedding provider without substituting models."""
 
     provider_to_class: ClassVar[dict] = {
-        "agent_embedding": "mem0.embeddings.agent_embedding.AgentEmbedding",
+        "received_numbers": "mem0.embeddings.received_numbers.ReceivedNumbersEmbedding",
         "openai": "mem0.embeddings.openai.OpenAIEmbedding",
         "ollama": "mem0.embeddings.ollama.OllamaEmbedding",
         "huggingface": "mem0.embeddings.huggingface.HuggingFaceEmbedding",

@@ -169,4 +169,3 @@ class ReceivedNumbersEmbeddingEngine:
     def get_vector_size(self) -> int:
         """Return the registered width without any lookup or model call."""
         return self.dimensions
-
