@@ -1,0 +1,109 @@
+# sovereign_memory — project declaration and checker configuration.
+# Made from portable_template. The checker settings below are the rulings
+# already made in sovereign/pyproject.toml and portable/analyser_roster.json;
+# change them in the template, never here, and every project follows.
+
+[project]
+name = "sovereign_memory"
+version = "0.1.0"
+description = "One large, connected, seamless local memory system on DuckDB: every useful kind of memory welded into one suite that works with DuckDB, a true superset of Letta, Zep/Graphiti, Cognee and Mem0, modular so new kinds of memory can be added as they appear, free and open for everyone to use and maintain."
+requires-python = ">=3.12"
+# The packages this project's code needs, as name==version, one per line.
+dependencies = [
+]
+
+[tool.uv.sources]
+duckdb_sqlalchemy_async = { workspace = true }
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[dependency-groups]
+# The gating checkers, pinned to the versions the laptop's sovereign_tools
+# environment holds, so the laptop, GitHub and Jules give the same verdict.
+dev = [
+    "pre-commit==4.6.2",
+    "ruff==0.16.2",
+    "mypy==2.3.0",
+    "pyright==1.1.411",
+    "pylint==4.0.7",
+    "bandit==1.9.4",
+    "deptry==0.25.1",
+    "pytest==9.1.1",
+    "coverage==7.15.4",
+    "cognee==1.6.5",
+    "pytest-asyncio==1.4.0",
+    "duckdb_sqlalchemy_async",
+    "duckdb==1.5.6",
+    "duckdb-engine==0.17.0",
+    "sqlalchemy==2.0.39",
+    "alembic==1.13.3",
+]
+# Reported, never blocking.
+advisory = [
+    "vulture==2.16",
+    "radon==6.0.1",
+    "semgrep==1.172.0",
+]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["data/sovereign", "local"]
+
+[tool.ruff.lint]
+# GATING rule classes, each from a ruling:
+# F401 F811 unused import, redefinition (UC-1); F821 F841 undefined name,
+# assigned and never used (UC-5); B023 late-bound loop variable (UC-4);
+# B905 zip without strict (UC-6); S110 exception swallowed (UC-7);
+# BLE001 bare broad except that neither logs nor re-raises, RUF012 mutable
+# class default (operator ruling 2026-09-21); D-rules: every module, class
+# and function documented (operator ruling 2026-09-21).
+select = [
+    "F401", "F811", "F821", "F841", "B023", "B905", "S110",
+    "BLE001", "RUF012",
+    "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",
+    "D403", "D415", "D419",
+]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = true
+# Classes ruled ADVISORY in sovereign/pyproject.toml (no birth case yet).
+# Every other class gates, so a class never seen before stops the build
+# and is put to the operator to rule keep or drop.
+disable_error_code = [
+    "attr-defined", "arg-type", "var-annotated", "union-attr", "index",
+    "return-value", "assignment", "type-var", "operator", "misc",
+    "name-match", "dict-item", "annotation-unchecked", "import-untyped",
+]
+exclude = ["^data/sovereign/", "^local/"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+# Gating class: reportUndefinedVariable (UC-5). Nothing else gates.
+typeCheckingMode = "off"
+reportUndefinedVariable = "error"
+exclude = ["data/sovereign", "local", ".venv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["packages/duckdb_sqlalchemy_async"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["packages"]
+
+[tool.deptry]
+# exclude REPLACES deptry's defaults, which would silently skip every folder
+# named tests (measured 2026-09-22, W-753 finding 3).
+exclude = [".venv", ".git", "data/sovereign", "local"]
+
+# The advisory checkers are run by name, never imported; naming their modules
+# stops deptry guessing, and the GitHub check fails on any line where it guesses.
+package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "semgrep" }
+
+[tool.deptry.per_rule_ignores]
+# The test runner is declared as a development package and imported by tests.
+DEP004 = ["pytest", "pytest_asyncio", "duckdb", "sqlalchemy"]
+
