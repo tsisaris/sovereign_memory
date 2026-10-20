@@ -1,10 +1,12 @@
+"""Checks for the DuckDB relational adapter: creating tables and running queries, and keeping separate schemas apart.
+
+Each check uses its own temporary database file.
+"""
+
 import asyncio
-import os
-from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 # Need to run tests through our own adapted files, but they rely on being imported properly.
 # We will test the adapters directly.
@@ -12,6 +14,10 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 @pytest.fixture(scope="session")
 def event_loop():
+    """Test fixture: give each session its own new event loop and close it afterwards.
+
+    Comes out: the loop.
+    """
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
@@ -19,11 +25,16 @@ def event_loop():
 
 @pytest.fixture
 def tmp_db(tmp_path):
+    """Test fixture: give the DuckDB connection URL of a database file inside pytest's temporary directory.
+
+    Comes out: the URL string. It creates no file itself.
+    """
     return f"duckdb+aio:///{tmp_path}/test.duckdb"
 
 
 @pytest.mark.asyncio
 async def test_relational_adapter_duckdb(tmp_path):
+    """Check that the DuckDB relational adapter creates its database and tables and answers a query, on a temporary file."""
     from cognee.cognee_duckdb_relational import DuckDBRelationalAdapter
 
     db_file = tmp_path / "test.duckdb"
@@ -52,6 +63,7 @@ async def test_relational_adapter_duckdb(tmp_path):
 
 @pytest.mark.asyncio
 async def test_schema_isolation_duckdb(tmp_path):
+    """Check that data written to two DuckDB schemas stays separate, on a temporary file."""
     from cognee.cognee_duckdb_relational import DuckDBRelationalAdapter
 
     db_file = tmp_path / "iso.duckdb"

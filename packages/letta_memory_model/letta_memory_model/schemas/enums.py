@@ -1,3 +1,8 @@
+"""The enumerations of the Letta memory model: primitive resource types, providers, agent types, message roles, job and run statuses, tool types and the like.
+
+They name allowed values only and hold no behaviour beyond small status checks.
+"""
+
 from enum import Enum, StrEnum
 
 
@@ -51,6 +56,11 @@ class PrimitiveType(str, Enum):
 
 
 class ProviderType(str, Enum):
+    """The model providers Letta knows, such as OpenAI, Anthropic, Azure and Bedrock, by name.
+
+    It names providers only.
+    """
+
     anthropic = "anthropic"
     azure = "azure"
     baseten = "baseten"
@@ -97,6 +107,11 @@ class AgentType(str, Enum):
 
 
 class ProviderCategory(str, Enum):
+    """Whether a model provider is built in (base) or supplied by the user with their own key (byok).
+
+    It names categories only.
+    """
+
     base = "base"
     byok = "byok"
 
@@ -110,6 +125,11 @@ class LLMCallType(str, Enum):
 
 
 class MessageRole(str, Enum):
+    """The role of a message: assistant, user, tool, function, system, approval or summary.
+
+    It names roles only.
+    """
+
     assistant = "assistant"
     user = "user"
     tool = "tool"
@@ -120,12 +140,14 @@ class MessageRole(str, Enum):
 
 
 class MessageSourceType(str, Enum):
+    """Where a message came from: external input or internal output. It names sources only."""
+
     input = "input"  # external input
     output = "output"  # internal output
 
 
 class OptionState(str, Enum):
-    """Useful for kwargs that are bool + default option"""
+    """Useful for kwargs that are bool + default option."""
 
     YES = "yes"
     NO = "no"
@@ -148,6 +170,10 @@ class JobStatus(StrEnum):
 
     @property
     def is_terminal(self):
+        """Say whether the job status is final (completed, failed, cancelled or expired).
+
+        Goes in: nothing; comes out: True or False. It never changes the status.
+        """
         return self in (
             JobStatus.completed,
             JobStatus.failed,
@@ -171,6 +197,7 @@ class RunStatus(StrEnum):
 class AgentStepStatus(str, Enum):
     """
     Status of agent step.
+
     TODO (cliandy): consolidate this with job status
     """
 
@@ -180,9 +207,15 @@ class AgentStepStatus(str, Enum):
 
 
 class MessageStreamStatus(str, Enum):
+    """The status marker that ends a message stream. It has one value, the end-of-stream text."""
+
     done = "[DONE]"
 
     def model_dump_json(self):
+        """Return the JSON form of the end-of-stream marker.
+
+        Goes in: nothing; comes out: the fixed text [DONE]. It never encodes anything else.
+        """
         return "[DONE]"
 
 
@@ -205,6 +238,11 @@ class ToolRuleType(str, Enum):
 
 
 class FileProcessingStatus(str, Enum):
+    """The stages of processing an uploaded file: pending, parsing, embedding, completed or error.
+
+    It names stages and tells whether one is final.
+    """
+
     PENDING = "pending"
     PARSING = "parsing"
     EMBEDDING = "embedding"
@@ -217,6 +255,11 @@ class FileProcessingStatus(str, Enum):
 
 
 class ToolType(str, Enum):
+    """The kinds of tool Letta has: custom, the core tool groups, built-in, files, external and so on.
+
+    It names kinds only.
+    """
+
     CUSTOM = "custom"
     LETTA_CORE = "letta_core"
     LETTA_MEMORY_CORE = "letta_memory_core"
@@ -232,13 +275,15 @@ class ToolType(str, Enum):
 
 
 class JobType(str, Enum):
+    """The kinds of job record: job, run or batch. It names kinds only."""
+
     JOB = "job"
     RUN = "run"
     BATCH = "batch"
 
 
 class ToolSourceType(str, Enum):
-    """Defines what a tool was derived from"""
+    """Defines what a tool was derived from."""
 
     python = "python"
     typescript = "typescript"
@@ -246,19 +291,26 @@ class ToolSourceType(str, Enum):
 
 
 class ActorType(str, Enum):
+    """The kinds of actor that can perform an action: a Letta user, a Letta agent or the system.
+
+    It names kinds only.
+    """
+
     LETTA_USER = "letta_user"
     LETTA_AGENT = "letta_agent"
     LETTA_SYSTEM = "letta_system"
 
 
 class MCPServerType(str, Enum):
+    """The transports an MCP server can use: SSE, standard input and output, or streamable HTTP. It names transports only."""
+
     SSE = "sse"
     STDIO = "stdio"
     STREAMABLE_HTTP = "streamable_http"
 
 
 class DuplicateFileHandling(str, Enum):
-    """How to handle duplicate filenames when uploading files"""
+    """How to handle duplicate filenames when uploading files."""
 
     SKIP = "skip"  # skip files with duplicate names
     ERROR = "error"  # error when duplicate names are encountered
@@ -267,13 +319,15 @@ class DuplicateFileHandling(str, Enum):
 
 
 class SandboxType(str, Enum):
+    """The sandboxes a tool can run in: E2B, Modal or local. It names sandboxes only."""
+
     E2B = "e2b"
     MODAL = "modal"
     LOCAL = "local"
 
 
 class StepStatus(str, Enum):
-    """Status of a step execution"""
+    """Status of a step execution."""
 
     PENDING = "pending"
     SUCCESS = "success"
@@ -282,7 +336,7 @@ class StepStatus(str, Enum):
 
 
 class VectorDBProvider(str, Enum):
-    """Supported vector database providers for archival memory"""
+    """Supported vector database providers for archival memory."""
 
     NATIVE = "native"
     TPUF = "tpuf"
@@ -290,14 +344,14 @@ class VectorDBProvider(str, Enum):
 
 
 class TagMatchMode(str, Enum):
-    """Tag matching behavior for filtering"""
+    """Tag matching behavior for filtering."""
 
     ANY = "any"
     ALL = "all"
 
 
 class ComparisonOperator(str, Enum):
-    """Comparison operators for filtering numeric values"""
+    """Comparison operators for filtering numeric values."""
 
     EQ = "eq"  # equals
     GTE = "gte"  # greater than or equal

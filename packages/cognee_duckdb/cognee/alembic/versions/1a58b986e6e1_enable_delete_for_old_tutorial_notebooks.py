@@ -1,4 +1,4 @@
-"""Enable delete for old tutorial notebooks
+"""Enable delete for old tutorial notebooks.
 
 Revision ID: 1a58b986e6e1
 Revises: 46a6ce2bd2b2

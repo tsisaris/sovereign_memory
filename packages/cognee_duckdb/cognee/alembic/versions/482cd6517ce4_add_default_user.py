@@ -1,4 +1,4 @@
-"""Add default user
+"""Add default user.
 
 Revision ID: 482cd6517ce4
 Revises: 8057ae7329c2

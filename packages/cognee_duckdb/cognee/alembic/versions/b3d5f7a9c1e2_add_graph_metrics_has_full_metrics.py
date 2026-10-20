@@ -1,4 +1,4 @@
-"""add_graph_metrics_has_full_metrics
+"""add_graph_metrics_has_full_metrics.
 
 Revision ID: b3d5f7a9c1e2
 Revises: c4e8a1f6b3d7

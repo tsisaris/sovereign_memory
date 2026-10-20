@@ -1,4 +1,4 @@
-"""add pipeline run id to nodes and edges
+"""add pipeline run id to nodes and edges.
 
 Revision ID: aa753a730673
 Revises: d8f4a1b2c3e9

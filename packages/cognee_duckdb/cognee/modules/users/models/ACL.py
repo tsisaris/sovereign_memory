@@ -1,3 +1,8 @@
+"""The access-control-list table model: which principal holds which permission on which dataset.
+
+It defines a table and nothing else; it opens no connection.
+"""
+
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -8,6 +13,11 @@ from cognee.infrastructure.databases.relational import Base
 
 
 class ACL(Base):
+    """One row of the acls table: an id, creation and update times, the principal it applies to and the permission and dataset it grants.
+
+    It is a table definition and does nothing by itself.
+    """
+
     __tablename__ = "acls"
 
     id = Column(Uuid, primary_key=True, default=uuid4)

@@ -1,4 +1,9 @@
-import os
+"""Find or create the per-dataset database record that names the vector and graph databases of one dataset and the user who owns it.
+
+Goes in: a dataset id and user; comes out: the record. It writes the record when none exists and
+never deletes one.
+"""
+
 from uuid import UUID
 
 from sqlalchemy import select

@@ -1,4 +1,4 @@
-"""backfill_dataset_scoped_data_drop_dataset_data
+"""backfill_dataset_scoped_data_drop_dataset_data.
 
 Completes the dataset-scoping of Data rows and retires the dataset_data
 membership table:

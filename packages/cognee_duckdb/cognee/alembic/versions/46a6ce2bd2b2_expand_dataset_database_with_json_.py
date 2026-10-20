@@ -1,4 +1,4 @@
-"""Expand dataset database with json connection field
+"""Expand dataset database with json connection field.
 
 Revision ID: 46a6ce2bd2b2
 Revises: 76625596c5c3
@@ -216,6 +216,11 @@ def _recreate_table_with_unique_constraint_sqlite(op, insp):
 
 
 def upgrade() -> None:
+    """Apply this migration step: add the JSON connection-information columns to dataset_database and relax its unique constraint, rebuilding the table on SQLite.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It inspects the
+    table first and skips columns that exist.
+    """
     conn = op.get_bind()
     insp = sa.inspect(conn)
 
@@ -324,6 +329,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Undo this migration step: restore the unique constraint on dataset_database, rebuilding the table on SQLite and altering it on PostgreSQL.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing.
+    """
     conn = op.get_bind()
     insp = sa.inspect(conn)
 

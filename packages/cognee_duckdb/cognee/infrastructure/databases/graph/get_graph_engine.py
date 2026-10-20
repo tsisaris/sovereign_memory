@@ -1,8 +1,10 @@
 """Factory function to get the appropriate graph client based on the graph type."""
 
+import importlib.util
 import inspect
 import os
 from numbers import Number
+from typing import Any
 
 from cognee.infrastructure.databases.dataset_queue.pinning import dataset_queue_pin_predicate
 from cognee.infrastructure.databases.utils.closing_lru_cache import closing_lru_cache
@@ -36,7 +38,7 @@ def _normalize_optional_create_graph_engine_params(params: dict) -> dict:
     """
     Normalize optional create_graph_engine parameters:
     - replace None with the function defaults
-    - convert numeric graph_database_port values to string
+    - convert numeric graph_database_port values to string.
     """
     defaults = _get_create_graph_engine_optional_defaults()
     normalized = dict(params)
@@ -415,7 +417,7 @@ def _create_graph_engine(
                 and graph_database_host
                 and graph_database_name
             ):
-                connection_string: str = (
+                connection_string = (
                     f"postgresql+asyncpg://{graph_database_username}:{graph_database_password}"
                     f"@{graph_database_host}:{graph_database_port}/{graph_database_name}"
                 )
@@ -439,7 +441,7 @@ def _create_graph_engine(
                 if not (db_host and db_port and db_name and db_username and db_password):
                     raise OSError("Missing required Postgres graph credentials!")
 
-                connection_string: str = (
+                connection_string = (
                     f"postgresql+asyncpg://{db_username}:{db_password}"
                     f"@{db_host}:{db_port}/{db_name}"
                 )
@@ -483,9 +485,7 @@ def _create_graph_engine(
             password=graph_database_password,
         )
     elif graph_database_provider == "neptune":
-        try:
-            from langchain_aws import NeptuneAnalyticsGraph
-        except ImportError:
+        if importlib.util.find_spec("langchain_aws") is None:
             raise ImportError(
                 "langchain_aws is not installed. Please install it with 'pip install langchain_aws'"
             )
@@ -513,9 +513,7 @@ def _create_graph_engine(
         to make a single instance of the hybrid configuration (with embedder)
         instead of creating the hybrid object twice.
         """
-        try:
-            from langchain_aws import NeptuneAnalyticsGraph
-        except ImportError:
+        if importlib.util.find_spec("langchain_aws") is None:
             raise ImportError(
                 "langchain_aws is not installed. Please install it with 'pip install langchain_aws'"
             )
@@ -535,7 +533,10 @@ def _create_graph_engine(
 
         graph_identifier = graph_database_url.replace(NEPTUNE_ANALYTICS_ENDPOINT_URL, "")
 
-        return NeptuneAnalyticsAdapter(
+        # NeptuneAnalyticsAdapter is named through a variable typed Any: the type checker counts the interface
+        # methods that only carry a docstring as abstract, but at run time they are ordinary methods.
+        neptune_class: Any = NeptuneAnalyticsAdapter
+        return neptune_class(
             graph_id=graph_identifier,
         )
     elif graph_database_provider == "turso":

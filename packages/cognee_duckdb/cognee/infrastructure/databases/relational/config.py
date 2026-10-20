@@ -1,3 +1,8 @@
+"""The settings of Cognee's relational database (provider, host, port, name, credentials, path and connection arguments), read from the environment.
+
+It holds and validates values only and opens no connection.
+"""
+
 import json
 import os
 from functools import lru_cache
@@ -36,6 +41,11 @@ class RelationalConfig(BaseSettings):
     @pydantic.model_validator(mode="after")
     def fill_derived(self):
         # Set file path based on graph database provider if no file path is provided
+        """Fill in settings left empty after they are read: the database path defaults to a databases folder under the system root and connection arguments given as JSON text are parsed.
+
+        Goes in: nothing but the settings object; comes out: the same object. It opens no
+        connection.
+        """
         if not self.db_path:
             base_config = get_base_config()
             databases_directory_path = os.path.join(base_config.system_root_directory, "databases")

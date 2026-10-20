@@ -1,6 +1,14 @@
+"""Create (and cache) the vector engine for the configured provider, with the embedding engine and options it needs.
+
+Goes in: the vector settings; comes out: a vector engine. It builds the engine object but runs no
+query itself.
+"""
+
+import importlib.util
 import inspect
 import os
 from numbers import Number
+from typing import Any
 
 from cognee.infrastructure.databases.dataset_queue.pinning import dataset_queue_pin_predicate
 from cognee.infrastructure.databases.utils.closing_lru_cache import closing_lru_cache
@@ -28,7 +36,7 @@ def _normalize_optional_create_vector_engine_params(params: dict) -> dict:
     """
     Normalize optional create_vector_engine parameters:
     - replace None with the function defaults
-    - convert numeric vector_db_port values to string
+    - convert numeric vector_db_port values to string.
     """
     defaults = _get_create_vector_engine_optional_defaults()
     normalized = dict(params)
@@ -212,7 +220,7 @@ def _create_vector_engine(
                 and vector_db_host
                 and vector_db_name
             ):
-                connection_string: str = (
+                connection_string = (
                     f"postgresql+asyncpg://{vector_db_username}:{vector_db_password}"
                     f"@{vector_db_host}:{vector_db_port}/{vector_db_name}"
                 )
@@ -237,7 +245,7 @@ def _create_vector_engine(
                 if not (db_host and db_port and db_name and db_username and db_password):
                     raise OSError("Missing required pgvector credentials!")
 
-                connection_string: str = (
+                connection_string = (
                     f"postgresql+asyncpg://{db_username}:{db_password}"
                     f"@{db_host}:{db_port}/{db_name}"
                 )
@@ -249,7 +257,10 @@ def _create_vector_engine(
                 "PostgreSQL dependencies are not installed. Please install with 'pip install cognee\"[postgres]\"' or 'pip install cognee\"[postgres-binary]\"' to use PGVector functionality."
             )
 
-        return PGVectorAdapter(
+        # PGVectorAdapter is named through a variable typed Any: the type checker counts the interface
+        # methods that only carry a docstring as abstract, but at run time they are ordinary methods.
+        pgvector_class: Any = PGVectorAdapter
+        return pgvector_class(
             connection_string,
             vector_db_key,
             embedding_engine,
@@ -257,9 +268,7 @@ def _create_vector_engine(
         )
 
     elif vector_db_provider.lower() == "neptune_analytics":
-        try:
-            from langchain_aws import NeptuneAnalyticsGraph
-        except ImportError:
+        if importlib.util.find_spec("langchain_aws") is None:
             raise ImportError(
                 "langchain_aws is not installed. Please install it with 'pip install langchain_aws'"
             )
@@ -279,7 +288,10 @@ def _create_vector_engine(
 
         graph_identifier = vector_db_url.replace(NEPTUNE_ANALYTICS_ENDPOINT_URL, "")
 
-        return NeptuneAnalyticsAdapter(
+        # NeptuneAnalyticsAdapter is named through a variable typed Any: the type checker counts the interface
+        # methods that only carry a docstring as abstract, but at run time they are ordinary methods.
+        neptune_class: Any = NeptuneAnalyticsAdapter
+        return neptune_class(
             graph_id=graph_identifier,
             embedding_engine=embedding_engine,
         )
@@ -294,7 +306,10 @@ def _create_vector_engine(
                 embedding_engine=embedding_engine,
             )
 
-        return LanceDBAdapter(
+        # LanceDBAdapter is named through a variable typed Any: the type checker counts the interface
+        # methods that only carry a docstring as abstract, but at run time they are ordinary methods.
+        lancedb_class: Any = LanceDBAdapter
+        return lancedb_class(
             url=vector_db_url,
             api_key=vector_db_key,
             embedding_engine=embedding_engine,
@@ -309,7 +324,10 @@ def _create_vector_engine(
 
         from .turso.TursoVectorAdapter import TursoVectorAdapter
 
-        return TursoVectorAdapter(
+        # TursoVectorAdapter is named through a variable typed Any: the type checker counts the interface
+        # methods that only carry a docstring as abstract, but at run time they are ordinary methods.
+        turso_class: Any = TursoVectorAdapter
+        return turso_class(
             url=vector_db_url,
             api_key=vector_db_key,
             embedding_engine=embedding_engine,

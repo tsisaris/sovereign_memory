@@ -1,4 +1,4 @@
-"""change node label and type to text
+"""change node label and type to text.
 
 Revision ID: 760ef4f08ef0
 Revises: 24f5d4f64d0d

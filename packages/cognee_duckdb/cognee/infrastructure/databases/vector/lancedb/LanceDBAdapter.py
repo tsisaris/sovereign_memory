@@ -1,3 +1,9 @@
+"""The LanceDB adapter of Cognee's vector database interface: it creates collections, stores data points with their vectors, searches by vector or text, scores given ids, and deletes.
+
+It talks to LanceDB, directly or through a subprocess, and is not used by the DuckDB-only owner
+path.
+"""
+
 import asyncio
 import copy
 import inspect
@@ -7,6 +13,8 @@ from collections import OrderedDict
 from enum import Enum
 from os import path
 from typing import (  # noqa: UP035 - typing.List is a distinct origin key, not an annotation
+    Any,
+    ClassVar,
     List,
     Optional,
     Union,
@@ -29,7 +37,7 @@ from cognee_db_workers.lancedb_compaction import (
     prune_superseded_versions,
 )
 from lancedb.pydantic import LanceModel, Vector
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from cognee.infrastructure.databases.exceptions import MissingQueryParameterError
 from cognee.infrastructure.databases.vector.exceptions import CollectionNotFoundError
@@ -97,8 +105,8 @@ class IndexSchema(DataPoint):
     # hybrid retrieval can surface allowlisted keys straight from the payload.
     external_metadata: str | None = None
 
-    metadata: dict = {"index_fields": ["text"]}
-    belongs_to_set: list[str] = []
+    metadata: dict = Field(default_factory=lambda: {"index_fields": ["text"]})
+    belongs_to_set: list[str] = Field(default_factory=list)
 
 
 class LanceDBAdapter(VectorDBInterface):
@@ -131,8 +139,8 @@ class LanceDBAdapter(VectorDBInterface):
     # leak the cache is here to fix.
     _PAYLOAD_SCHEMA_CACHE_SIZE = 256
     _LANCE_DATAPOINT_CACHE_SIZE = 256
-    _payload_schema_cache: "OrderedDict" = OrderedDict()
-    _lance_datapoint_class_cache: "OrderedDict" = OrderedDict()
+    _payload_schema_cache: ClassVar["OrderedDict"] = OrderedDict()
+    _lance_datapoint_class_cache: ClassVar["OrderedDict"] = OrderedDict()
     _lance_cache_lock = threading.Lock()
 
     @classmethod
@@ -439,8 +447,13 @@ class LanceDBAdapter(VectorDBInterface):
                 widths.append(list_size)
         return choose_stored_vector_size(widths, self.name)
 
-    async def create_collection(self, collection_name: str, payload_schema: BaseModel):
-        """Create the LanceDB table for `collection_name` if it does not already exist."""
+    async def create_collection(self, collection_name: str, payload_schema: Any | None = None):
+        """Create the LanceDB table for `collection_name` if it does not already exist.
+
+        Raises ValueError when no payload schema is given: a LanceDB table needs one.
+        """
+        if payload_schema is None:
+            raise ValueError("payload_schema is required to create a LanceDB collection")
         vector_size = self.embedding_engine.get_vector_size()
 
         payload_schema = self.get_data_point_schema(payload_schema)
@@ -1035,10 +1048,21 @@ class LanceDBAdapter(VectorDBInterface):
         schema_model = self.get_data_point_schema(payload_schema)
         data_point_types = get_type_hints(schema_model)
 
-        class SchemaProbeDataPoint(LanceModel):
-            id: data_point_types["id"]
-            vector: Vector(vector_size)
-            payload: schema_model
+        # Built with type() because the field types are values known only at run time;
+        # the result is the same class the equivalent class statement would make.
+        SchemaProbeDataPoint = type(
+            "SchemaProbeDataPoint",
+            (LanceModel,),
+            {
+                "__module__": __name__,
+                "__qualname__": "LanceDBAdapter._get_target_payload_arrow_type.<locals>.SchemaProbeDataPoint",
+                "__annotations__": {
+                    "id": data_point_types["id"],
+                    "vector": Vector(vector_size),
+                    "payload": schema_model,
+                },
+            },
+        )
 
         to_arrow_schema = getattr(SchemaProbeDataPoint, "to_arrow_schema", None)
         if not callable(to_arrow_schema):
@@ -1290,6 +1314,11 @@ class LanceDBAdapter(VectorDBInterface):
     async def score_by_ids(
         self, collection_name: str, data_point_ids: list[str], query_vector: list[float]
     ) -> list[ScoredResult]:
+        """Score the given data point ids against a query vector.
+
+        Goes in: a collection name, data point ids and a query vector; comes out: a list of scored
+        results, in batches of the adapter's batch size. It only reads.
+        """
         ids = list(dict.fromkeys(str(point_id) for point_id in data_point_ids))
         if not ids:
             return []
@@ -1326,6 +1355,12 @@ class LanceDBAdapter(VectorDBInterface):
         node_name: list[str] | None = None,
         node_name_filter_operator: str = "OR",
     ):
+        """Search a collection by vector (or by text, which it embeds).
+
+        Goes in: the collection name, an optional query text or vector, a limit, flags for vectors
+        and payloads and optional node-set names; comes out: a list of scored results. It only
+        reads.
+        """
         with new_span("cognee.db.vector.search") as otel_span:
             otel_span.set_attribute(COGNEE_DB_SYSTEM, "lancedb")
             otel_span.set_attribute(COGNEE_VECTOR_COLLECTION, collection_name)
@@ -1413,6 +1448,11 @@ class LanceDBAdapter(VectorDBInterface):
         include_payload: bool = False,
         node_name: list[str] | None = None,
     ):
+        """Search a collection with several query texts at once.
+
+        Goes in: the collection name, the query texts, a limit and flags; comes out: one result list
+        per query. It only reads.
+        """
         query_vectors = await self.embedding_engine.embed_text(query_texts)
 
         return await asyncio.gather(
@@ -1496,6 +1536,11 @@ class LanceDBAdapter(VectorDBInterface):
 
     async def delete_data_points(self, collection_name: str, data_point_ids: list[UUID]):
         # Idempotent: a missing collection (or empty id list) is a no-op.
+        """Delete data points from a collection by id.
+
+        Goes in: the collection name and a list of ids; comes out: nothing. It does nothing when the
+        collection or the id list is missing, so it is safe to repeat.
+        """
         if not await self.has_collection(collection_name):
             return
         if not data_point_ids:
@@ -1677,6 +1722,10 @@ class LanceDBAdapter(VectorDBInterface):
         return
 
     async def create_vector_index(self, index_name: str, index_property_name: str):
+        """Create the collection that holds an index over one property.
+
+        Goes in: the index name and the property name; comes out: nothing.
+        """
         await self.create_collection(
             f"{index_name}_{index_property_name}", payload_schema=IndexSchema
         )
@@ -1684,6 +1733,11 @@ class LanceDBAdapter(VectorDBInterface):
     async def index_data_points(
         self, index_name: str, index_property_name: str, data_points: list[DataPoint]
     ):
+        """Store the indexed property of data points in that index's collection.
+
+        Goes in: the index name, the property name and data points; comes out: nothing. It writes
+        one record per data point.
+        """
         await self.create_data_points(
             f"{index_name}_{index_property_name}",
             [
@@ -1709,6 +1763,10 @@ class LanceDBAdapter(VectorDBInterface):
         # A compaction pass (whose version cleanup runs outside VECTOR_DB_LOCK)
         # finishes before the tables are dropped under it. Same lock order as
         # ``compact``: compaction lock, then the write lock.
+        """Delete every collection of this vector store, after any running compaction has finished.
+
+        Goes in: nothing; comes out: nothing. All stored vectors are lost.
+        """
         connection = await self.get_connection()
 
         async with self._compaction_lock:
@@ -1762,10 +1820,21 @@ class LanceDBAdapter(VectorDBInterface):
                 cls._lance_datapoint_class_cache.move_to_end(key)
                 return cached
 
-        class LanceDataPoint(LanceModel):
-            id: str
-            vector: Vector(vector_size)
-            payload: payload_schema
+        # Built with type() because the field types are values known only at run time;
+        # the result is the same class the equivalent class statement would make.
+        LanceDataPoint = type(
+            "LanceDataPoint",
+            (LanceModel,),
+            {
+                "__module__": __name__,
+                "__qualname__": "LanceDBAdapter._make_lance_datapoint_cls.<locals>.LanceDataPoint",
+                "__annotations__": {
+                    "id": str,
+                    "vector": Vector(vector_size),
+                    "payload": payload_schema,
+                },
+            },
+        )
 
         with cls._lance_cache_lock:
             existing = cls._lance_datapoint_class_cache.get(key)

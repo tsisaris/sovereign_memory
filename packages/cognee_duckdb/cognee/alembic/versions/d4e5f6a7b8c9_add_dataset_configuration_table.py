@@ -1,4 +1,4 @@
-"""add dataset_configuration table
+"""add dataset_configuration table.
 
 Revision ID: d4e5f6a7b8c9
 Revises:
@@ -15,6 +15,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    """Apply this migration step: create the dataset_configurations table.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It checks first
+    and does nothing when the change is already present.
+    """
     conn = op.get_bind()
     insp = sa.inspect(conn)
 
@@ -39,6 +44,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Undo this migration step: drop the dataset_configurations table.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It does nothing
+    when there is nothing to undo.
+    """
     conn = op.get_bind()
     insp = sa.inspect(conn)
 

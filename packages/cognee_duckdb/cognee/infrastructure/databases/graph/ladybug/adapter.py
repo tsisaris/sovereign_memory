@@ -1,6 +1,7 @@
 """Adapter for Ladybug graph database."""
 
 import asyncio
+import importlib
 import json
 import os
 import tempfile
@@ -8,13 +9,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, ClassVar
 from uuid import NAMESPACE_OID, UUID, uuid5
 
 # Importing this package registers the Windows DLL search path ladybug's native
 # extension needs, so it has to precede the ``ladybug`` imports below. See
 # cognee_db_workers/_windows_openssl.py.
-import cognee_db_workers
+importlib.import_module("cognee_db_workers")
 from ladybug import Connection
 from ladybug.database import Database
 
@@ -584,6 +585,10 @@ class LadybugAdapter(GraphDBInterface):
             raise
 
     async def push_to_s3(self) -> None:
+        """Upload the local Ladybug graph file to S3 after a checkpoint, when S3 storage is selected.
+
+        Goes in: nothing; comes out: nothing. It does nothing for other storage backends.
+        """
         if os.getenv("STORAGE_BACKEND", "").lower() == "s3" and hasattr(self, "temp_graph_file"):
             from cognee.infrastructure.files.storage.S3FileStorage import S3FileStorage
 
@@ -596,6 +601,11 @@ class LadybugAdapter(GraphDBInterface):
             s3_file_storage.s3.put(self.temp_graph_file, self.db_path, recursive=True)
 
     async def pull_from_s3(self) -> None:
+        """Download the Ladybug graph file from S3 to the local temporary path.
+
+        Goes in: nothing; comes out: nothing. A missing remote file is logged as a warning and
+        nothing is downloaded.
+        """
         from cognee.infrastructure.files.storage.S3FileStorage import S3FileStorage
 
         s3_file_storage = S3FileStorage("")
@@ -607,6 +617,10 @@ class LadybugAdapter(GraphDBInterface):
     async def is_empty(self) -> bool:
         # Scoped to :Node so the GraphMetadata marker table (and any future
         # non-data node table) never makes a data-empty graph read as non-empty.
+        """Say whether the graph holds no data nodes; the check looks only at :Node nodes so the metadata marker table never makes a graph look non-empty.
+
+        Goes in: nothing; comes out: True or False. It only reads.
+        """
         query = """
         MATCH (n:Node)
         RETURN true
@@ -1084,7 +1098,9 @@ class LadybugAdapter(GraphDBInterface):
         result = await self.query(query_str, {"id": node_id})
         return result[0][0] if result else False
 
-    async def add_node(self, node: DataPoint) -> None:
+    async def add_node(
+        self, node: DataPoint | str, properties: dict[str, Any] | None = None
+    ) -> None:
         """
         Add a single node to the graph if it doesn't exist.
 
@@ -1095,10 +1111,16 @@ class LadybugAdapter(GraphDBInterface):
         Parameters:
         -----------
 
-            - node (DataPoint): The node to be added, represented as a DataPoint.
+            - node (Union[DataPoint, str]): The node to be added, either a DataPoint or the
+              string identifier of the node.
+            - properties (Optional[Dict[str, Any]]): The properties of the node when node is a
+              string identifier (its id is set from node); ignored when node is a DataPoint.
         """
         try:
-            properties = node.model_dump() if hasattr(node, "model_dump") else vars(node)
+            if isinstance(node, str):
+                properties = {**(properties or {}), "id": node}
+            else:
+                properties = node.model_dump() if hasattr(node, "model_dump") else vars(node)
 
             # Extract core fields with defaults if not present
             core_properties = {
@@ -1146,7 +1168,7 @@ class LadybugAdapter(GraphDBInterface):
 
     async def add_nodes(
         self,
-        nodes: list[DataPoint],
+        nodes: list[tuple[str, dict[str, Any]]] | list[DataPoint],
         source_ref_key: str | dict[str, str] | None = None,
         pipeline_run_id: str | None = None,
     ) -> None:
@@ -1160,8 +1182,8 @@ class LadybugAdapter(GraphDBInterface):
         Parameters:
         -----------
 
-            - nodes (List[DataPoint]): A list of nodes to be added to the graph, each
-              represented as a DataPoint.
+            - nodes (Union[List[Node], List[DataPoint]]): A list of nodes to be added to the
+              graph, each a DataPoint or a (node_id, properties) tuple.
             - source_ref_key (Optional[Union[str, Dict[str, str]]]): When set, graph
               provenance is stamped atomically in the same statement that writes the nodes
               (no separate attach pass). A str stamps every node with that one ref; a dict
@@ -1182,7 +1204,10 @@ class LadybugAdapter(GraphDBInterface):
             # Prepare all nodes data
             node_params = []
             for node in nodes:
-                properties = node.model_dump() if hasattr(node, "model_dump") else vars(node)
+                if isinstance(node, tuple):
+                    properties = {**node[1], "id": node[0]}
+                else:
+                    properties = node.model_dump() if hasattr(node, "model_dump") else vars(node)
 
                 core_properties = {
                     "id": str(properties.get("id", "")),
@@ -1451,6 +1476,11 @@ class LadybugAdapter(GraphDBInterface):
         source_ref_keys: list[str],
         pipeline_run_id: str | None = None,
     ) -> None:
+        """Add source-reference keys (and the pipeline run) to the given nodes' provenance.
+
+        Goes in: node ids, source-ref keys and an optional pipeline run id; comes out: nothing. It
+        does nothing when no keys are given.
+        """
         if not source_ref_keys:
             return
         add_keys = list(source_ref_keys)
@@ -1470,6 +1500,11 @@ class LadybugAdapter(GraphDBInterface):
         source_ref_keys: list[str],
         pipeline_run_id: str | None = None,
     ) -> None:
+        """Add source-reference keys (and the pipeline run) to the given edges' provenance.
+
+        Goes in: edge identities, source-ref keys and an optional pipeline run id; comes out:
+        nothing. It does nothing when no keys are given.
+        """
         if not source_ref_keys:
             return
         add_keys = list(source_ref_keys)
@@ -1488,6 +1523,11 @@ class LadybugAdapter(GraphDBInterface):
         node_ids: list[str],
         source_ref_keys: list[str],
     ) -> None:
+        """Remove source-reference keys from the given nodes' provenance.
+
+        Goes in: node ids and the keys to remove; comes out: nothing. It does nothing when no keys
+        are given.
+        """
         if not source_ref_keys:
             return
         remove_keys = list(source_ref_keys)
@@ -1504,6 +1544,11 @@ class LadybugAdapter(GraphDBInterface):
         edges: list[EdgeIdentity],
         source_ref_keys: list[str],
     ) -> None:
+        """Remove source-reference keys from the given edges' provenance.
+
+        Goes in: edge identities and the keys to remove; comes out: nothing. It does nothing when no
+        keys are given.
+        """
         if not source_ref_keys:
             return
         remove_keys = list(source_ref_keys)
@@ -1516,6 +1561,10 @@ class LadybugAdapter(GraphDBInterface):
         )
 
     async def delete_edge_triples(self, edges: list[EdgeIdentity]) -> None:
+        """Delete the relationships matching the given edge identities and keep their endpoint nodes.
+
+        Goes in: edge identities; comes out: nothing. It does nothing for an empty list.
+        """
         if not edges:
             return
         edge_params = [
@@ -1537,6 +1586,11 @@ class LadybugAdapter(GraphDBInterface):
         await self.checkpoint()
 
     async def get_node_delete_data(self, node_ids: list[str]) -> dict[str, NodeDeleteData]:
+        """Read, for each node id, the data needed to decide whether it can be deleted (its provenance).
+
+        Goes in: node ids; comes out: a dict from node id to its delete data. It only reads and
+        returns an empty dict for no ids.
+        """
         if not node_ids:
             return {}
         ids = list(node_ids)
@@ -1581,6 +1635,11 @@ class LadybugAdapter(GraphDBInterface):
     async def get_edge_delete_data(
         self, edges: list[EdgeIdentity]
     ) -> dict[EdgeIdentity, EdgeDeleteData]:
+        """Read, for each edge identity, the data needed to decide whether it can be deleted (its provenance).
+
+        Goes in: edge identities; comes out: a dict from identity to its delete data. It only reads
+        and returns an empty dict for no edges.
+        """
         if not edges:
             return {}
         edge_params = [
@@ -1624,6 +1683,10 @@ class LadybugAdapter(GraphDBInterface):
         return result
 
     async def find_nodes_by_source_ref(self, source_ref_key: str) -> list[str]:
+        """Find the node ids whose provenance contains a source-reference key.
+
+        Goes in: the key; comes out: a list of node ids. It only reads.
+        """
         rows = await self.query(
             """
             MATCH (n:Node)
@@ -1635,6 +1698,10 @@ class LadybugAdapter(GraphDBInterface):
         return [row[0] for row in rows]
 
     async def find_edges_by_source_ref(self, source_ref_key: str) -> list[EdgeIdentity]:
+        """Find the edges whose provenance contains a source-reference key.
+
+        Goes in: the key; comes out: a list of edge identities. It only reads.
+        """
         rows = await self.query(
             """
             MATCH (a:Node)-[r:EDGE]->(b:Node)
@@ -1649,6 +1716,10 @@ class LadybugAdapter(GraphDBInterface):
         ]
 
     async def find_node_source_refs_by_dataset(self, dataset_id: str) -> dict[str, list[str]]:
+        """Find the source-reference keys of every node that belongs to a dataset.
+
+        Goes in: the dataset id; comes out: a dict from node id to its keys. It only reads.
+        """
         rows = await self.query(
             """
             MATCH (n:Node)
@@ -1671,6 +1742,10 @@ class LadybugAdapter(GraphDBInterface):
     async def find_edge_source_refs_by_dataset(
         self, dataset_id: str
     ) -> dict[EdgeIdentity, list[str]]:
+        """Find the source-reference keys of every edge that belongs to a dataset.
+
+        Goes in: the dataset id; comes out: a dict from edge identity to its keys. It only reads.
+        """
         rows = await self.query(
             """
             MATCH (a:Node)-[r:EDGE]->(b:Node)
@@ -1694,6 +1769,10 @@ class LadybugAdapter(GraphDBInterface):
     async def find_node_source_refs_by_pipeline_run(
         self, pipeline_run_id: str
     ) -> dict[str, list[str]]:
+        """Find the source-reference keys of every node written by a pipeline run.
+
+        Goes in: the run id; comes out: a dict from node id to its keys. It only reads.
+        """
         rows = await self.query(
             """
             MATCH (n:Node)
@@ -1716,6 +1795,10 @@ class LadybugAdapter(GraphDBInterface):
     async def find_edge_source_refs_by_pipeline_run(
         self, pipeline_run_id: str
     ) -> dict[EdgeIdentity, list[str]]:
+        """Find the source-reference keys of every edge written by a pipeline run.
+
+        Goes in: the run id; comes out: a dict from edge identity to its keys. It only reads.
+        """
         rows = await self.query(
             """
             MATCH (a:Node)-[r:EDGE]->(b:Node)
@@ -1737,6 +1820,10 @@ class LadybugAdapter(GraphDBInterface):
         return result
 
     async def set_graph_metadata(self, metadata: dict[str, str]) -> None:
+        """Store key and value pairs in the graph's metadata nodes and checkpoint.
+
+        Goes in: a dict of text pairs; comes out: nothing. It does nothing for an empty dict.
+        """
         if not metadata:
             return
         for key, value in metadata.items():
@@ -1747,6 +1834,10 @@ class LadybugAdapter(GraphDBInterface):
         await self.checkpoint()
 
     async def get_graph_metadata(self) -> dict[str, str]:
+        """Read the graph's metadata nodes.
+
+        Goes in: nothing; comes out: a dict from key to value. It only reads.
+        """
         rows = await self.query("MATCH (m:GraphMetadata) RETURN m.key, m.value")
         return {row[0]: row[1] for row in rows}
 
@@ -1755,6 +1846,11 @@ class LadybugAdapter(GraphDBInterface):
         tags: list[str],
         node_ids: list[str] | None = None,
     ) -> None:
+        """Remove the given belongs-to-set tags from nodes, from all nodes or only the listed ones.
+
+        Goes in: the tags and optional node ids; comes out: nothing. It does nothing when no tags
+        are given or the node list is empty.
+        """
         if not tags:
             return
         if node_ids is not None and not node_ids:
@@ -2043,7 +2139,8 @@ class LadybugAdapter(GraphDBInterface):
 
     async def add_edges(
         self,
-        edges: list[tuple[str, str, str, dict[str, Any]]],
+        edges: list[tuple[str, str, str, dict[str, Any]]]
+        | list[tuple[str, str, str, dict[str, Any] | None]],
         source_ref_key: str | dict[tuple[str, str, str], str] | None = None,
         pipeline_run_id: str | None = None,
     ) -> None:
@@ -2081,7 +2178,9 @@ class LadybugAdapter(GraphDBInterface):
                     "from_id": from_node,
                     "to_id": to_node,
                     "relationship_name": relationship_name,
-                    "properties": json.dumps(properties, cls=JSONEncoder),
+                    "properties": json.dumps(
+                        properties if properties is not None else {}, cls=JSONEncoder
+                    ),
                     "created_at": now,
                     "updated_at": now,
                     # KeyError on a missing identity is deliberate — see add_nodes.
@@ -2312,7 +2411,7 @@ class LadybugAdapter(GraphDBInterface):
         for row in rows:
             if not row or len(row) < len(column_names):
                 continue
-            result.append(dict(zip(column_names, row)))
+            result.append(dict(zip(column_names, row, strict=False)))
         return result
 
     @staticmethod
@@ -2331,7 +2430,7 @@ class LadybugAdapter(GraphDBInterface):
                 edge_object_id = None
         return edge_object_id if isinstance(edge_object_id, str) and edge_object_id else None
 
-    _EDGE_BY_OBJECT_ID_COLUMNS = [
+    _EDGE_BY_OBJECT_ID_COLUMNS: ClassVar[list[str]] = [
         "from_id",
         "to_id",
         "relationship_name",
@@ -2492,6 +2591,11 @@ class LadybugAdapter(GraphDBInterface):
         return {str(r["edge_object_id"]) for r in rows_dicts if r.get("edge_object_id") is not None}
 
     async def get_node_feedback_weights(self, node_ids: list[str]) -> dict[str, float]:
+        """Read the feedback weight of each given node.
+
+        Goes in: node ids; comes out: a dict from node id to its weight. It ignores invalid ids and
+        only reads.
+        """
         if not node_ids:
             return {}
         valid_node_ids = [node_id for node_id in node_ids if isinstance(node_id, str) and node_id]
@@ -2513,6 +2617,11 @@ class LadybugAdapter(GraphDBInterface):
     async def set_node_feedback_weights(
         self, node_feedback_weights: dict[str, float]
     ) -> dict[str, bool]:
+        """Store feedback weights on nodes.
+
+        Goes in: a dict from node id to weight; comes out: a dict from node id to whether it was
+        stored. Invalid ids are reported False.
+        """
         if not node_feedback_weights:
             return {}
         node_ids = list(node_feedback_weights.keys())
@@ -2527,6 +2636,11 @@ class LadybugAdapter(GraphDBInterface):
         return {nid: (nid in updated_ids) for nid in node_ids}
 
     async def get_node_truth_state(self, node_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Read the truth-state record of each given node.
+
+        Goes in: node ids; comes out: a dict from node id to its truth state. It ignores invalid ids
+        and only reads.
+        """
         if not node_ids:
             return {}
         valid_node_ids = [node_id for node_id in node_ids if isinstance(node_id, str) and node_id]
@@ -2554,6 +2668,11 @@ class LadybugAdapter(GraphDBInterface):
     async def set_node_truth_state(
         self, node_truth_state: dict[str, dict[str, Any]]
     ) -> dict[str, bool]:
+        """Store truth-state records on nodes.
+
+        Goes in: a dict from node id to its truth-state dict; comes out: a dict from node id to
+        whether it was stored. Invalid ids are reported False.
+        """
         if not node_truth_state:
             return {}
         node_ids = list(node_truth_state.keys())
@@ -2605,6 +2724,11 @@ class LadybugAdapter(GraphDBInterface):
         return bool(result)
 
     async def get_edge_feedback_weights(self, edge_object_ids: list[str]) -> dict[str, float]:
+        """Read the feedback weight of each edge by its object id.
+
+        Goes in: edge object ids; comes out: a dict from edge object id to its weight. It ignores
+        invalid ids and only reads.
+        """
         if not edge_object_ids:
             return {}
         requested_ids = {eid for eid in edge_object_ids if isinstance(eid, str) and eid}
@@ -2635,6 +2759,11 @@ class LadybugAdapter(GraphDBInterface):
     async def set_edge_feedback_weights(
         self, edge_feedback_weights: dict[str, float]
     ) -> dict[str, bool]:
+        """Store feedback weights on edges by object id.
+
+        Goes in: a dict from edge object id to weight; comes out: a dict from edge object id to
+        whether it was stored. Invalid ids are reported False.
+        """
         if not edge_feedback_weights:
             return {}
         requested_ids = {eid for eid in edge_feedback_weights if isinstance(eid, str) and eid}
@@ -2756,7 +2885,7 @@ class LadybugAdapter(GraphDBInterface):
             return []
 
     async def get_connections(
-        self, node_id: str
+        self, node_id: str | UUID
     ) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
         """
         Get all nodes connected to a given node.
@@ -2768,7 +2897,7 @@ class LadybugAdapter(GraphDBInterface):
         Parameters:
         -----------
 
-            - node_id (str): The identifier of the node for which to retrieve connections.
+            - node_id (Union[str, UUID]): The identifier of the node for which to retrieve connections.
 
         Returns:
         --------
@@ -2798,7 +2927,7 @@ class LadybugAdapter(GraphDBInterface):
         }
         """
         try:
-            results = await self.query(query_str, {"node_id": node_id})
+            results = await self.query(query_str, {"node_id": str(node_id)})
             edges = []
             for row in results:
                 if row and len(row) == 3:

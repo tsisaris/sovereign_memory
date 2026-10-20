@@ -483,7 +483,7 @@ class SqlCacheAdapter(CacheDBInterface):
         return self._sync_lock_engine
 
     def acquire_lock(self):
-        """Acquire a Postgres advisory lock keyed by lock_key. (Sync because of Ladybug)
+        """Acquire a Postgres advisory lock keyed by lock_key. (Sync because of Ladybug).
 
         Returns a handle owning the checked-out connection; the lock lives for the
         connection's lifetime (released on release_lock or connection death — no
@@ -518,7 +518,7 @@ class SqlCacheAdapter(CacheDBInterface):
             raise
 
     def release_lock(self, lock=None):
-        """Release the passed advisory-lock handle, if held. (Sync because of Ladybug)"""
+        """Release the passed advisory-lock handle, if held. (Sync because of Ladybug)."""
         if not self._is_postgres:
             logger.error("Shared Ladybug lock requires Redis or Postgres cache backend.")
             raise SharedLadybugLockRequiresRedisError()

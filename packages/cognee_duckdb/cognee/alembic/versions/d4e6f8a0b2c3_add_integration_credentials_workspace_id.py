@@ -1,4 +1,4 @@
-"""add_integration_credentials_workspace_id
+"""add_integration_credentials_workspace_id.
 
 Revision ID: d4e6f8a0b2c3
 Revises: c3d5e7f9a1b2

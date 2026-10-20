@@ -1,4 +1,4 @@
-"""Add agent_id to session_records for agent-to-search attribution
+"""Add agent_id to session_records for agent-to-search attribution.
 
 Revision ID: a7c2e9f4b8d1
 Revises: 1c22e6cb5aec

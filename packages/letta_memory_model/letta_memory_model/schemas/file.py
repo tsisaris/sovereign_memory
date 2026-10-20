@@ -1,3 +1,8 @@
+"""The Letta file schemas: file metadata, file processing status, the association between a file and an agent, and the paged response of an agent's files.
+
+They are validated data shapes and do nothing on their own.
+"""
+
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
@@ -18,7 +23,7 @@ class FileStatus(str, Enum):
 
 
 class FileMetadataBase(LettaBase):
-    """Base class for FileMetadata schemas"""
+    """Base class for FileMetadata schemas."""
 
     __id_prefix__ = PrimitiveType.FILE.value
 
@@ -66,7 +71,7 @@ class FileMetadataBase(LettaBase):
 
 
 class FileMetadata(FileMetadataBase):
-    """Representation of a single FileMetadata"""
+    """Representation of a single FileMetadata."""
 
     id: str = FileMetadataBase.generate_id_field()
     organization_id: Optional[str] = Field(
@@ -83,7 +88,7 @@ class FileMetadata(FileMetadataBase):
 
 
 class FileAgentBase(LettaBase):
-    """Base class for the FileMetadata-⇄-Agent association schemas"""
+    """Base class for the FileMetadata-⇄-Agent association schemas."""
 
     __id_prefix__ = PrimitiveType.FILE.value
 
@@ -143,7 +148,7 @@ class FileAgent(FileAgentBase):
 
 
 class AgentFileAttachment(LettaBase):
-    """Response model for agent file attachments showing file status in agent context"""
+    """Response model for agent file attachments showing file status in agent context."""
 
     id: str = Field(..., description="Unique identifier of the file-agent relationship")
     file_id: str = Field(..., description="Unique identifier of the file")
@@ -168,7 +173,7 @@ class AgentFileAttachment(LettaBase):
 
 
 class PaginatedAgentFiles(LettaBase):
-    """Paginated response for agent files"""
+    """Paginated response for agent files."""
 
     files: List[AgentFileAttachment] = Field(
         ..., description="List of file attachments for the agent"
@@ -180,6 +185,11 @@ class PaginatedAgentFiles(LettaBase):
 
 
 class FileBlock(BaseModel):
+    """One file as an agent holds it in context: its file id, source id and whether it is open.
+
+    It carries values only.
+    """
+
     file_id: str
     source_id: str
     is_open: bool = False

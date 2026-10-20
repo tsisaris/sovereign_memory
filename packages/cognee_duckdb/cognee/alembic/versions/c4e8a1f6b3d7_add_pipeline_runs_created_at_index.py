@@ -1,4 +1,4 @@
-"""Index pipeline_runs on (created_at, id)
+"""Index pipeline_runs on (created_at, id).
 
 Revision ID: c4e8a1f6b3d7
 Revises: c7e2a9b4d1f3

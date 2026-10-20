@@ -1,4 +1,4 @@
-"""Expand data model info
+"""Expand data model info.
 
 Revision ID: e4ebee1091e7
 Revises: ab7e313804ae

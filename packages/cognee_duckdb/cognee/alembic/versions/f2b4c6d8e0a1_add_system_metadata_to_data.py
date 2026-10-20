@@ -1,4 +1,4 @@
-"""add_system_metadata_to_data
+"""add_system_metadata_to_data.
 
 Revision ID: f2b4c6d8e0a1
 Revises: d6e8f0a2b4c6

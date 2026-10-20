@@ -1,3 +1,10 @@
+"""Create (and cache) the relational database adapter for a provider from its path, name, host, port and credentials.
+
+Goes in: connection settings; comes out: an adapter. It builds an engine object but runs no query
+itself.
+"""
+
+import importlib.util
 from functools import lru_cache
 
 from sqlalchemy import URL
@@ -34,7 +41,8 @@ def create_relational_engine(
     elif db_provider == "postgres":
         try:
             # Test if asyncpg is available
-            import asyncpg
+            if importlib.util.find_spec("asyncpg") is None:
+                raise ImportError("asyncpg is not installed")
 
             # Handle special characters in username and password like # or @
             connection_string = URL.create(

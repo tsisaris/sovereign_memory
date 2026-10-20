@@ -1,6 +1,10 @@
+"""Checks that the DuckDB relational adapter keeps data in separate schemas apart, the DuckDB form of the PostgreSQL schema-isolation test.
+
+Each check uses a temporary database file.
+"""
+
 import asyncio
-import os
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
@@ -11,6 +15,10 @@ from sqlalchemy import text
 
 @pytest.fixture(scope="session")
 def event_loop():
+    """Test fixture: give each session its own new event loop and close it afterwards.
+
+    Comes out: the loop.
+    """
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
@@ -18,6 +26,7 @@ def event_loop():
 
 @pytest.mark.asyncio
 async def test_duckdb_schema_isolation(tmp_path):
+    """Check that rows written under two schemas stay isolated and can be read back separately, on a temporary DuckDB file."""
     from cognee.cognee_duckdb_relational import DuckDBRelationalAdapter
 
     db_file = tmp_path / "test_schemas.duckdb"

@@ -1,4 +1,4 @@
-"""Reconcile every database to the chain's frozen truth
+"""Reconcile every database to the chain's frozen truth.
 
 Revision ID: 1c22e6cb5aec
 Revises: f3a7b9c1d2e4
