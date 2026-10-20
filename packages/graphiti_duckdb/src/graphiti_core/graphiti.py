@@ -182,6 +182,11 @@ def select_saga_summary_episodes(
 
 
 class AddEpisodeResults(BaseModel):
+    """The result of adding one episode: the episode, its episodic edges, the entity nodes and edges extracted, and any communities.
+
+    It carries data only and does nothing.
+    """
+
     episode: EpisodicNode
     episodic_edges: list[EpisodicEdge]
     nodes: list[EntityNode]
@@ -191,6 +196,11 @@ class AddEpisodeResults(BaseModel):
 
 
 class AddBulkEpisodeResults(BaseModel):
+    """The result of adding episodes in bulk: the episodes, their episodic edges, the nodes and edges extracted, and any communities.
+
+    It carries data only and does nothing.
+    """
+
     episodes: list[EpisodicNode]
     episodic_edges: list[EpisodicEdge]
     nodes: list[EntityNode]
@@ -200,11 +210,21 @@ class AddBulkEpisodeResults(BaseModel):
 
 
 class AddTripletResults(BaseModel):
+    """The result of adding one triplet: the entity nodes and entity edges that were saved.
+
+    It carries data only and does nothing.
+    """
+
     nodes: list[EntityNode]
     edges: list[EntityEdge]
 
 
 class Graphiti:
+    """The Graphiti client: it ingests episodes into a temporal knowledge graph through a graph driver, a language-model client, an embedder and a cross-encoder, and searches the graph.
+
+    It talks to those services through the objects it is given.
+    """
+
     def __init__(
         self,
         uri: str | None = None,
@@ -404,8 +424,8 @@ class Graphiti:
 
             capture_event("graphiti_initialized", properties)
         except Exception:
-            # Silently handle telemetry errors
-            pass
+            # Telemetry errors never stop the client; they are logged only.
+            logger.debug("Telemetry initialisation failed", exc_info=True)
 
     @property
     def token_tracker(self):
@@ -1979,7 +1999,7 @@ class Graphiti:
         bfs_origin_node_uuids: list[str] | None = None,
         search_filter: SearchFilters | None = None,
     ) -> SearchResults:
-        """DEPRECATED"""
+        """Deprecated: call search_, which this forwards to unchanged."""
         return await self.search_(
             query, config, group_ids, center_node_uuid, bfs_origin_node_uuids, search_filter
         )
@@ -2016,6 +2036,11 @@ class Graphiti:
         )
 
     async def get_nodes_and_edges_by_episode(self, episode_uuids: list[str]) -> SearchResults:
+        """Fetch the entity edges and nodes that the given episodes mention.
+
+        Goes in: a list of episode uuids; comes out: search results holding those edges and nodes.
+        It only reads.
+        """
         episodes = await EpisodicNode.get_by_uuids(self.driver, episode_uuids)
 
         edges_list = await semaphore_gather(
@@ -2036,6 +2061,11 @@ class Graphiti:
         target_node: EntityNode,
         episode: EpisodicNode | None = None,
     ) -> AddTripletResults:
+        """Save one source node, one edge and one target node (and optionally link them to an episode), generating missing embeddings first.
+
+        Goes in: the source node, the entity edge, the target node and an optional episode; comes
+        out: the nodes and edges that were saved. It calls the embedder for any missing embedding.
+        """
         if source_node.name_embedding is None:
             await source_node.generate_name_embedding(self.embedder)
         if target_node.name_embedding is None:

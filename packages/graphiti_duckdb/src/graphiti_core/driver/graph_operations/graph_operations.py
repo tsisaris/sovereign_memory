@@ -42,6 +42,11 @@ class GraphOperationsInterface(BaseModel):
         raise NotImplementedError
 
     async def node_delete(self, node: Any, driver: Any) -> None:
+        """Delete one entity node.
+
+        Goes in: the entity object and the driver; comes out: nothing. The base class only raises
+        NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def node_save_bulk(
@@ -62,6 +67,11 @@ class GraphOperationsInterface(BaseModel):
         group_id: str,
         batch_size: int = 100,
     ) -> None:
+        """Delete every entity node of one group in batches.
+
+        Goes in: the class (unused), the driver, a group id and a batch size; comes out: nothing.
+        The base class only raises NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def node_delete_by_uuids(
@@ -72,6 +82,12 @@ class GraphOperationsInterface(BaseModel):
         group_id: str | None = None,
         batch_size: int = 100,
     ) -> None:
+        """Delete the entity nodes with the given uuids, optionally limited to one group, in batches.
+
+        Goes in: the class (unused), the driver, a list of uuids, an optional group id and a batch
+        size; comes out: nothing. The base class only raises NotImplementedError; a graph driver
+        supplies the real operation.
+        """
         raise NotImplementedError
 
     # -----------------
@@ -155,6 +171,11 @@ class GraphOperationsInterface(BaseModel):
         raise NotImplementedError
 
     async def episodic_node_delete(self, node: Any, driver: Any) -> None:
+        """Delete one episodic node.
+
+        Goes in: the episodic object and the driver; comes out: nothing. The base class only raises
+        NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def episodic_node_save_bulk(
@@ -186,6 +207,11 @@ class GraphOperationsInterface(BaseModel):
         group_id: str,
         batch_size: int = 100,
     ) -> None:
+        """Delete every episodic node of one group in batches.
+
+        Goes in: the class (unused), the driver, a group id and a batch size; comes out: nothing.
+        The base class only raises NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def episodic_node_delete_by_uuids(
@@ -196,6 +222,12 @@ class GraphOperationsInterface(BaseModel):
         group_id: str | None = None,
         batch_size: int = 100,
     ) -> None:
+        """Delete the episodic nodes with the given uuids, optionally limited to one group, in batches.
+
+        Goes in: the class (unused), the driver, a list of uuids, an optional group id and a batch
+        size; comes out: nothing. The base class only raises NotImplementedError; a graph driver
+        supplies the real operation.
+        """
         raise NotImplementedError
 
     # -----------------------
@@ -260,6 +292,11 @@ class GraphOperationsInterface(BaseModel):
         raise NotImplementedError
 
     async def community_node_delete(self, node: Any, driver: Any) -> None:
+        """Delete one community node.
+
+        Goes in: the community object and the driver; comes out: nothing. The base class only raises
+        NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def community_node_save_bulk(
@@ -280,6 +317,11 @@ class GraphOperationsInterface(BaseModel):
         group_id: str,
         batch_size: int = 100,
     ) -> None:
+        """Delete every community node of one group in batches.
+
+        Goes in: the class (unused), the driver, a group id and a batch size; comes out: nothing.
+        The base class only raises NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def community_node_delete_by_uuids(
@@ -290,6 +332,12 @@ class GraphOperationsInterface(BaseModel):
         group_id: str | None = None,
         batch_size: int = 100,
     ) -> None:
+        """Delete the community nodes with the given uuids, optionally limited to one group, in batches.
+
+        Goes in: the class (unused), the driver, a list of uuids, an optional group id and a batch
+        size; comes out: nothing. The base class only raises NotImplementedError; a graph driver
+        supplies the real operation.
+        """
         raise NotImplementedError
 
     # -----------------------
@@ -326,6 +374,11 @@ class GraphOperationsInterface(BaseModel):
         raise NotImplementedError
 
     async def saga_node_delete(self, node: Any, driver: Any) -> None:
+        """Delete one saga node.
+
+        Goes in: the saga object and the driver; comes out: nothing. The base class only raises
+        NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def saga_node_save_bulk(
@@ -346,6 +399,11 @@ class GraphOperationsInterface(BaseModel):
         group_id: str,
         batch_size: int = 100,
     ) -> None:
+        """Delete every saga node of one group in batches.
+
+        Goes in: the class (unused), the driver, a group id and a batch size; comes out: nothing.
+        The base class only raises NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def saga_node_delete_by_uuids(
@@ -356,6 +414,12 @@ class GraphOperationsInterface(BaseModel):
         group_id: str | None = None,
         batch_size: int = 100,
     ) -> None:
+        """Delete the saga nodes with the given uuids, optionally limited to one group, in batches.
+
+        Goes in: the class (unused), the driver, a list of uuids, an optional group id and a batch
+        size; comes out: nothing. The base class only raises NotImplementedError; a graph driver
+        supplies the real operation.
+        """
         raise NotImplementedError
 
     # -----------------------
@@ -440,6 +504,11 @@ class GraphOperationsInterface(BaseModel):
         raise NotImplementedError
 
     async def edge_delete(self, edge: Any, driver: Any) -> None:
+        """Delete one entity edge.
+
+        Goes in: the entity object and the driver; comes out: nothing. The base class only raises
+        NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def edge_save_bulk(
@@ -460,6 +529,12 @@ class GraphOperationsInterface(BaseModel):
         uuids: list[str],
         group_id: str | None = None,
     ) -> None:
+        """Delete the entity edges with the given uuids, optionally limited to one group, in batches.
+
+        Goes in: the class (unused), the driver, a list of uuids, an optional group id and a batch
+        size; comes out: nothing. The base class only raises NotImplementedError; a graph driver
+        supplies the real operation.
+        """
         raise NotImplementedError
 
     # -----------------
@@ -502,7 +577,7 @@ class GraphOperationsInterface(BaseModel):
         batch_size: int = 100,
     ) -> dict[str, list[float]]:
         """
-        Load embedding vectors for many edges in batches
+        Load embedding vectors for many edges in batches.
         """
         raise NotImplementedError
 
@@ -515,6 +590,11 @@ class GraphOperationsInterface(BaseModel):
         raise NotImplementedError
 
     async def episodic_edge_delete(self, edge: Any, driver: Any) -> None:
+        """Delete one episodic edge.
+
+        Goes in: the episodic object and the driver; comes out: nothing. The base class only raises
+        NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def episodic_edge_delete_by_uuids(
@@ -524,6 +604,12 @@ class GraphOperationsInterface(BaseModel):
         uuids: list[str],
         group_id: str | None = None,
     ) -> None:
+        """Delete the episodic edges with the given uuids, optionally limited to one group, in batches.
+
+        Goes in: the class (unused), the driver, a list of uuids, an optional group id and a batch
+        size; comes out: nothing. The base class only raises NotImplementedError; a graph driver
+        supplies the real operation.
+        """
         raise NotImplementedError
 
     # ---------------------------
@@ -560,6 +646,11 @@ class GraphOperationsInterface(BaseModel):
         raise NotImplementedError
 
     async def community_edge_delete(self, edge: Any, driver: Any) -> None:
+        """Delete one community edge.
+
+        Goes in: the community object and the driver; comes out: nothing. The base class only raises
+        NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def community_edge_delete_by_uuids(
@@ -569,6 +660,12 @@ class GraphOperationsInterface(BaseModel):
         uuids: list[str],
         group_id: str | None = None,
     ) -> None:
+        """Delete the community edges with the given uuids, optionally limited to one group, in batches.
+
+        Goes in: the class (unused), the driver, a list of uuids, an optional group id and a batch
+        size; comes out: nothing. The base class only raises NotImplementedError; a graph driver
+        supplies the real operation.
+        """
         raise NotImplementedError
 
     # ---------------------------
@@ -605,6 +702,11 @@ class GraphOperationsInterface(BaseModel):
         raise NotImplementedError
 
     async def has_episode_edge_delete(self, edge: Any, driver: Any) -> None:
+        """Delete one has-episode edge.
+
+        Goes in: the has-episode object and the driver; comes out: nothing. The base class only
+        raises NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def has_episode_edge_save_bulk(
@@ -625,6 +727,12 @@ class GraphOperationsInterface(BaseModel):
         uuids: list[str],
         group_id: str | None = None,
     ) -> None:
+        """Delete the has-episode edges with the given uuids, optionally limited to one group, in batches.
+
+        Goes in: the class (unused), the driver, a list of uuids, an optional group id and a batch
+        size; comes out: nothing. The base class only raises NotImplementedError; a graph driver
+        supplies the real operation.
+        """
         raise NotImplementedError
 
     # ---------------------------
@@ -661,6 +769,11 @@ class GraphOperationsInterface(BaseModel):
         raise NotImplementedError
 
     async def next_episode_edge_delete(self, edge: Any, driver: Any) -> None:
+        """Delete one next-episode edge.
+
+        Goes in: the next-episode object and the driver; comes out: nothing. The base class only
+        raises NotImplementedError; a graph driver supplies the real operation.
+        """
         raise NotImplementedError
 
     async def next_episode_edge_save_bulk(
@@ -681,6 +794,12 @@ class GraphOperationsInterface(BaseModel):
         uuids: list[str],
         group_id: str | None = None,
     ) -> None:
+        """Delete the next-episode edges with the given uuids, optionally limited to one group, in batches.
+
+        Goes in: the class (unused), the driver, a list of uuids, an optional group id and a batch
+        size; comes out: nothing. The base class only raises NotImplementedError; a graph driver
+        supplies the real operation.
+        """
         raise NotImplementedError
 
     # ----------------------------

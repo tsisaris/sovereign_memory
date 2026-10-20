@@ -25,6 +25,11 @@ from graphiti_core.helpers import validate_node_labels
 
 
 class ComparisonOperator(Enum):
+    """The comparison operators a search filter can use: equals, not equals, greater, less, their or-equal forms, is null and is not null.
+
+    It names operators only.
+    """
+
     equals = "="
     not_equals = "<>"
     greater_than = ">"
@@ -36,6 +41,11 @@ class ComparisonOperator(Enum):
 
 
 class DateFilter(BaseModel):
+    """A filter on a date: an optional date and the comparison operator to apply.
+
+    It holds values only.
+    """
+
     date: datetime | None = Field(default=None, description="A datetime to filter on")
     comparison_operator: ComparisonOperator = Field(
         description="Comparison operator for date filter"
@@ -43,6 +53,11 @@ class DateFilter(BaseModel):
 
 
 class PropertyFilter(BaseModel):
+    """A filter on a property: the property name, an optional value and the comparison operator to apply.
+
+    It holds values only.
+    """
+
     property_name: str = Field(description="Property name")
     property_value: str | int | float | None = Field(
         default=None, description="Value you want to match on for the property"
@@ -53,6 +68,11 @@ class PropertyFilter(BaseModel):
 
 
 class SearchFilters(BaseModel):
+    """The filters a search can apply: node labels, edge types and date filters on valid, invalid, created and expired times, plus property filters.
+
+    It holds values only; node labels are checked against a safe pattern when set.
+    """
+
     node_labels: list[str] | None = Field(
         default=None, description="List of node labels to filter on"
     )
@@ -75,11 +95,21 @@ class SearchFilters(BaseModel):
     @field_validator("node_labels")
     @classmethod
     def validate_node_label_filters(cls, value: list[str] | None) -> list[str] | None:
+        """Check that the node labels given as a filter are safe label names.
+
+        Goes in: a list of labels or None; comes out: the same value. It raises if a label is not
+        allowed and never changes the value.
+        """
         validate_node_labels(value)
         return value
 
 
 def cypher_to_opensearch_operator(op: ComparisonOperator) -> str:
+    """Translate a comparison operator into the word OpenSearch uses (gt, lt, gte, lte).
+
+    Goes in: a comparison operator; comes out: the OpenSearch word, or the operator's own text when
+    there is no special word. It touches nothing.
+    """
     mapping = {
         ComparisonOperator.greater_than: "gt",
         ComparisonOperator.less_than: "lt",
@@ -93,6 +123,11 @@ def node_search_filter_query_constructor(
     filters: SearchFilters,
     provider: GraphProvider,
 ) -> tuple[list[str], dict[str, Any]]:
+    """Build the query conditions and parameters that restrict a node search to the given filters.
+
+    Goes in: the search filters and the graph provider; comes out: a list of condition strings and a
+    dict of parameters. It checks labels before use and never runs a query.
+    """
     filter_queries: list[str] = []
     filter_params: dict[str, Any] = {}
 
@@ -113,6 +148,11 @@ def node_search_filter_query_constructor(
 def date_filter_query_constructor(
     value_name: str, param_name: str, operator: ComparisonOperator
 ) -> str:
+    """Build one date condition of a query.
+
+    Goes in: the value name, the parameter name and a comparison operator; comes out: the condition
+    text, which has no parameter for is-null tests. It never runs a query.
+    """
     query = "(" + value_name + " "
 
     if operator == ComparisonOperator.is_null or operator == ComparisonOperator.is_not_null:
@@ -127,6 +167,11 @@ def edge_search_filter_query_constructor(
     filters: SearchFilters,
     provider: GraphProvider,
 ) -> tuple[list[str], dict[str, Any]]:
+    """Build the query conditions and parameters that restrict an edge search to the given filters.
+
+    Goes in: the search filters and the graph provider; comes out: a list of condition strings and a
+    dict of parameters. It never runs a query.
+    """
     filter_queries: list[str] = []
     filter_params: dict[str, Any] = {}
 

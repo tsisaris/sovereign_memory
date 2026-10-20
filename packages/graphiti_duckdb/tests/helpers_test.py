@@ -91,6 +91,10 @@ group_id_2 = "graphiti_test_group_2"
 
 
 def get_driver(provider: GraphProvider) -> GraphDriver:
+    """Return a graph driver for the named provider: a DuckDB driver or a Neo4j driver built from the test settings.
+
+    Goes in: a provider; comes out: a driver. It connects only to the test databases.
+    """
     if provider == GraphProvider.DUCKDB:
         return DuckDBDriver()
     elif provider == GraphProvider.NEO4J:
@@ -123,6 +127,10 @@ def get_driver(provider: GraphProvider) -> GraphDriver:
 
 @pytest_asyncio.fixture(params=drivers)
 async def graph_driver(request):
+    """Test fixture: build the driver for the requested provider, clear the test groups, hand the driver to the test and leave it open afterwards.
+
+    Goes in: the pytest request; comes out: a driver. It clears only the two test group ids.
+    """
     driver = request.param
     graph_driver = get_driver(driver)
     await clear_data(graph_driver, [group_id, group_id_2])
@@ -172,6 +180,10 @@ embeddings["Alice Smith"] = embeddings["Alice"]
 
 @pytest.fixture
 def mock_embedder():
+    """Test fixture: build a mock embedder that returns stored embeddings for known inputs.
+
+    Comes out: the mock embedder. It never calls a model.
+    """
     mock_model = Mock(spec=EmbedderClient)
 
     def mock_embed(input_data):
@@ -189,6 +201,7 @@ def mock_embedder():
 
 def test_lucene_sanitize():
     # Call the function with test data
+    """Check that the Lucene sanitizer escapes every special character and leaves plain text alone."""
     queries = [
         (
             'This has every escape character + - && || ! ( ) { } [ ] ^ " ~ * ? : \\ /',
@@ -203,6 +216,10 @@ def test_lucene_sanitize():
 
 
 async def get_node_count(driver: GraphDriver, uuids: list[str]) -> int:
+    """Count how many of the given node uuids exist.
+
+    Goes in: the driver and a list of uuids; comes out: the count. It only reads.
+    """
     if driver.provider == GraphProvider.DUCKDB:
         results, _, _ = await driver.execute_query(
             "SELECT count(*) AS count FROM graphiti.graph_node "
@@ -222,6 +239,10 @@ async def get_node_count(driver: GraphDriver, uuids: list[str]) -> int:
 
 
 async def get_edge_count(driver: GraphDriver, uuids: list[str]) -> int:
+    """Count how many of the given edge uuids exist.
+
+    Goes in: the driver and a list of uuids; comes out: the count. It only reads.
+    """
     if driver.provider == GraphProvider.DUCKDB:
         results, _, _ = await driver.execute_query(
             "SELECT count(*) AS count FROM graphiti.graph_edge "
@@ -245,6 +266,10 @@ async def get_edge_count(driver: GraphDriver, uuids: list[str]) -> int:
 
 
 async def print_graph(graph_driver: GraphDriver):
+    """Print the nodes and edges of the graph for debugging.
+
+    Goes in: the driver; comes out: nothing. It only reads and prints.
+    """
     nodes, _, _ = await graph_driver.execute_query(
         """
         MATCH (n)
@@ -275,6 +300,11 @@ def assert_datetimes_equal(left, right):
 
 
 async def assert_episodic_node_equals(retrieved: EpisodicNode, sample: EpisodicNode):
+    """Assert that a retrieved episodic node equals the sample it was saved from, field by field.
+
+    Goes in: the retrieved node and the sample; comes out: nothing. It raises AssertionError on a
+    difference.
+    """
     assert retrieved.uuid == sample.uuid
     assert retrieved.name == sample.name
     assert retrieved.group_id == group_id
@@ -289,6 +319,11 @@ async def assert_episodic_node_equals(retrieved: EpisodicNode, sample: EpisodicN
 async def assert_entity_node_equals(
     graph_driver: GraphDriver, retrieved: EntityNode, sample: EntityNode
 ):
+    """Assert that a retrieved entity node equals the sample it was saved from, loading its name embedding first.
+
+    Goes in: the driver, the retrieved node and the sample; comes out: nothing. It raises
+    AssertionError on a difference.
+    """
     await retrieved.load_name_embedding(graph_driver)
     assert retrieved.uuid == sample.uuid
     assert retrieved.name == sample.name
@@ -305,6 +340,11 @@ async def assert_entity_node_equals(
 async def assert_community_node_equals(
     graph_driver: GraphDriver, retrieved: CommunityNode, sample: CommunityNode
 ):
+    """Assert that a retrieved community node equals the sample it was saved from, loading its name embedding first.
+
+    Goes in: the driver, the retrieved node and the sample; comes out: nothing. It raises
+    AssertionError on a difference.
+    """
     await retrieved.load_name_embedding(graph_driver)
     assert retrieved.uuid == sample.uuid
     assert retrieved.name == sample.name
@@ -317,6 +357,11 @@ async def assert_community_node_equals(
 
 
 async def assert_episodic_edge_equals(retrieved: EpisodicEdge, sample: EpisodicEdge):
+    """Assert that a retrieved episodic edge equals the sample it was saved from, field by field.
+
+    Goes in: the retrieved edge and the sample; comes out: nothing. It raises AssertionError on a
+    difference.
+    """
     assert retrieved.uuid == sample.uuid
     assert retrieved.group_id == sample.group_id
     assert_datetimes_equal(retrieved.created_at, sample.created_at)
@@ -327,6 +372,11 @@ async def assert_episodic_edge_equals(retrieved: EpisodicEdge, sample: EpisodicE
 async def assert_entity_edge_equals(
     graph_driver: GraphDriver, retrieved: EntityEdge, sample: EntityEdge
 ):
+    """Assert that a retrieved entity edge equals the sample it was saved from, loading its fact embedding first.
+
+    Goes in: the driver, the retrieved edge and the sample; comes out: nothing. It raises
+    AssertionError on a difference.
+    """
     await retrieved.load_fact_embedding(graph_driver)
     assert retrieved.uuid == sample.uuid
     assert retrieved.group_id == sample.group_id

@@ -96,6 +96,11 @@ def _build_directed_uuid_map(pairs: list[tuple[str, str]]) -> dict[str, str]:
 
 
 class RawEpisode(BaseModel):
+    """One raw episode waiting to be added: name, optional uuid, content, source description, source type and reference time.
+
+    It holds values only.
+    """
+
     name: str
     uuid: str | None = Field(default=None)
     content: str
@@ -109,6 +114,11 @@ async def retrieve_previous_episodes_bulk(
     episodes: list[EpisodicNode],
     max_coroutines: int | None = None,
 ) -> list[tuple[EpisodicNode, list[EpisodicNode]]]:
+    """Fetch, for each episode, the episodes just before it.
+
+    Goes in: the driver, the episodes and a concurrency limit; comes out: pairs of an episode and
+    its earlier episodes. It only reads.
+    """
     previous_episodes_list = await semaphore_gather(
         *[
             retrieve_episodes(
@@ -133,6 +143,11 @@ async def add_nodes_and_edges_bulk(
     entity_edges: list[EntityEdge],
     embedder: EmbedderClient,
 ):
+    """Save episodic nodes and edges and entity nodes and edges in one transaction, creating missing embeddings first.
+
+    Goes in: the driver, the four lists and an embedder; comes out: nothing. It writes through one
+    driver session.
+    """
     session = driver.session()
     try:
         await session.execute_write(
@@ -157,6 +172,11 @@ async def add_nodes_and_edges_bulk_tx(
     embedder: EmbedderClient,
     driver: GraphDriver,
 ):
+    """Save episodic nodes and edges and entity nodes and edges inside a transaction already open.
+
+    Goes in: the session, the four lists, an embedder and the driver; comes out: nothing. It writes
+    through the given session and never commits itself.
+    """
     episodes = [dict(episode) for episode in episodic_nodes]
     for episode in episodes:
         episode["source"] = str(episode["source"].value)
@@ -271,6 +291,12 @@ async def extract_nodes_and_edges_bulk(
     use_combined_extraction: bool = True,
     strict_edge_types: bool = False,
 ) -> tuple[list[list[EntityNode]], list[list[EntityEdge]]]:
+    """Extract entity nodes and edges from many episodes at once with the language model.
+
+    Goes in: the clients, episode tuples, an edge type map and optional type and instruction
+    settings; comes out: the extracted nodes and edges. It calls the language model and writes
+    nothing.
+    """
     if use_combined_extraction:
         return await _extract_nodes_and_edges_bulk_combined(
             clients,
@@ -509,6 +535,12 @@ async def dedupe_edges_bulk(
     edge_types: dict[str, type[BaseModel]],
     _edge_type_map: dict[tuple[str, str], list[str]],
 ) -> dict[str, list[EntityEdge]]:
+    """Deduplicate the edges extracted from a batch of episodes.
+
+    Goes in: the clients, extracted edges per episode, the episode tuples, entities, edge types and
+    the type map; comes out: a dict from episode uuid to its resolved edges. It calls the embedder
+    and language model and writes nothing.
+    """
     embedder = clients.embedder
     min_score = 0.6
 
@@ -601,17 +633,36 @@ async def dedupe_edges_bulk(
 
 
 class UnionFind:
+    """A union-find structure over a set of elements, used to group duplicates.
+
+    Goes in: the elements; comes out: each element's group representative. It keeps its state in
+    memory only.
+    """
+
     def __init__(self, elements):
         # start each element in its own set
+        """Start with every element in its own group.
+
+        Goes in: the elements; comes out: nothing. It touches nothing else.
+        """
         self.parent = {e: e for e in elements}
 
     def find(self, x):
         # path‐compression
+        """Return the representative of an element's group, shortening the path as it goes.
+
+        Goes in: an element; comes out: the representative. It raises KeyError for an unknown
+        element.
+        """
         if self.parent[x] != x:
             self.parent[x] = self.find(self.parent[x])
         return self.parent[x]
 
     def union(self, a, b):
+        """Join the groups of two elements, keeping the lexicographically smaller representative.
+
+        Goes in: two elements; comes out: nothing. It does nothing when they are already together.
+        """
         ra, rb = self.find(a), self.find(b)
         if ra == rb:
             return
@@ -623,7 +674,8 @@ class UnionFind:
 
 
 def compress_uuid_map(duplicate_pairs: list[tuple[str, str]]) -> dict[str, str]:
-    """
+    """Map every id in a duplicate pair to the smallest id of its duplicate set.
+
     all_ids: iterable of all entity IDs (strings)
     duplicate_pairs: iterable of (id1, id2) pairs
     returns: dict mapping each id -> lexicographically smallest id in its duplicate set
