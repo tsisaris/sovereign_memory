@@ -11,6 +11,6 @@ purpose: 'One large, connected, seamless local memory system on DuckDB: every us
     kind of memory welded into one suite that works with DuckDB, a true superset of
     Letta, Zep/Graphiti, Cognee and Mem0, modular so new kinds of memory can be added
     as they appear, free and open for everyone to use and maintain.'
-python_version: '3.12'
+python_version: '3.10'
 sovereign_agent: false
 tests_dir: tests
