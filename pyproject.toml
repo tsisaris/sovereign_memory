@@ -128,7 +128,7 @@ exclude = [".venv", ".git", "data/sovereign", "local"]
 
 # The advisory checkers are run by name, never imported; naming their modules
 # stops deptry guessing, and the GitHub check fails on any line where it guesses.
-package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "semgrep" }
+package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "semgrep", mem0_duckdb = "mem0", sovereign-memory-owner = "service" }
 
 [tool.deptry.per_rule_ignores]
 # The test runner is declared as a development package and imported by tests.
