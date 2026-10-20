@@ -111,6 +111,11 @@ class MemoryProcessor(Protocol):
     registration with an OwnerReader, for reads its prepare step needs. It must
     use that reader instead of opening any connection of its own.
 
+    A processor may also define attach_numbers(services), called once at
+    registration with the owner's NumbersServices, through which it looks up
+    numbers memory received, records numbers that are owed and fetches the
+    numbers of a search question from the supplier. It must never make numbers.
+
     A processor may also define initialize_storage(native_tx_handle), called once
     at owner start on the owner's worker inside a short transaction the owner
     commits (or rolls back if it raises). It is the only place a processor that
@@ -167,6 +172,20 @@ class MemoryProcessor(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class TierRankings:
+    """What a tier that ranks by models' numbers returns instead of one list of hits.
+
+    rankings maps a model label ("id@revision") to that model's hits, best
+    first, ranked only from that model's own numbers; left_out maps the label of
+    each model that could not rank to the reason. A model left out is never an
+    empty ranking. Every hit carries "event_id" and "item_id".
+    """
+
+    rankings: Dict[str, List[Dict[str, Any]]]
+    left_out: Dict[str, str]
+
+
 class MemoryRetriever(Protocol):
     """The contract for engines that answer scoped retrieval.
 
@@ -188,11 +207,12 @@ class MemoryRetriever(Protocol):
         native_handle: duckdb.DuckDBPyConnection,
         scope: RetrievalScope,
         prepared_query: Any,
-    ) -> List[Dict[str, Any]]:
+    ) -> "List[Dict[str, Any]] | TierRankings":
         """Read hits on the owner's handle; never write, commit, close or open another connection.
 
         Every hit must be a dict carrying the string key "event_id" naming the
         captured event it derives from, so the owner can verify identity and expiry.
+        A tier that ranks by models' numbers returns a TierRankings instead.
         """
         ...
 

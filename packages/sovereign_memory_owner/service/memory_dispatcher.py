@@ -20,6 +20,7 @@ from typing import Any
 import duckdb
 from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import AsyncConnection
 
+from service.memory_numbers_services import NumbersServices
 from service.memory_owner_core import TIERS, OwnerCore
 from service.memory_processor_seam import MemoryProcessor, OwnerReader, TerminalProcessingError
 
@@ -91,17 +92,32 @@ def make_reader(conn: AsyncConnection) -> OwnerReader:
 class MemoryDispatcher:
     """Process owed receipts through registered engines on the owner connection."""
 
-    def __init__(self, conn: AsyncConnection, registry: ProcessorRegistry) -> None:
-        """Bind the owner's connection and registry, and hand each processor a reader."""
+    def __init__(
+        self,
+        conn: AsyncConnection,
+        registry: ProcessorRegistry,
+        numbers: NumbersServices | None = None,
+    ) -> None:
+        """Bind the owner's connection and registry, and hand each processor a reader.
+
+        When numbers is given, each processor that defines attach_numbers
+        receives it, and it receives the same reader.
+        """
         self.conn = conn
         self.core = OwnerCore(conn)
         self.registry = registry
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
         reader = make_reader(conn)
+        if numbers is not None:
+            numbers.attach_reader(reader)
         for tier in registry.tiers():
-            attach = getattr(registry.get(tier), "attach_reader", None)
+            processor = registry.get(tier)
+            attach = getattr(processor, "attach_reader", None)
             if attach is not None:
                 attach(reader)
+            attach_numbers = getattr(processor, "attach_numbers", None)
+            if attach_numbers is not None and numbers is not None:
+                attach_numbers(numbers)
 
     async def initialize_storage(self) -> None:
         """Let each processor that has initialize_storage create its tables, once, at start.
@@ -150,9 +166,10 @@ class MemoryDispatcher:
         """
         processor = self.registry.get(tier)
         reset = getattr(processor, "reset_projection", None)
-        identity = getattr(processor, "embedding_identity", None)
-        if not callable(reset) or not isinstance(identity, str):
+        labels_of = getattr(processor, "model_labels", None)
+        if not callable(reset) or not callable(labels_of):
             raise ValueError(f"Tier {tier!r} has no supported embedding projection rebuild")
+        labels = json.dumps(sorted(labels_of()))
         if not isinstance(request_id, str) or not request_id:
             raise ValueError("A nonempty rebuild request id is required")
         if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items <= 0:
@@ -166,13 +183,13 @@ class MemoryDispatcher:
             try:
                 transaction_id = handle.execute("SELECT current_transaction_id()").fetchone()[0]
                 previous = handle.execute(
-                    "SELECT tier, embedding_identity, status FROM memory_rebuilds WHERE request_id = ?",
+                    "SELECT tier, model_labels, status FROM memory_rebuilds WHERE request_id = ?",
                     [request_id],
                 ).fetchone()
                 if previous is not None:
-                    if previous[:2] != (tier, identity):
+                    if previous[:2] != (tier, labels):
                         raise ValueError(
-                            "Rebuild request id was already used with another identity"
+                            "Rebuild request id was already used with other model labels"
                         )
                     handle.commit()
                     return previous[2]
@@ -189,7 +206,7 @@ class MemoryDispatcher:
                 event_ids = [OwnerCore.verify_stored_event(*row)[0]["event_id"] for row in sources]
                 handle.execute(
                     "INSERT INTO memory_rebuilds VALUES (?, ?, ?, 'processing', ?)",
-                    [request_id, tier, identity, _now()],
+                    [request_id, tier, labels, _now()],
                 )
                 if event_ids:
                     cursor = handle.execute(
@@ -249,7 +266,7 @@ class MemoryDispatcher:
         return {
             "request_id": request_id,
             "tier": tier,
-            "embedding_identity": identity,
+            "model_labels": json.loads(labels),
             "status": rows[0],
         }
 
@@ -262,13 +279,14 @@ class MemoryDispatcher:
             handle.begin()
             try:
                 active = handle.execute(
-                    "SELECT request_id, tier, embedding_identity FROM memory_rebuilds WHERE status = 'processing'"
+                    "SELECT request_id, tier, model_labels FROM memory_rebuilds WHERE status = 'processing'"
                 ).fetchall()
-                for request_id, tier, identity in active:
+                for request_id, tier, labels in active:
                     processor = self.registry.get(tier)
                     if processor is None:
                         continue
-                    if getattr(processor, "embedding_identity", None) != identity:
+                    labels_of = getattr(processor, "model_labels", None)
+                    if not callable(labels_of) or json.dumps(sorted(labels_of())) != labels:
                         handle.execute(
                             "UPDATE memory_rebuilds SET status = 'failed' WHERE request_id = ?",
                             [request_id],
