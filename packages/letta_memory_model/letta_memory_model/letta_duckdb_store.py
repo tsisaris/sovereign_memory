@@ -364,28 +364,38 @@ class LettaMemoryStore:
         """Run a memory tool on the agent's stored blocks and store what it changed.
 
         tool is one of the functions in letta_memory_model.functions.function_sets.base,
-        called as tool(agent_state, *args, **kwargs). Every block whose value it
-        changed is written with a compare-and-set on the version read, in one
-        transaction; if the tool raises (read-only block, missing text, limit
-        exceeded) or a block changed concurrently, nothing is written. Returns
-        the tool's result.
+        called as tool(agent_state, *args, **kwargs). Every block whose value or
+        label it changed is written with a compare-and-set on the version read,
+        a block it removed from the memory is detached from the agent, and a
+        block it added is created and attached, all in one transaction; if the
+        tool raises (read-only block, missing text, limit exceeded) or a block
+        changed concurrently, nothing is written. Returns the tool's result.
         """
         with self.transaction() as session:
             rows = self._agent_block_rows(session, organization_id, agent_id)
-            before = {row.id: (row.version, row.value) for row in rows}
+            before = {row.id: (row.version, row.value, row.label) for row in rows}
             memory = Memory(blocks=[row.to_pydantic() for row in rows])
             result = tool(AgentState(id=agent_id, memory=memory), *args, **kwargs)
+            kept = {block.id for block in memory.get_blocks()}
+            for block_id in before.keys() - kept:
+                self.detach_block(organization_id, agent_id, block_id)
             for block in memory.get_blocks():
-                version, value = before[block.id]
+                if block.id not in before:
+                    continue
+                version, value, label = before[block.id]
+                changes: dict[str, Any] = {}
                 if block.value != value:
+                    changes["value"] = block.value
+                if block.label != label:
+                    changes["label"] = block.label
+                if changes:
                     self._update_block(
-                        session,
-                        organization_id,
-                        block.id,
-                        version,
-                        actor_id,
-                        {"value": block.value},
+                        session, organization_id, block.id, version, actor_id, changes
                     )
+            for block in memory.get_blocks():
+                if block.id not in before:
+                    created = self.create_block(organization_id, block, actor_id=actor_id)
+                    self.attach_block(organization_id, agent_id, created.id)
             return result
 
     # Recall: conversations and messages ----------------------------------------
