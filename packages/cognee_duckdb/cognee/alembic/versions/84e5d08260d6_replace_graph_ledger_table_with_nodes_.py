@@ -1,4 +1,4 @@
-"""Replace graph ledger table with nodes and edges tables
+"""Replace graph ledger table with nodes and edges tables.
 
 Revision ID: 84e5d08260d6
 Revises: 1a58b986e6e1

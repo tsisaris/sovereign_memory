@@ -1,4 +1,4 @@
-"""add_importance_weight_to_data
+"""add_importance_weight_to_data.
 
 Revision ID: f1a2b3c4d5e6
 Revises: e1ec1dcb50b6

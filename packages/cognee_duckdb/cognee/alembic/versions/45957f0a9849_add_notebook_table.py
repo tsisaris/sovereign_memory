@@ -1,4 +1,4 @@
-"""Add notebook table
+"""Add notebook table.
 
 Revision ID: 45957f0a9849
 Revises: 9e7a3cb85175

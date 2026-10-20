@@ -129,7 +129,7 @@ class OwnerCore:
                 CREATE TABLE IF NOT EXISTS memory_rebuilds (
                     request_id VARCHAR PRIMARY KEY,
                     tier VARCHAR NOT NULL,
-                    embedding_identity VARCHAR NOT NULL,
+                    model_labels VARCHAR NOT NULL DEFAULT '[]',
                     status VARCHAR NOT NULL,
                     requested_at VARCHAR NOT NULL
                 );
@@ -142,10 +142,34 @@ class OwnerCore:
                 );
                 """,
             )
+            await self._retire_single_identity()
             await self.conn.commit()
         except Exception:
             await self.conn.rollback()
             raise
+
+    async def _retire_single_identity(self) -> None:
+        """Replace the rebuilds table's single embedding identity by a list of model labels.
+
+        A file created before models became registry rows has the column
+        embedding_identity. Its value is kept as the one entry of model_labels
+        and the column is dropped, so no earlier record is lost. A file already
+        in the new shape is left alone. It runs inside the caller's transaction.
+        """
+        cursor = await self.conn.cursor()
+        await cursor.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'memory_rebuilds' AND table_schema = current_schema()"
+        )
+        columns = {row[0] for row in await cursor.fetchall()}
+        if "embedding_identity" not in columns:
+            return
+        for statement in (
+            "ALTER TABLE memory_rebuilds ADD COLUMN IF NOT EXISTS model_labels VARCHAR DEFAULT '[]'",
+            "UPDATE memory_rebuilds SET model_labels = json_array(embedding_identity)::VARCHAR",
+            "ALTER TABLE memory_rebuilds DROP COLUMN embedding_identity",
+        ):
+            await self.conn.run(self.conn.native.execute, statement)
 
     @staticmethod
     async def _store_payload_if_missing(cursor, event_id: str, payload: bytes) -> None:

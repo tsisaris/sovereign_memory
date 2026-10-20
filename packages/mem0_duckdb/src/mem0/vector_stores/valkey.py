@@ -1,3 +1,9 @@
+"""A Mem0 vector store on Valkey search.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to a Valkey server and is not used by the DuckDB-only owner path.
+"""
+
 import json
 import logging
 from datetime import datetime
@@ -36,6 +42,8 @@ excluded_keys = {"user_id", "agent_id", "run_id", "hash", "data", "created_at", 
 
 
 class OutputData(BaseModel):
+    """One search result: an id, a score and a payload. It carries data only and does nothing."""
+
     id: str
     score: float
     payload: Dict
@@ -45,6 +53,12 @@ _VALKEY_TAG_SPECIAL = set(r',.<>{}[]"\':;!@#$%^&*()-+=~| ')
 
 
 class ValkeyDB(VectorStoreBase):
+    """The Valkey vector store: it creates the search index and inserts, searches, updates, deletes and lists vectors with payloads.
+
+    Tag filter values are escaped so they cannot change the query. It talks to a Valkey server and
+    never touches DuckDB.
+    """
+
     @staticmethod
     def _escape_tag_value(value):
         """Escape special characters in a Valkey FT.SEARCH tag filter value.
@@ -298,7 +312,7 @@ class ValkeyDB(VectorStoreBase):
             payloads (list, optional): List of payloads corresponding to the vectors.
             ids (list, optional): List of IDs for the vectors.
         """
-        for vector, payload, id in zip(vectors, payloads, ids):
+        for vector, payload, id in zip(vectors, payloads, ids, strict=False):
             try:
                 # Create the key for the hash
                 key = f"{self.prefix}:{id}"
@@ -650,7 +664,7 @@ class ValkeyDB(VectorStoreBase):
         return payload, memory_id
 
     def _convert_bytes(self, data):
-        """Convert bytes data back to string"""
+        """Convert bytes data back to string."""
         if isinstance(data, bytes):
             try:
                 return data.decode("utf-8")

@@ -83,6 +83,11 @@ def calculate_cosine_similarity(vector1: list[float], vector2: list[float]) -> f
 
 
 def fulltext_query(query: str, group_ids: list[str] | None, driver: GraphDriver):
+    """Turn a search text into the full-text query string the driver's database understands.
+
+    Goes in: the text, the group ids and the driver; comes out: the query string, empty if the text
+    is too long for Kuzu. It checks the group ids first and never runs a query.
+    """
     validate_group_ids(group_ids)
 
     if driver.provider == GraphProvider.KUZU:
@@ -119,6 +124,11 @@ async def get_episodes_by_mentions(
     edges: list[EntityEdge],
     limit: int = RELEVANT_SCHEMA_LIMIT,
 ) -> list[EpisodicNode]:
+    """Find the episodes that mention the given nodes or edges.
+
+    Goes in: the driver, nodes, edges and a limit; comes out: a list of episode nodes. It only
+    reads.
+    """
     episode_uuids: list[str] = []
     for edge in edges:
         episode_uuids.extend(edge.episodes)
@@ -131,6 +141,12 @@ async def get_episodes_by_mentions(
 async def get_mentioned_nodes(
     driver: GraphDriver, episodes: list[EpisodicNode]
 ) -> list[EntityNode]:
+    """Find the entity nodes that the given episodes mention.
+
+    Goes in: the driver and a list of episodes; comes out: a list of entity nodes. It uses the
+    driver's own operation set when one is provided and otherwise runs the generic query. It only
+    reads.
+    """
     if driver.graph_operations_interface:
         try:
             return await driver.graph_operations_interface.get_mentioned_nodes(driver, episodes)
@@ -158,6 +174,12 @@ async def get_mentioned_nodes(
 async def get_communities_by_nodes(
     driver: GraphDriver, nodes: list[EntityNode]
 ) -> list[CommunityNode]:
+    """Find the communities that contain the given nodes.
+
+    Goes in: the driver and a list of entity nodes; comes out: a list of community nodes. It uses
+    the driver's own operation set when one is provided and otherwise runs the generic query. It
+    only reads.
+    """
     if driver.graph_operations_interface:
         try:
             return await driver.graph_operations_interface.get_communities_by_nodes(driver, nodes)
@@ -189,6 +211,12 @@ async def edge_fulltext_search(
     group_ids: list[str] | None = None,
     limit=RELEVANT_SCHEMA_LIMIT,
 ) -> list[EntityEdge]:
+    """Search entity edges by full text.
+
+    Goes in: the driver, the query text, the search filters, optional group ids and a limit; comes
+    out: a list of entity edges. It uses the driver's search interface when there is one. It only
+    reads.
+    """
     if driver.search_interface:
         return await driver.search_interface.edge_fulltext_search(
             driver, query, search_filter, group_ids, limit
@@ -309,6 +337,11 @@ async def edge_similarity_search(
     limit: int = RELEVANT_SCHEMA_LIMIT,
     min_score: float = DEFAULT_MIN_SCORE,
 ) -> list[EntityEdge]:
+    """Search entity edges by cosine similarity to a vector.
+
+    Goes in: the driver, the vector, optional source and target node uuids, filters, group ids, a
+    limit and a minimum score; comes out: a list of entity edges. It only reads.
+    """
     if driver.search_interface:
         return await driver.search_interface.edge_similarity_search(
             driver,
@@ -455,6 +488,11 @@ async def edge_bfs_search(
     group_ids: list[str] | None = None,
     limit: int = RELEVANT_SCHEMA_LIMIT,
 ) -> list[EntityEdge]:
+    """Search entity edges by a breadth-first walk from the given nodes.
+
+    Goes in: the driver, origin node uuids, a maximum depth, filters, group ids and a limit; comes
+    out: a list of entity edges. It only reads.
+    """
     if driver.search_interface:
         try:
             return await driver.search_interface.edge_bfs_search(
@@ -578,6 +616,12 @@ async def node_fulltext_search(
     group_ids: list[str] | None = None,
     limit=RELEVANT_SCHEMA_LIMIT,
 ) -> list[EntityNode]:
+    """Search entity nodes by full text.
+
+    Goes in: the driver, the query text, the search filters, optional group ids and a limit; comes
+    out: a list of entity nodes. It uses the driver's search interface when there is one. It only
+    reads.
+    """
     if driver.search_interface:
         return await driver.search_interface.node_fulltext_search(
             driver, query, search_filter, group_ids, limit
@@ -672,6 +716,11 @@ async def node_similarity_search(
     limit=RELEVANT_SCHEMA_LIMIT,
     min_score: float = DEFAULT_MIN_SCORE,
 ) -> list[EntityNode]:
+    """Search entity nodes by cosine similarity to a vector.
+
+    Goes in: the driver, the vector, filters, optional group ids, a limit and a minimum score; comes
+    out: a list of entity nodes. It only reads.
+    """
     if driver.search_interface:
         return await driver.search_interface.node_similarity_search(
             driver, search_vector, search_filter, group_ids, limit, min_score
@@ -790,6 +839,11 @@ async def node_bfs_search(
     group_ids: list[str] | None = None,
     limit: int = RELEVANT_SCHEMA_LIMIT,
 ) -> list[EntityNode]:
+    """Search entity nodes by a breadth-first walk from the given nodes.
+
+    Goes in: the driver, origin node uuids, filters, a maximum depth, group ids and a limit; comes
+    out: a list of entity nodes. It only reads.
+    """
     if driver.search_interface:
         try:
             return await driver.search_interface.node_bfs_search(
@@ -885,6 +939,11 @@ async def episode_fulltext_search(
     group_ids: list[str] | None = None,
     limit=RELEVANT_SCHEMA_LIMIT,
 ) -> list[EpisodicNode]:
+    """Search episodes by full text.
+
+    Goes in: the driver, the query text, a filter argument (unused), optional group ids and a limit;
+    comes out: a list of episodic nodes. It only reads.
+    """
     if driver.search_interface:
         return await driver.search_interface.episode_fulltext_search(
             driver, query, _search_filter, group_ids, limit
@@ -970,6 +1029,11 @@ async def community_fulltext_search(
     group_ids: list[str] | None = None,
     limit=RELEVANT_SCHEMA_LIMIT,
 ) -> list[CommunityNode]:
+    """Search communities by full text.
+
+    Goes in: the driver, the query text, optional group ids and a limit; comes out: a list of
+    community nodes. It only reads.
+    """
     if driver.search_interface:
         try:
             return await driver.search_interface.community_fulltext_search(
@@ -1060,6 +1124,11 @@ async def community_similarity_search(
     limit=RELEVANT_SCHEMA_LIMIT,
     min_score=DEFAULT_MIN_SCORE,
 ) -> list[CommunityNode]:
+    """Search communities by cosine similarity to a vector.
+
+    Goes in: the driver, the vector, optional group ids, a limit and a minimum score; comes out: a
+    list of community nodes. It only reads.
+    """
     if driver.search_interface:
         try:
             return await driver.search_interface.community_similarity_search(
@@ -1252,6 +1321,11 @@ async def get_relevant_nodes(
     min_score: float = DEFAULT_MIN_SCORE,
     limit: int = RELEVANT_SCHEMA_LIMIT,
 ) -> list[list[EntityNode]]:
+    """For each given node, find existing nodes that are similar enough to be the same entity.
+
+    Goes in: the driver, the nodes, filters, a minimum score and a limit; comes out: one list of
+    candidate nodes per input node. It only reads.
+    """
     if len(nodes) == 0:
         return []
 
@@ -1412,6 +1486,11 @@ async def get_relevant_edges(
     min_score: float = DEFAULT_MIN_SCORE,
     limit: int = RELEVANT_SCHEMA_LIMIT,
 ) -> list[list[EntityEdge]]:
+    """For each given edge, find existing edges between the same nodes that are similar to it.
+
+    Goes in: the driver, the edges, filters, a minimum score and a limit; comes out: one list of
+    candidate edges per input edge. It only reads.
+    """
     if len(edges) == 0:
         return []
 
@@ -1603,6 +1682,11 @@ async def get_edge_invalidation_candidates(
     min_score: float = DEFAULT_MIN_SCORE,
     limit: int = RELEVANT_SCHEMA_LIMIT,
 ) -> list[list[EntityEdge]]:
+    """For each given edge, find existing edges that the new edge might contradict.
+
+    Goes in: the driver, the edges, filters, a minimum score and a limit; comes out: one list of
+    candidate edges per input edge. It only reads.
+    """
     if len(edges) == 0:
         return []
 
@@ -1793,6 +1877,11 @@ async def get_edge_invalidation_candidates(
 def rrf(
     results: list[list[str]], rank_const=1, min_score: float = 0
 ) -> tuple[list[str], list[float]]:
+    """Merge ranked lists of uuids by reciprocal rank fusion.
+
+    Goes in: lists of uuids best first, a rank constant and a minimum score; comes out: the uuids
+    best first and their scores, keeping those at or above the minimum. It touches nothing.
+    """
     scores: dict[str, float] = defaultdict(float)
     for result in results:
         for i, uuid in enumerate(result):
@@ -1814,6 +1903,11 @@ async def node_distance_reranker(
     center_node_uuid: str,
     min_score: float = 0,
 ) -> tuple[list[str], list[float]]:
+    """Re-rank node uuids by their distance from a centre node.
+
+    Goes in: the driver, the uuids, the centre uuid and a minimum score; comes out: the uuids in
+    order with their scores. It uses the driver's search interface when there is one. It only reads.
+    """
     if driver.search_interface:
         try:
             return await driver.search_interface.node_distance_reranker(
@@ -1873,6 +1967,11 @@ async def node_distance_reranker(
 async def episode_mentions_reranker(
     driver: GraphDriver, node_uuids: list[list[str]], min_score: float = 0
 ) -> tuple[list[str], list[float]]:
+    """Re-rank node uuids by how many episodes mention them.
+
+    Goes in: the driver, lists of uuids and a minimum score; comes out: the uuids in order with
+    their scores. It uses the driver's search interface when there is one. It only reads.
+    """
     if driver.search_interface:
         try:
             return await driver.search_interface.episode_mentions_reranker(
@@ -1922,6 +2021,12 @@ def maximal_marginal_relevance(
     mmr_lambda: float = DEFAULT_MMR_LAMBDA,
     min_score: float = -2.0,
 ) -> tuple[list[str], list[float]]:
+    """Re-rank candidates by maximal marginal relevance.
+
+    Goes in: the query vector, a dict of candidate vectors, the MMR weight and a minimum score;
+    comes out: the candidate uuids in order with their scores. It touches nothing outside its
+    arguments.
+    """
     start = time()
     query_array = np.array(query_vector)
     candidate_arrays: dict[str, NDArray] = {}
@@ -1960,6 +2065,11 @@ def maximal_marginal_relevance(
 async def get_embeddings_for_nodes(
     driver: GraphDriver, nodes: list[EntityNode]
 ) -> dict[str, list[float]]:
+    """Load the stored name embeddings of the given nodes.
+
+    Goes in: the driver and a list of entity nodes; comes out: a dict from node uuid to embedding.
+    It only reads.
+    """
     if driver.graph_operations_interface:
         return await driver.graph_operations_interface.node_load_embeddings_bulk(driver, nodes)
     elif driver.provider == GraphProvider.NEPTUNE:
@@ -1997,6 +2107,11 @@ async def get_embeddings_for_nodes(
 async def get_embeddings_for_communities(
     driver: GraphDriver, communities: list[CommunityNode]
 ) -> dict[str, list[float]]:
+    """Load the stored name embeddings of the given communities.
+
+    Goes in: the driver and a list of community nodes; comes out: a dict from uuid to embedding. It
+    only reads.
+    """
     if driver.search_interface:
         try:
             return await driver.search_interface.get_embeddings_for_communities(driver, communities)
@@ -2038,6 +2153,11 @@ async def get_embeddings_for_communities(
 async def get_embeddings_for_edges(
     driver: GraphDriver, edges: list[EntityEdge]
 ) -> dict[str, list[float]]:
+    """Load the stored fact embeddings of the given edges.
+
+    Goes in: the driver and a list of entity edges; comes out: a dict from edge uuid to embedding.
+    It only reads.
+    """
     if driver.graph_operations_interface:
         return await driver.graph_operations_interface.edge_load_embeddings_bulk(driver, edges)
     elif driver.provider == GraphProvider.NEPTUNE:

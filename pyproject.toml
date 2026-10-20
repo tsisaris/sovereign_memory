@@ -17,7 +17,6 @@ dependencies = [
     "duckdb==1.5.6",
     "sqlalchemy==2.0.39",
     "pydantic==2.14.1",
-    "cognee==1.6.5",
     "mem0_duckdb==0.1.0",
     "sovereign-memory-owner==0.1.0",
 ]
@@ -116,11 +115,11 @@ exclude = ["data/sovereign", "local", ".venv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["packages/duckdb_sqlalchemy_async/duckdb_sqlalchemy_async"]
+pythonpath = ["src", "."]
 addopts = "-ra"
 
 [tool.coverage.run]
-source = ["packages"]
+source = ["src"]
 
 [tool.deptry]
 # exclude REPLACES deptry's defaults, which would silently skip every folder
@@ -129,8 +128,8 @@ exclude = [".venv", ".git", "data/sovereign", "local"]
 
 # The advisory checkers are run by name, never imported; naming their modules
 # stops deptry guessing, and the GitHub check fails on any line where it guesses.
-package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "semgrep", duckdb_sqlalchemy_async = "duckdb_sqlalchemy_async" }
+package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "semgrep", mem0_duckdb = "mem0", sovereign-memory-owner = "service" }
 
 [tool.deptry.per_rule_ignores]
 # The test runner is declared as a development package and imported by tests.
-DEP004 = ["pytest", "pytest_asyncio"]
+DEP004 = ["pytest"]

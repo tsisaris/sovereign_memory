@@ -1,36 +1,47 @@
-"""Cognee text chunks as the owner's relational tier, written on the owner's own handle.
+"""Cognee text chunks as the owner's relational tier: one piece, one chunk.
 
-Every captured event becomes one Cognee DocumentChunk: a graph node carrying its
-event provenance as properties (through Cognee's DuckDB graph adapter) and a vector in the
-"DocumentChunk_text" collection that Cognee's own chunk search reads, both
-written on the owner's borrowed native transaction handle so they commit with
-the receipt. The vector comes from the Cognee embedding engine the deployment
-configured, called before the transaction. The chunk id derives from the event
-id, so a replay overwrites the same chunk. Each chunk belongs to its producer's
-node set, which is how a search is limited to the producers the caller may see.
+The unit this tier stores is the piece the supplier cut (agent_corpus): its id,
+its text, its position in its source event and its event id. Each piece becomes
+one Cognee DocumentChunk graph node (through Cognee's DuckDB graph adapter) that
+carries its event provenance, written on the owner's borrowed native transaction
+handle so it commits with the receipt. The chunk id derives from the piece id,
+so a replay overwrites the same chunk. This tier never cuts text and never makes
+numbers: Cognee's own cutter is switched off on this path (NoCutChunker refuses
+to cut), and when an event has no pieces yet the tier raises
+NumbersNotYetSupplied, which the owner records as retryable pending work.
 
-This tier stores and searches chunks only. Cognee's cognify (entity and
-relationship extraction) needs a language model and is not run: no entity,
-relationship or summary exists, and every hit says so in "ranking".
+The numbers live in the per-model numbers tables, one per registered model, and
+a search ranks the pieces once per fresh model from that model's own numbers,
+limited in SQL to the producers the asker may see. Every hit names its event, so
+the owner's live, not removed, not expired and visible checks still decide
+whether it may be shown. Cognee's cognify (entity and relationship extraction)
+needs a language model and is not run: no entity, relationship or summary exists.
 """
 
 import asyncio
 import json
-import math
 import uuid
 from dataclasses import dataclass
 from importlib.metadata import version
 from typing import Any
-from uuid import UUID
 
 import duckdb
+from cognee.modules.chunking.Chunker import Chunker
 from cognee_community_hybrid_adapter_duckdb.duckdb_adapter import DuckDBAdapter
 
-from service.memory_processor_seam import ProcessorResult, RetrievalScope
+from service.memory_models import ModelRow
+from service.memory_numbers import pieces_of_event, retired_piece_ids_of_event
+from service.memory_numbers_services import NumbersServices, ReceivedNumbersEmbeddingEngine
+from service.memory_processor_seam import (
+    OwnerReader,
+    ProcessorResult,
+    RetrievalScope,
+    TierRankings,
+)
+from service.memory_supplier import PENDING_WORK, NumbersNotYetSupplied
 from service.memory_tier_support import (
     actor_of,
     event_instant,
-    event_text,
     group_of,
     is_removal,
     removal_target,
@@ -38,13 +49,13 @@ from service.memory_tier_support import (
 
 TIER_NAME = "relational"
 PROCESSOR_ID = "cognee-duckdb-chunks"
-PROJECTION_VERSION = "cognee-chunk-1"
-COLLECTION = "DocumentChunk_text"
+PROJECTION_VERSION = "cognee-piece-chunk-1"
+# The vector collection the earlier one-event-one-chunk tier wrote; only a rebuild reads it, to retire it.
+LEGACY_VECTOR_COLLECTION = "DocumentChunk_text"
 NODE_TYPE = "DocumentChunk"
 CHUNK_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "sovereign-memory-owner/cognee-chunk")
 PROVENANCE_FIELDS = (
     "schema_version",
-    "event_type",
     "source_revision",
     "source_artifact_id",
     "work_id",
@@ -53,118 +64,140 @@ PROVENANCE_FIELDS = (
 )
 
 
-class EmbeddingIndexMismatch(RuntimeError):
-    """The stored chunks were embedded by a different model than the configured one.
+class NoCutChunker(Chunker):
+    """Cognee's chunker slot on the memory path: it refuses to cut anything.
 
-    Comparing vectors from different models (even of the same dimension) is
-    meaningless, so the tier refuses to write or search until the index is rebuilt
-    from the original events. The original events are never altered.
+    Goes in: a Cognee document, as for any chunker. Comes out: nothing; read
+    raises RuntimeError. Pass it as the chunker wherever Cognee's pipeline could
+    reach this memory so that Cognee's own cutter can never split text here:
+    cutting belongs to the supplier. It never reads or splits the document.
     """
 
+    chunker_id = "memory-no-cut"
 
-def embedding_identity(engine: Any, revision: str | None = None) -> str:
-    """Identify the declared model revision, refusing conflicting exposed engine metadata.
+    def read(self):
+        """Refuse: pieces come from the supplier, never from Cognee's cutter."""
+        raise RuntimeError(
+            "Cognee's own cutter is switched off on the memory path; "
+            "pieces are cut by the supplier and received"
+        )
 
-    It is stamped on every stored chunk and compared before any write or search.
-    The engine's revision takes precedence when exposed and must match an explicit
-    declaration. With no served metadata the declaration remains unverified. Missing
-    model/revision or invalid dimensions raises ValueError. API version is separate.
+
+def chunk_id(piece_id: str) -> str:
+    """Return the deterministic Cognee chunk id of a supplied piece; pure."""
+    return str(uuid.uuid5(CHUNK_NAMESPACE, piece_id))
+
+
+def legacy_chunk_id(event_id: str) -> str:
+    """Return the chunk id the earlier one-event-one-chunk tier gave an event; pure.
+
+    Used only to recognise and retire chunks written before pieces existed.
     """
-    model, dimensions = getattr(engine, "model", None), getattr(engine, "dimensions", None)
-    if not isinstance(model, str) or not model:
-        raise ValueError("The embedding engine does not name its model and dimensions")
-    if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions <= 0:
-        raise ValueError("The embedding engine needs positive integer dimensions")
-    served_revision = getattr(engine, "revision", None)
-    if served_revision is not None and revision is not None and served_revision != revision:
-        raise ValueError("The embedding engine revision differs from the configured revision")
-    revision = served_revision if served_revision is not None else revision
-    if not isinstance(revision, str) or not revision:
-        raise ValueError("The embedding engine does not name a model revision")
-    provider, version_ = getattr(engine, "provider", None), getattr(engine, "api_version", None)
-    if not isinstance(provider, str) or not provider:
-        raise ValueError("The embedding engine does not name its provider")
-    identity = {
-        "format": "cognee-embedding-v2",
-        "provider": provider,
-        "model": model,
-        "revision": revision,
-        "dimensions": dimensions,
-        "api_version": version_,
-    }
-    if provider == "agent_embedding":
-        capability = getattr(engine, "capability_id", None)
-        if not isinstance(capability, str) or not capability:
-            raise ValueError("The Agent Embedding engine names no capability")
-        identity["capability_id"] = capability
-    return json.dumps(
-        identity,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def chunk_id(event_id: str) -> str:
-    """Return the deterministic Cognee chunk id of a captured event; pure."""
     return str(uuid.uuid5(CHUNK_NAMESPACE, event_id))
 
 
 @dataclass(frozen=True)
 class PreparedChunk:
-    """A chunk and its vector to store, or (when removal_target is set) the chunk to delete.
-
-    Holds plain data only, never a database handle.
-    """
+    """One chunk to store: its id and the node properties. Plain data, never a handle."""
 
     chunk_id: str
-    properties: dict[str, Any] | None = None
-    vector: list[float] | None = None
+    properties: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PreparedChunks:
+    """The chunks of one event's pieces to store, or (removal_target set) the chunks to delete.
+
+    chunks lists the chunks to store; delete_ids names every chunk id a removal
+    deletes. Holds plain data only, never a database handle.
+    """
+
+    chunks: tuple[PreparedChunk, ...] = ()
     removal_target: str | None = None
+    delete_ids: tuple[str, ...] = ()
+    embedding_engine: Any = None
 
 
 class CogneeChunkTier:
-    """Owner processor and retriever for the relational tier, backed by Cognee chunks.
+    """Owner processor and retriever for the relational tier, backed by piece chunks.
 
-    embedding_engine is a Cognee embedding engine (an async embed_text(list[str])
-    and get_vector_size()); database_name is the DuckDB schema Cognee's tables
-    live in. Both come from the deployment's configuration. The tier never
-    opens, commits, rolls back or closes a connection.
+    database_name is the DuckDB schema Cognee's tables live in. embedding_model,
+    when given as (model id, revision), binds the embedder object Cognee's adapter
+    receives to that registered model; it answers from received numbers only. The
+    tier never opens, commits, rolls back or closes a connection, makes a number
+    or cuts text.
     """
 
     tier_name = TIER_NAME
 
     def __init__(
-        self, embedding_engine: Any, database_name: str, *, revision: str | None = None
+        self, database_name: str, *, embedding_model: tuple[str, str] | None = None
     ) -> None:
-        """Keep the engine and schema name; nothing is opened until the first owner call."""
+        """Keep the schema name and the optional embedder binding; nothing is opened yet."""
         if not isinstance(database_name, str) or not database_name:
             raise ValueError("CogneeChunkTier needs a non-empty database_name")
-        self.embedding_engine = embedding_engine
-        self.embedding_revision = revision
-        self.embedding_identity = embedding_identity(embedding_engine, revision)
         self.database_name = database_name
+        self.embedding_model = embedding_model
+        self._reader: OwnerReader | None = None
+        self._services: NumbersServices | None = None
 
-    def _adapter(self, handle: duckdb.DuckDBPyConnection) -> DuckDBAdapter:
+    def attach_reader(self, reader: OwnerReader) -> None:
+        """Receive the owner's reader; every read before a decision goes through it."""
+        self._reader = reader
+
+    def attach_numbers(self, services: NumbersServices) -> None:
+        """Receive the owner's numbers services (lookup, owed requests, question door)."""
+        self._services = services
+
+    def model_labels(self) -> list[str]:
+        """Return the model labels a rebuild of this tier covers: none, as it holds no numbers."""
+        return []
+
+    def _need_reader(self) -> OwnerReader:
+        """Return the attached reader or raise RuntimeError if the owner never registered the tier."""
+        if self._reader is None:
+            raise RuntimeError("CogneeChunkTier has no owner reader attached")
+        return self._reader
+
+    def _need_services(self) -> NumbersServices:
+        """Return the numbers services or raise RuntimeError if the owner never attached them."""
+        if self._services is None:
+            raise RuntimeError("CogneeChunkTier has no numbers services attached")
+        return self._services
+
+    def _adapter(self, handle: duckdb.DuckDBPyConnection, engine: Any = None) -> DuckDBAdapter:
         """Build Cognee's adapter on the owner's handle for one call; it borrows, never owns."""
         return DuckDBAdapter(
-            connection=handle,
-            database_name=self.database_name,
-            embedding_engine=self.embedding_engine,
+            connection=handle, database_name=self.database_name, embedding_engine=engine
         )
 
     def reset_projection(self, handle: duckdb.DuckDBPyConnection, max_items: int) -> None:
-        """Replace only source-backed Owner chunks, preserving other Cognee graph records.
+        """Delete only source-backed Owner chunks, preserving other Cognee graph records.
 
-        Every vector must have matching Owner provenance before its collection can
-        be recreated at a new width. Unknown data or excessive rows refuse the reset.
-        The caller owns the transaction; this method never commits or calls a model.
+        Every chunk node with Owner provenance (a piece chunk, or a chunk the
+        earlier one-event-one-chunk tier wrote) must match a captured event and
+        its recorded producer before it is deleted; the earlier tier's vector
+        collection, if present, is checked the same way and dropped. Unknown data
+        or excessive rows refuse the reset. The caller owns the transaction; this
+        method never commits and never calls a model.
         """
         adapter = self._adapter(handle)
         asyncio.run(adapter.initialize())
-        table = adapter._table(COLLECTION)
+
+        def source_of(event_id: str | None):
+            """Return the producer recorded for an event this tier owes, or None."""
+            return handle.execute(
+                "SELECT e.actor_agent_id FROM memory_events e JOIN memory_receipts r "
+                "USING (event_id) WHERE e.event_id = ? AND r.tier = ? AND "
+                "(e.schema_version LIKE '2.%' OR json_extract_string(e.raw_event, '$.tier') = "
+                "r.tier)",
+                [event_id, TIER_NAME],
+            ).fetchone()
+
+        table = adapter._table(LEGACY_VECTOR_COLLECTION)
         exists = handle.execute(
             "SELECT 1 FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
-            [self.database_name, COLLECTION],
+            [self.database_name, LEGACY_VECTOR_COLLECTION],
         ).fetchone()
         if exists:
             if handle.execute(f"SELECT count(*) FROM {table}").fetchone()[0] > max_items:
@@ -174,16 +207,11 @@ class CogneeChunkTier:
             ).fetchall():
                 data = json.loads(payload or "{}")
                 event_id = data.get("event_id")
-                source = handle.execute(
-                    "SELECT e.actor_agent_id FROM memory_events e JOIN memory_receipts r USING (event_id) "
-                    "WHERE e.event_id = ? AND r.tier = ? AND (e.schema_version LIKE '2.%' "
-                    "OR json_extract_string(e.raw_event, '$.tier') = r.tier)",
-                    [event_id, TIER_NAME],
-                ).fetchone()
+                source = source_of(event_id)
                 if (
                     source is None
                     or source[0] != data.get("actor_agent_id")
-                    or identifier != chunk_id(event_id)
+                    or identifier != legacy_chunk_id(event_id)
                 ):
                     raise ValueError("Cognee collection contains a chunk without Owner provenance")
         nodes = handle.execute(
@@ -197,195 +225,189 @@ class CogneeChunkTier:
         identifiers = []
         for identifier, payload in nodes:
             data = json.loads(payload)
-            event_id = data.get("event_id")
-            if identifier != chunk_id(event_id):
+            event_id, piece_id = data.get("event_id"), data.get("piece_id")
+            expected = chunk_id(piece_id) if piece_id else legacy_chunk_id(event_id)
+            if identifier != expected:
                 raise ValueError("Cognee graph contains ambiguous Owner chunk provenance")
-            if (
-                handle.execute(
-                    "SELECT 1 FROM memory_events e JOIN memory_receipts r USING (event_id) "
-                    "WHERE e.event_id = ? AND r.tier = ? AND (e.schema_version LIKE '2.%' "
-                    "OR json_extract_string(e.raw_event, '$.tier') = r.tier)",
-                    [event_id, TIER_NAME],
-                ).fetchone()
-                is None
-            ):
+            if source_of(event_id) is None:
                 raise ValueError("Cognee graph chunk has no recoverable Owner source")
             identifiers.append(identifier)
         asyncio.run(adapter.delete_nodes(identifiers))
         if exists:
             handle.execute(f"DROP TABLE {table}")
-        asyncio.run(adapter.create_collection(COLLECTION, self.embedding_engine.dimensions))
-
-    def _require_matching_index(self, adapter: DuckDBAdapter) -> None:
-        """Raise EmbeddingIndexMismatch if any stored chunk has another embedding identity; reads only."""
-        if (
-            embedding_identity(self.embedding_engine, self.embedding_revision)
-            != self.embedding_identity
-        ):
-            raise EmbeddingIndexMismatch(
-                "The embedding engine identity changed after tier creation"
-            )
-        (exists,) = adapter.connection.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_catalog = "
-            "current_database() AND table_schema = ? AND table_name = ?",
-            [self.database_name, COLLECTION],
-        ).fetchone()
-        if not exists:
-            return
-        (other,) = adapter.connection.execute(
-            f"SELECT count(*) FROM {adapter._table(COLLECTION)} "
-            "WHERE json_extract_string(payload, '$.embedding_identity') IS DISTINCT FROM ?",
-            [self.embedding_identity],
-        ).fetchone()
-        if other:
-            raise EmbeddingIndexMismatch(
-                f"{other} stored chunks were embedded by a model other than "
-                f"{self.embedding_identity!r}; rebuild the index from the source events"
-            )
 
     # ---- write seam -------------------------------------------------------------
 
-    async def _embed(self, text: str) -> list[float]:
-        """Embed one text and refuse changed identity, wrong width or nonfinite numbers."""
-        vectors = await self.embedding_engine.embed_text([text])
-        if (
-            embedding_identity(self.embedding_engine, self.embedding_revision)
-            != self.embedding_identity
-        ):
-            raise EmbeddingIndexMismatch("The embedding engine identity changed while embedding")
-        if len(vectors) != 1 or len(vectors[0]) != self.embedding_engine.dimensions:
-            raise RuntimeError("The embedding engine returned an unexpected vector count or width")
-        try:
-            numeric = all(
-                isinstance(value, (int, float))
-                and not isinstance(value, bool)
-                and math.isfinite(value)
-                for value in vectors[0]
-            )
-        except OverflowError as error:
-            raise RuntimeError("The embedding engine returned an oversized vector value") from error
-        if not numeric:
-            raise RuntimeError("The embedding engine returned a nonfinite or nonnumeric vector")
-        return [float(value) for value in vectors[0]]
-
     async def prepare(
         self, event_envelope: dict[str, Any], verified_payload_bytes: bytes | None
-    ) -> PreparedChunk:
-        """Embed the event's text (or name the chunk a removal deletes); no database.
+    ) -> PreparedChunks:
+        """Read the event's supplied pieces (or name the chunks a removal deletes); no model.
 
-        The embedding is a model call and happens here, outside any write
-        transaction. A provider failure propagates and the owner records it as
-        a retryable failure. Raises TerminalProcessingError for bytes that are
-        not UTF-8 text and for a removal that does not match its causation event.
+        Raises NumbersNotYetSupplied, naming the pending work, when the event has
+        no pieces yet; the owner records that as a retryable failure and the
+        owed pieces are recorded for the supplier. Raises TerminalProcessingError
+        for a removal that does not match its causation event.
         """
+        reader, services = self._need_reader(), self._need_services()
         if is_removal(event_envelope):
             target, _ = removal_target(event_envelope, verified_payload_bytes)
-            return PreparedChunk(chunk_id(target), removal_target=target)
+            pieces, retired = await reader(
+                lambda handle: (
+                    pieces_of_event(handle, target),
+                    retired_piece_ids_of_event(handle, target),
+                )
+            )
+            ids = (
+                tuple(chunk_id(p["piece_id"]) for p in pieces)
+                + tuple(chunk_id(piece_id) for piece_id in retired)
+                + (legacy_chunk_id(target),)
+            )
+            return PreparedChunks(removal_target=target, delete_ids=ids)
         event_id = event_envelope["event_id"]
         actor = actor_of(event_envelope)
-        text, _, _ = event_text(event_envelope, verified_payload_bytes)
-        vector = await self._embed(text)
-        identifier = chunk_id(event_id)
-        properties = {
-            "name": event_id,
-            "type": NODE_TYPE,
-            "text": text,
-            "belongs_to_set": [group_of(actor)],
-            "event_id": event_id,
-            "actor_agent_id": actor,
-            "embedding_identity": self.embedding_identity,
-            "event_time": event_instant(event_envelope),
-            **{
-                key: event_envelope.get(key)
-                for key in PROVENANCE_FIELDS
-                if key not in {"event_type"}
-            },
-            "event_type": event_envelope.get("event_type", event_envelope.get("content_type")),
-        }
-        return PreparedChunk(identifier, properties, vector)
+        pieces, retired = await reader(
+            lambda handle: (
+                pieces_of_event(handle, event_id),
+                retired_piece_ids_of_event(handle, event_id),
+            )
+        )
+        if not pieces:
+            await services.request_pieces(event_id, f"{PENDING_WORK}: no pieces yet")
+            raise NumbersNotYetSupplied(
+                f"{PENDING_WORK}: the supplier has not yet handed over the pieces of {event_id}"
+            )
+        engine = await self._engine(services)
+        provenance = {key: event_envelope.get(key) for key in PROVENANCE_FIELDS}
+        chunks = tuple(
+            PreparedChunk(
+                chunk_id(piece["piece_id"]),
+                {
+                    "name": piece["piece_id"],
+                    "type": NODE_TYPE,
+                    "text": piece["text"],
+                    "belongs_to_set": [group_of(actor)],
+                    "event_id": event_id,
+                    "piece_id": piece["piece_id"],
+                    "position": piece["position"],
+                    "text_fingerprint": piece["text_fingerprint"],
+                    "actor_agent_id": actor,
+                    "event_time": event_instant(event_envelope),
+                    "event_type": event_envelope.get(
+                        "event_type", event_envelope.get("content_type")
+                    ),
+                    **provenance,
+                },
+            )
+            for piece in pieces
+        )
+        return PreparedChunks(
+            chunks=chunks,
+            delete_ids=tuple(chunk_id(piece_id) for piece_id in retired),
+            embedding_engine=engine,
+        )
+
+    async def _engine(self, services: NumbersServices) -> ReceivedNumbersEmbeddingEngine | None:
+        """Build the received-numbers embedder object for the configured model, if one is bound."""
+        if self.embedding_model is None:
+            return None
+        model: ModelRow = await services.model(*self.embedding_model)
+        return ReceivedNumbersEmbeddingEngine(services, model)
 
     def apply(
-        self, native_tx_handle: duckdb.DuckDBPyConnection, prepared_work: PreparedChunk
+        self, native_tx_handle: duckdb.DuckDBPyConnection, prepared_work: PreparedChunks
     ) -> ProcessorResult:
-        """Store or delete the chunk's node and vector on the owner's open transaction.
+        """Store or delete the event's chunk nodes on the owner's open transaction.
 
-        A removal of a chunk that was never stored reports processed_no_new_fact.
+        A removal of chunks that were never stored reports processed_no_new_fact.
         """
-        adapter = self._adapter(native_tx_handle)
-        if prepared_work.removal_target is None:
-            self._require_matching_index(adapter)
+        adapter = self._adapter(native_tx_handle, prepared_work.embedding_engine)
         asyncio.run(adapter.initialize())
-        identifier = prepared_work.chunk_id
         if prepared_work.removal_target is not None:
-            existed = asyncio.run(adapter.get_node(identifier)) is not None
-            asyncio.run(adapter.delete_nodes([identifier]))
-            asyncio.run(adapter.delete_data_points(COLLECTION, [UUID(identifier)]))
+            existed = any(
+                asyncio.run(adapter.get_node(identifier)) is not None
+                for identifier in prepared_work.delete_ids
+            )
+            asyncio.run(adapter.delete_nodes(list(prepared_work.delete_ids)))
             status = "processed" if existed else "processed_no_new_fact"
         else:
-            properties = prepared_work.properties or {}
-            point = {
-                "id": identifier,
-                "vector": prepared_work.vector,
-                "payload": {"id": identifier, **properties},
-            }
-            asyncio.run(adapter.add_nodes([(identifier, properties)]))
-            asyncio.run(adapter.upsert_raw_vectors(COLLECTION, [point]))
+            if prepared_work.delete_ids:
+                asyncio.run(adapter.delete_nodes(list(prepared_work.delete_ids)))
+            asyncio.run(
+                adapter.add_nodes([(c.chunk_id, c.properties) for c in prepared_work.chunks])
+            )
             status = "processed"
         return ProcessorResult(status, PROCESSOR_ID, version("cognee"), PROJECTION_VERSION)
 
     # ---- read seam --------------------------------------------------------------
 
     async def prepare_query(self, scope: RetrievalScope, query: str, limit: int) -> dict[str, Any]:
-        """Embed the question outside the database worker."""
-        return {"vector": await self._embed(query), "limit": limit}
+        """Fetch the question's numbers, per fresh model, from the supplier's door.
+
+        A model that is stale, or whose question numbers the supplier cannot give,
+        is left out with its reason; it is never counted as an empty ranking.
+        Memory never embeds the question itself.
+        """
+        vectors, left_out = await self._need_services().question_vectors("event", query)
+        return {"vectors": vectors, "left_out": left_out, "limit": limit}
 
     def retrieve(
         self,
         native_handle: duckdb.DuckDBPyConnection,
         scope: RetrievalScope,
         prepared_query: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Return the chunks nearest the question among the producers the visibility permits.
+    ) -> TierRankings:
+        """Rank the pieces once per model from that model's own numbers, for permitted producers.
 
-        The search is Cognee's vector search over stored chunks (cosine
-        distance, lower is nearer), limited in SQL to the producers' node sets.
-        There is no entity or relationship search. Before any chunk was stored
-        the answer is no chunks. Raises ValueError for an unknown visibility
-        mode; it never writes.
+        Each ranking is the nearest pieces by cosine distance (lower is nearer)
+        in that model's numbers table, limited in SQL to the producers the
+        visibility names and to events not removed. Raises ValueError for an
+        unknown visibility mode. It never writes and never ranks across models.
         """
         visibility = scope.visibility
+        condition: str
+        params: list[Any]
         if visibility.mode == "own":
-            groups: list[str] | None = [group_of(scope.agent_id)]
+            condition, params = "e.actor_agent_id = ?", [scope.agent_id]
         elif visibility.mode == "granted":
-            groups = [group_of(actor) for actor in sorted(visibility.actor_agent_ids)]
+            actors = sorted(visibility.actor_agent_ids)
+            if not actors:
+                return TierRankings({}, dict(prepared_query["left_out"]))
+            condition, params = "e.actor_agent_id IN (SELECT unnest(?))", [actors]
         elif visibility.mode == "pool":
-            groups = None
+            condition, params = "TRUE", []
         else:
             raise ValueError(f"Unsupported visibility mode: {visibility.mode!r}")
-        if groups == []:
-            return []
-        adapter = self._adapter(native_handle)
-        self._require_matching_index(adapter)
-        found = asyncio.run(
-            adapter.search(
-                COLLECTION,
-                query_vector=prepared_query["vector"],
-                limit=prepared_query["limit"],
-                with_vector=False,
-                include_payload=True,
-                node_name=groups,
-                node_name_filter_operator="OR",
-            )
-        )
-        return [
-            {
-                "event_id": item.payload.get("event_id"),
-                "actor_agent_id": item.payload.get("actor_agent_id"),
-                "chunk_id": str(item.id),
-                "text": item.payload.get("text"),
-                "distance": item.score,
-                "source_revision": item.payload.get("source_revision"),
-                "ranking": "vector distance to stored chunk text; no entity or relationship extraction",
-            }
-            for item in found
-        ]
+        rankings: dict[str, list[dict[str, Any]]] = {}
+        for label, (model, vector) in prepared_query["vectors"].items():
+            rows = native_handle.execute(
+                f"SELECT n.piece_id, n.event_id, p.text, p.position, e.actor_agent_id, "
+                f"json_extract_string(e.raw_event, '$.source_revision'), "
+                f"array_cosine_distance(n.numbers, CAST(? AS FLOAT[{model.width}])) AS distance "
+                f"FROM {model.numbers_table} n JOIN memory_pieces p ON p.piece_id = n.piece_id "
+                "JOIN memory_events e ON e.event_id = n.event_id "
+                "LEFT JOIN memory_removals r ON r.target_event_id = n.event_id "
+                "LEFT JOIN memory_piece_retirements x ON x.piece_id = n.piece_id "
+                f"WHERE NOT n.stale AND p.source = 'event' AND r.target_event_id IS NULL "
+                "AND x.piece_id IS NULL "
+                f"AND {condition} ORDER BY distance, n.piece_id LIMIT ?",
+                [vector, *params, prepared_query["limit"]],
+            ).fetchall()
+            rankings[label] = [
+                {
+                    "event_id": row[1],
+                    "item_id": row[0],
+                    "piece_id": row[0],
+                    "chunk_id": chunk_id(row[0]),
+                    "position": row[3],
+                    "text": row[2],
+                    "actor_agent_id": row[4],
+                    "source_revision": row[5],
+                    "distance": row[6],
+                    "ranking": (
+                        f"cosine distance of {label}'s own numbers; "
+                        "no entity or relationship extraction"
+                    ),
+                }
+                for row in rows
+            ]
+        return TierRankings(rankings, dict(prepared_query["left_out"]))

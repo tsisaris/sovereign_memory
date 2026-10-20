@@ -1,4 +1,4 @@
-"""Add composite index on pipeline_runs for the /status latest-run lookup
+"""Add composite index on pipeline_runs for the /status latest-run lookup.
 
 Revision ID: d1e2f3a4b5c6
 Revises: b3d5f7a9c1e2

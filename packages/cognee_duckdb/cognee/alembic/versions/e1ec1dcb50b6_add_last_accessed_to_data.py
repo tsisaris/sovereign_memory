@@ -1,4 +1,4 @@
-"""add_last_accessed_to_data
+"""add_last_accessed_to_data.
 
 Revision ID: e1ec1dcb50b6
 Revises: 211ab850ef3d

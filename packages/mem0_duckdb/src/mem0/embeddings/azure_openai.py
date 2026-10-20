@@ -1,3 +1,9 @@
+"""An embedder that asks Azure OpenAI for embeddings.
+
+Goes in: text; comes out: a list of floats. It calls a remote service and is not used by the memory
+owner path, which accepts only received numbers.
+"""
+
 import os
 from typing import Literal, Optional
 
@@ -11,7 +17,17 @@ SCOPE = "https://cognitiveservices.azure.com/.default"
 
 
 class AzureOpenAIEmbedding(EmbeddingBase):
+    """Embedder for Azure OpenAI.
+
+    Goes in: text to embed; comes out: its embedding from the configured deployment. It calls a
+    remote service and never caches results.
+    """
+
     def __init__(self, config: Optional[BaseEmbedderConfig] = None):
+        """Set up the Azure OpenAI client from the config or environment (key or default Azure credential, deployment, endpoint, API version).
+
+        Goes in: an optional embedder config; comes out: a ready embedder. It sends no request.
+        """
         super().__init__(config)
 
         api_key = self.config.azure_kwargs.api_key or os.getenv("EMBEDDING_AZURE_OPENAI_API_KEY")

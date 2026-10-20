@@ -1,4 +1,4 @@
-"""add_user_api_key_table
+"""add_user_api_key_table.
 
 Revision ID: b1c2d3e4f5a6
 Revises: f1a2b3c4d5e6
@@ -19,6 +19,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """Apply this migration step: create the user_api_key table.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It checks first
+    and does nothing when the change is already present.
+    """
     conn = op.get_bind()
     insp = sa.inspect(conn)
 
@@ -42,6 +47,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Undo this migration step: drop the user_api_key table.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It does nothing
+    when there is nothing to undo.
+    """
     conn = op.get_bind()
     insp = sa.inspect(conn)
 

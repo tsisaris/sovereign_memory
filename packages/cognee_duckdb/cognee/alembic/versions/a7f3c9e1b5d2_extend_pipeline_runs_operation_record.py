@@ -1,4 +1,4 @@
-"""Extend pipeline_runs into the operation record (SDK-399)
+"""Extend pipeline_runs into the operation record (SDK-399).
 
 Revision ID: a7f3c9e1b5d2
 Revises: b8c1d3e5f7a9

@@ -1,3 +1,9 @@
+"""A Mem0 vector store on Weaviate.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to a Weaviate server and is not used by the DuckDB-only owner path.
+"""
+
 import logging
 import uuid
 from typing import Dict, List, Optional
@@ -23,12 +29,19 @@ logger = logging.getLogger(__name__)
 
 
 class OutputData(BaseModel):
+    """One search result: an id, a score and a payload. It carries data only and does nothing."""
+
     id: str
     score: float
     payload: Dict
 
 
 class Weaviate(VectorStoreBase):
+    """The Weaviate vector store: it creates the collection and inserts, searches, updates, deletes and lists vectors with payloads.
+
+    It talks to a Weaviate server and never touches DuckDB.
+    """
+
     def __init__(
         self,
         collection_name: str,
@@ -394,7 +407,7 @@ class Weaviate(VectorStoreBase):
             return schema
         return None
 
-    def list(self, filters=None, top_k=100) -> List[OutputData]:
+    def list(self, filters=None, top_k=100) -> List[List[OutputData]]:
         """
         List all vectors in a collection.
         """

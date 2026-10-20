@@ -1,4 +1,4 @@
-"""dedupe cache_session_context and add unique entry index
+"""dedupe cache_session_context and add unique entry index.
 
 Revision ID: c3d5e7f9a1b2
 Revises: b2c4d6e8f0a1

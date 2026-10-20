@@ -1,4 +1,4 @@
-"""add_dataset_id_to_queries_and_results
+"""add_dataset_id_to_queries_and_results.
 
 Revision ID: e5a7b9c1d3f4
 Revises: d4e6f8a0b2c3

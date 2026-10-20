@@ -1,4 +1,4 @@
-"""Add pipeline run status
+"""Add pipeline run status.
 
 Revision ID: 1d0bb7fede17
 Revises: 482cd6517ce4

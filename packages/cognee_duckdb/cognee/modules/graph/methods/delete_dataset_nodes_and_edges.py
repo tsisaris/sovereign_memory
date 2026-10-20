@@ -1,3 +1,9 @@
+"""Delete the graph and vector nodes and edges that belong to one dataset, after the user's delete permission is checked.
+
+Goes in: a dataset id and user id; comes out: the deleted elements. It deletes only what that
+dataset owns.
+"""
+
 from uuid import UUID
 
 from cognee.context_global_variables import backend_access_control_enabled
@@ -24,6 +30,11 @@ from cognee.modules.users.methods.get_user import get_user
 
 
 async def delete_dataset_nodes_and_edges(dataset_id: UUID, user_id: UUID) -> DeletedGraphElements:
+    """Delete the graph and vector nodes and edges that belong to a dataset.
+
+    Goes in: the dataset id and the user id; comes out: the deleted graph elements. It first checks
+    that the user may delete in the dataset and raises if not.
+    """
     user = await get_user(user_id)
     # Check if user has delete permission for the dataset before proceeding with deletion of related graph/vector nodes and edges.
     dataset = await get_authorized_dataset(user, dataset_id, "delete")

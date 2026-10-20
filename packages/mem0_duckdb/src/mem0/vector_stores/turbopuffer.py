@@ -1,6 +1,12 @@
+"""A Mem0 vector store on Turbopuffer.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to a remote service and is not used by the DuckDB-only owner path.
+"""
+
 import logging
 import os
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 try:
     from turbopuffer import Turbopuffer as TurbopufferClient
@@ -17,12 +23,22 @@ logger = logging.getLogger(__name__)
 
 
 class OutputData(BaseModel):
+    """One search result: an id, a score and a payload, all optional.
+
+    It carries data only and does nothing.
+    """
+
     id: Optional[str]
     score: Optional[float]
     payload: Optional[Dict]
 
 
 class TurbopufferDB(VectorStoreBase):
+    """The Turbopuffer vector store: it inserts, searches, updates, deletes and lists vectors with payloads in a namespace.
+
+    It talks to a remote service and never touches DuckDB.
+    """
+
     def __init__(
         self,
         collection_name: str,
@@ -141,7 +157,7 @@ class TurbopufferDB(VectorStoreBase):
         return results
 
     # Maps mem0 filter operators to their Turbopuffer equivalents.
-    OPERATOR_MAP = {
+    OPERATOR_MAP: ClassVar[Dict[str, str]] = {
         "eq": "Eq",
         "ne": "NotEq",
         "gt": "Gt",
@@ -269,7 +285,7 @@ class TurbopufferDB(VectorStoreBase):
                 return self._parse_output(rows)[0]
             return None
         except Exception as e:
-            logger.error(f"Error retrieving vector {vector_id}: {e}")
+            logger.error(f"Error retrieving vector {vector_id}: {e}", exc_info=True)
             return None
 
     def list_cols(self) -> list:
@@ -285,7 +301,7 @@ class TurbopufferDB(VectorStoreBase):
                 result.append(ns)
             return result
         except Exception as e:
-            logger.error(f"Error listing namespaces: {e}")
+            logger.error(f"Error listing namespaces: {e}", exc_info=True)
             return []
 
     def delete_col(self):
@@ -294,7 +310,7 @@ class TurbopufferDB(VectorStoreBase):
             self.namespace.delete_all()
             logger.info(f"Namespace {self.collection_name} deleted successfully")
         except Exception as e:
-            logger.error(f"Error deleting namespace {self.collection_name}: {e}")
+            logger.error(f"Error deleting namespace {self.collection_name}: {e}", exc_info=True)
 
     def col_info(self) -> Dict:
         """
@@ -313,6 +329,7 @@ class TurbopufferDB(VectorStoreBase):
                 "updated_at": str(metadata.updated_at),
             }
         except Exception:
+            logger.debug("Exception ignored in col_info", exc_info=True)
             return {"name": self.collection_name}
 
     def list(self, filters: Optional[Dict] = None, top_k: int = 100) -> list:
@@ -340,7 +357,7 @@ class TurbopufferDB(VectorStoreBase):
             response = self.namespace.query(**query_params)
             results = self._parse_output(response.rows or [])
         except Exception as e:
-            logger.error(f"Error listing vectors: {e}")
+            logger.error(f"Error listing vectors: {e}", exc_info=True)
             results = []
         return [results]
 
@@ -355,6 +372,7 @@ class TurbopufferDB(VectorStoreBase):
             metadata = self.namespace.metadata()
             return metadata.approx_row_count
         except Exception:
+            logger.debug("Exception ignored in count", exc_info=True)
             return 0
 
     def reset(self):

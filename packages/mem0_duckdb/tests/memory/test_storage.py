@@ -1,3 +1,8 @@
+"""Checks for the SQLite history manager of Mem0: creating the database, saving and reading history rows and migrations.
+
+Each check uses its own temporary database file.
+"""
+
 import os
 import sqlite3
 import tempfile

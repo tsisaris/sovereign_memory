@@ -1,3 +1,10 @@
+"""An embedder that asks Google Vertex AI for embeddings.
+
+Goes in: text; comes out: a list of floats. It calls a remote service and is not used by the memory
+owner path, which accepts only received numbers.
+"""
+
+import logging
 import os
 from typing import Literal, Optional
 
@@ -7,9 +14,22 @@ from mem0.configs.embeddings.base import BaseEmbedderConfig
 from mem0.embeddings.base import EmbeddingBase
 from mem0.utils.gcp_auth import GCPAuthenticator
 
+logger = logging.getLogger(__name__)
+
 
 class VertexAIEmbedding(EmbeddingBase):
+    """Embedder for Vertex AI.
+
+    Goes in: text to embed; comes out: its embedding from the configured model and task type. It
+    never caches results.
+    """
+
     def __init__(self, config: Optional[BaseEmbedderConfig] = None):
+        """Set up the Vertex AI model and the embedding task type for each memory action.
+
+        Goes in: an optional embedder config; comes out: a ready embedder. It authenticates through
+        the GCP helper and sends no embedding request.
+        """
         super().__init__(config)
 
         self.config.model = self.config.model or "gemini-embedding-001"
@@ -30,6 +50,9 @@ class VertexAIEmbedding(EmbeddingBase):
                 project_id=getattr(self.config, "google_project_id", None),
             )
         except Exception:
+            logger.debug(
+                "GCP authenticator setup failed; using the credentials path", exc_info=True
+            )
             # Fall back to original behavior for backward compatibility
             credentials_path = self.config.vertex_credentials_json
             if credentials_path:
@@ -66,6 +89,12 @@ class VertexAIEmbedding(EmbeddingBase):
         return embeddings[0].values
 
     def embed_batch(self, texts, memory_action="add"):
+        """Embed several texts with the task type chosen by the memory action.
+
+        Goes in: a list of texts and a memory action (add, update, search or None); comes out: one
+        embedding per text in order. It raises ValueError for an unknown action and returns an empty
+        list for no texts.
+        """
         if not texts:
             return []
         embedding_type = "SEMANTIC_SIMILARITY"

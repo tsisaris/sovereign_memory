@@ -1,3 +1,9 @@
+"""A Mem0 vector store on Redis search through redisvl.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to a Redis server and is not used by the DuckDB-only owner path.
+"""
+
 import copy
 import json
 import logging
@@ -39,13 +45,27 @@ excluded_keys = {"user_id", "agent_id", "run_id", "hash", "data", "created_at", 
 
 
 class MemoryResult:
+    """One search result: an id, a payload and an optional score.
+
+    It carries data only and does nothing.
+    """
+
     def __init__(self, id: str, payload: dict, score: float = None):
+        """Keep the id, payload and score of a result.
+
+        Goes in: those three values; comes out: nothing. It does nothing else.
+        """
         self.id = id
         self.payload = payload
         self.score = score
 
 
 class RedisDB(VectorStoreBase):
+    """The Redis vector store: it creates the search index and inserts, searches, updates, deletes and lists vectors with payloads.
+
+    It talks to a Redis server and never touches DuckDB.
+    """
+
     def __init__(
         self,
         redis_url: str,
@@ -121,8 +141,13 @@ class RedisDB(VectorStoreBase):
         return index
 
     def insert(self, vectors: list, payloads: list = None, ids: list = None):
+        """Insert vectors with their payloads and ids as Redis hashes, turning the created and updated times into timestamps.
+
+        Goes in: lists of vectors, payloads and ids of equal length; comes out: nothing. Missing
+        times are stored as zero.
+        """
         data = []
-        for vector, payload, id in zip(vectors, payloads, ids):
+        for vector, payload, id in zip(vectors, payloads, ids, strict=False):
             # Start with required fields
             created_at_str = payload.get("created_at")
             created_at_ts = (
@@ -150,6 +175,11 @@ class RedisDB(VectorStoreBase):
         self.index.load(data, id_field="memory_id")
 
     def search(self, query: str, vectors: list, top_k: int = 5, filters: dict = None):
+        """Find the vectors nearest to a query vector, optionally limited by tag filters.
+
+        Goes in: a query text (unused here), the query vector, a count and a filters dict; comes
+        out: a list of results with scores. It only reads.
+        """
         filter = None
         if filters:
             conditions = [Tag(key) == value for key, value in filters.items() if value is not None]
@@ -273,9 +303,18 @@ class RedisDB(VectorStoreBase):
         ]
 
     def delete(self, vector_id):
+        """Delete one vector by id.
+
+        Goes in: the id; comes out: nothing. It removes only the key for that id.
+        """
         self.index.drop_keys(f"{self.schema['index']['prefix']}:{vector_id}")
 
     def update(self, vector_id=None, vector=None, payload=None):
+        """Replace one stored vector's payload (and vector, when given), turning times into timestamps.
+
+        Goes in: the id, an optional new vector and the payload; comes out: nothing. It writes only
+        that id's key.
+        """
         created_at_str = payload.get("created_at")
         created_at_ts = (
             int(datetime.fromisoformat(created_at_str).timestamp()) if created_at_str else 0
@@ -308,6 +347,11 @@ class RedisDB(VectorStoreBase):
         )
 
     def get(self, vector_id):
+        """Fetch one stored memory by id.
+
+        Goes in: the id; comes out: a result with its payload, or None when the id is absent. It
+        only reads.
+        """
         result = self.index.fetch(vector_id)
         if result is None:
             return None
@@ -337,12 +381,24 @@ class RedisDB(VectorStoreBase):
         return MemoryResult(id=result["memory_id"], payload=payload)
 
     def list_cols(self):
+        """List the names of all search indexes on the server.
+
+        Goes in: nothing; comes out: the names. It only reads.
+        """
         return self.index.listall()
 
     def delete_col(self):
+        """Delete this store's whole search index.
+
+        Goes in: nothing; comes out: nothing. It removes the index for the whole collection.
+        """
         self.index.delete()
 
     def col_info(self, name):
+        """Describe this store's search index.
+
+        Goes in: a name (unused); comes out: the index information from the server. It only reads.
+        """
         return self.index.info()
 
     def reset(self):

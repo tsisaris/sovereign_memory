@@ -3553,7 +3553,6 @@ name = "sovereign-memory"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "cognee" },
     { name = "duckdb" },
     { name = "mem0-duckdb" },
     { name = "pydantic" },
@@ -3588,7 +3587,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cognee", editable = "packages/cognee_duckdb" },
     { name = "duckdb", specifier = "==1.5.6" },
     { name = "mem0-duckdb", editable = "packages/mem0_duckdb" },
     { name = "pydantic", specifier = "==2.14.1" },

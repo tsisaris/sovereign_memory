@@ -1,4 +1,4 @@
-"""Add the single-row global_database_version table
+"""Add the single-row global_database_version table.
 
 Tracks the deployment-wide Cognee version (written on every startup in both
 access-control modes) and, when backend access control is disabled, the

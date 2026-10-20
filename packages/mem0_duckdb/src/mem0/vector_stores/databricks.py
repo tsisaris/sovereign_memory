@@ -1,3 +1,9 @@
+"""A Mem0 vector store on Databricks Vector Search with Unity Catalog tables.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to a remote workspace and is not used by the DuckDB-only owner path.
+"""
+
 import json
 import logging
 import re
@@ -31,6 +37,11 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryResult(BaseModel):
+    """One search result: an id, a score and a payload, all optional.
+
+    It carries data only and does nothing.
+    """
+
     id: Optional[str] = None
     score: Optional[float] = None
     payload: Optional[dict] = None
@@ -49,6 +60,12 @@ def _validate_identifier(name: str, label: str = "identifier") -> str:
 
 
 class Databricks(VectorStoreBase):
+    """The Databricks vector store: it creates the endpoint, table and index and inserts, searches, updates, deletes and lists vectors with payloads.
+
+    Identifiers are checked against a safe pattern. It talks to a remote workspace and never touches
+    DuckDB.
+    """
+
     def __init__(
         self,
         workspace_url: str,
@@ -252,6 +269,7 @@ class Databricks(VectorStoreBase):
             logger.info(f"Vector search endpoint '{self.endpoint_name}' already exists")
         except Exception:
             # Endpoint doesn't exist, create it
+            logger.debug("Endpoint lookup failed; it will be created", exc_info=True)
             try:
                 logger.info(
                     f"Creating vector search endpoint '{self.endpoint_name}' with type '{self.endpoint_type}'"
@@ -367,7 +385,8 @@ class Databricks(VectorStoreBase):
                 return index
         except Exception as e:
             logger.error(
-                f"Error making index_type: {self.index_type} for index {self.fully_qualified_index_name}: {e}"
+                f"Error making index_type: {self.index_type} for index {self.fully_qualified_index_name}: {e}",
+                exc_info=True,
             )
 
     def _format_sql_value(self, v):
@@ -398,6 +417,7 @@ class Databricks(VectorStoreBase):
             try:
                 s = json.dumps(v)
             except Exception:
+                logger.debug("Exception ignored in _format_sql_value", exc_info=True)
                 s = str(v)
             s = s.replace("'", "''")
             return f"'{s}'"
@@ -524,7 +544,9 @@ class Databricks(VectorStoreBase):
             for row in data_array:
                 # Map columns to values
                 row_dict = (
-                    dict(zip(self.column_names, row)) if isinstance(row, (list, tuple)) else row
+                    dict(zip(self.column_names, row, strict=False))
+                    if isinstance(row, (list, tuple))
+                    else row
                 )
                 score = row_dict.get("score") or (
                     row[-1]
@@ -577,7 +599,9 @@ class Databricks(VectorStoreBase):
             memory_results = []
             for row in data_array:
                 row_dict = (
-                    dict(zip(self.column_names, row)) if isinstance(row, (list, tuple)) else row
+                    dict(zip(self.column_names, row, strict=False))
+                    if isinstance(row, (list, tuple))
+                    else row
                 )
                 score = row_dict.get("score") or (
                     row[-1]
@@ -739,7 +763,7 @@ class Databricks(VectorStoreBase):
                 if results.manifest and results.manifest.columns
                 else []
             )
-            row_data = dict(zip(columns, result))
+            row_data = dict(zip(columns, result, strict=False))
 
             # Build payload following the standard schema
             payload = {
@@ -800,6 +824,7 @@ class Databricks(VectorStoreBase):
                 )
                 logger.info(f"Successfully deleted index '{self.fully_qualified_index_name}'")
             except Exception:
+                logger.debug("Deleting the fully qualified index name failed", exc_info=True)
                 self.client.vector_search_indexes.delete_index(index_name=self.index_name)
                 logger.info(f"Successfully deleted index '{self.index_name}' (short name)")
         except Exception as e:
@@ -824,7 +849,7 @@ class Databricks(VectorStoreBase):
             logger.error(f"Failed to get info for index '{name or self.index_name}': {e}")
             raise
 
-    def list(self, filters: dict = None, top_k: int = None) -> list[MemoryResult]:
+    def list(self, filters: dict = None, top_k: int = None) -> list[list[MemoryResult]]:
         """
         List all recent created memories from the vector store.
 
@@ -861,20 +886,22 @@ class Databricks(VectorStoreBase):
 
             memory_results = []
             for row in data_array:
-                row_dict = dict(zip(columns, row)) if isinstance(row, (list, tuple)) else row
+                row_dict = (
+                    dict(zip(columns, row, strict=False)) if isinstance(row, (list, tuple)) else row
+                )
                 payload = {k: row_dict.get(k) for k in columns}
                 # Parse metadata if present
                 if "metadata" in payload and payload["metadata"]:
                     try:
                         payload.update(json.loads(payload["metadata"]))
                     except Exception:
-                        pass
+                        logger.debug("Exception ignored in list", exc_info=True)
                 memory_id = row_dict.get("memory_id") or row_dict.get("id")
                 payload["data"] = payload["memory"]
                 memory_results.append(MemoryResult(id=memory_id, payload=payload))
             return [memory_results]
         except Exception as e:
-            logger.error(f"Failed to list memories: {e}")
+            logger.error(f"Failed to list memories: {e}", exc_info=True)
             return []
 
     def reset(self):
@@ -893,13 +920,17 @@ class Databricks(VectorStoreBase):
                 logger.info(f"Deleted index '{fq_index}'")
             except Exception as e_fq:
                 logger.debug(
-                    f"Failed deleting fully qualified index name '{fq_index}': {e_fq}. Trying short name..."
+                    f"Failed deleting fully qualified index name '{fq_index}': {e_fq}. Trying short name...",
+                    exc_info=True,
                 )
                 try:
                     # Fallback to existing helper which may use short name
                     self.delete_col()
                 except Exception as e_short:
-                    logger.debug(f"Failed deleting short index name '{self.index_name}': {e_short}")
+                    logger.debug(
+                        f"Failed deleting short index name '{self.index_name}': {e_short}",
+                        exc_info=True,
+                    )
 
             # Drop the backing table (if it exists)
             try:
@@ -915,7 +946,8 @@ class Databricks(VectorStoreBase):
                     )
             except Exception as e_drop:
                 logger.warning(
-                    f"Failed to drop table '{self.fully_qualified_table_name}': {e_drop}"
+                    f"Failed to drop table '{self.fully_qualified_table_name}': {e_drop}",
+                    exc_info=True,
                 )
 
             # Recreate table & index

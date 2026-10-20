@@ -1,3 +1,8 @@
+"""Settings for Mem0's Zero Entropy reranker: the model, the API key and how many documents to keep.
+
+It holds values only and never contacts the service.
+"""
+
 from typing import Optional
 
 from pydantic import Field

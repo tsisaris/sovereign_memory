@@ -1,3 +1,8 @@
+"""Helpers for Cognee data points: a JSON encoder for dates, UUIDs and decimals, a function that copies a model with chosen fields, and one that lists a data point's own scalar properties.
+
+They are pure helpers: they touch no database and no file.
+"""
+
 import copy
 import json
 from datetime import date, datetime
@@ -11,7 +16,17 @@ from cognee.infrastructure.engine import DataPoint
 
 
 class JSONEncoder(json.JSONEncoder):
+    """A JSON encoder that also writes dates and times as ISO text, UUIDs as strings and decimals as numbers.
+
+    It converts values only and writes nothing.
+    """
+
     def default(self, obj):
+        """Convert one value json cannot encode by itself (a date, time, UUID or decimal).
+
+        Goes in: the value; comes out: its JSON-ready form. It defers to the standard encoder for
+        other types, which raises TypeError.
+        """
         if isinstance(obj, datetime):
             return obj.isoformat()  # Convert datetime to ISO 8601 string
         elif isinstance(obj, date):
@@ -27,6 +42,11 @@ class JSONEncoder(json.JSONEncoder):
 def copy_model(
     model: DataPoint, include_fields: dict | None = None, exclude_fields: list | None = None
 ):
+    """Make a copy of a data point model with some fields included or excluded.
+
+    Goes in: the model class, an optional dict of fields to include and an optional list to exclude;
+    comes out: a new model class. It changes nothing in the original.
+    """
     if include_fields is None:
         include_fields = {}
     if exclude_fields is None:
@@ -59,6 +79,10 @@ def copy_model(
 
 
 def get_own_properties(data_point: DataPoint):
+    """List the plain properties of a data point, leaving out its metadata, nested data points and containers of them.
+
+    Goes in: a data point; comes out: a dict of property names to values. It only reads.
+    """
     properties = {}
 
     for field_name, field_value in data_point:

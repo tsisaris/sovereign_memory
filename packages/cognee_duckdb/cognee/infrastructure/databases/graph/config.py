@@ -44,7 +44,9 @@ class GraphConfig(BaseSettings):
 
     # Using Field we are able to dynamically load current GRAPH_DATABASE_PROVIDER value in the model validator part
     # and determine default graph db file and path based on this parameter if no values are provided
-    graph_database_provider: str = Field("duckdb", env="GRAPH_DATABASE_PROVIDER")
+    graph_database_provider: str = Field(
+        default="duckdb", json_schema_extra={"env": "GRAPH_DATABASE_PROVIDER"}
+    )
 
     graph_database_url: str = ""
     graph_database_name: str = ""
@@ -62,9 +64,13 @@ class GraphConfig(BaseSettings):
     graph_database_subprocess_enabled: bool = True
 
     # Kuzu tuning. 0 means "use Kuzu's default" (one thread per CPU).
-    kuzu_num_threads: int = Field(0, env="KUZU_NUM_THREADS")
-    kuzu_buffer_pool_size: int = Field(DEFAULT_KUZU_BUFFER_POOL_SIZE, env="KUZU_BUFFER_POOL_SIZE")
-    kuzu_max_db_size: int = Field(DEFAULT_KUZU_MAX_DB_SIZE, env="KUZU_MAX_DB_SIZE")
+    kuzu_num_threads: int = Field(default=0, json_schema_extra={"env": "KUZU_NUM_THREADS"})
+    kuzu_buffer_pool_size: int = Field(
+        default=DEFAULT_KUZU_BUFFER_POOL_SIZE, json_schema_extra={"env": "KUZU_BUFFER_POOL_SIZE"}
+    )
+    kuzu_max_db_size: int = Field(
+        default=DEFAULT_KUZU_MAX_DB_SIZE, json_schema_extra={"env": "KUZU_MAX_DB_SIZE"}
+    )
 
     model_config = SettingsConfigDict(extra="allow", populate_by_name=True)
 
@@ -72,6 +78,11 @@ class GraphConfig(BaseSettings):
     # If no specific graph_filename or path are provided
     @pydantic.model_validator(mode="after")
     def fill_derived(self):
+        """Normalise the graph settings after they are read: lower-case the provider and dataset handler names, map the legacy Kuzu and Ladybug combinations and pick the Postgres handler for Postgres providers.
+
+        Goes in: nothing but the settings object; comes out: the same object. It opens no
+        connection.
+        """
         provider = self.graph_database_provider.lower()
         self.graph_database_provider = provider
         graph_dataset_database_handler = self.graph_dataset_database_handler.lower()
@@ -206,7 +217,7 @@ def get_graph_config():
 
 def get_graph_context_config():
     """This function will get the appropriate graph db config based on async context.
-    This allows the use of multiple graph databases for different threads, async tasks and parallelization
+    This allows the use of multiple graph databases for different threads, async tasks and parallelization.
     """
     from cognee.context_global_variables import graph_db_config
 

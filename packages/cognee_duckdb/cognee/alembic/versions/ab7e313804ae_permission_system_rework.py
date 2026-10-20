@@ -1,4 +1,4 @@
-"""permission_system_rework
+"""permission_system_rework.
 
 Revision ID: ab7e313804ae
 Revises: 1d0bb7fede17
@@ -153,6 +153,11 @@ def _get_column(inspector, table, name, schema=None):
 
 
 def upgrade() -> None:
+    """Apply this migration step: rebuild the acls table so permissions attach to datasets instead of documents.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It does nothing
+    when the dataset_id column already exists.
+    """
     conn = op.get_bind()
     insp = sa.inspect(conn)
 
@@ -206,6 +211,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Undo this migration step: drop the acls table and create it again in its older document-based form.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. Existing ACL
+    rows are lost.
+    """
     conn = op.get_bind()
 
     op.drop_table("acls")

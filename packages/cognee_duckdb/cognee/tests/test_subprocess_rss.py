@@ -170,6 +170,10 @@ def print_rss(label: str) -> None:
     # Run gc in every live subprocess worker so their RSS reflects reachable
     # objects only (no uncollected cycles). Best-effort; a mid-shutdown or
     # crashed session is skipped silently.
+    """Print the resident memory of the main process and every live subprocess worker under a label, after collecting garbage in each so only reachable objects count.
+
+    Goes in: the label; comes out: nothing. It records the figures in the history list.
+    """
     collect_garbage_in_all_workers()
     # Then gc in the main process so parent RSS is comparable.
     gc.collect()
@@ -232,6 +236,10 @@ def print_rss(label: str) -> None:
 
 
 def print_rss_history() -> None:
+    """Print the table of per-cycle memory totals recorded so far.
+
+    Goes in: nothing; comes out: nothing. It prints nothing when there is no history.
+    """
     if not RSS_HISTORY:
         return
 
@@ -263,6 +271,11 @@ def print_rss_history() -> None:
 
 
 async def run_cycle(cycle_index: int, total_cycles: int, dataset_name: str, data) -> None:
+    """Run one add, cognify and search cycle on a dataset and print memory figures before and after.
+
+    Goes in: the cycle index, total cycles, dataset name and data; comes out: nothing. It writes to
+    the dataset it is given.
+    """
     print(f"\n{'=' * 60}", flush=True)
     print(
         f"Cycle {cycle_index}/{total_cycles}  —  dataset='{dataset_name}'",
@@ -284,6 +297,10 @@ async def run_cycle(cycle_index: int, total_cycles: int, dataset_name: str, data
 
 
 async def main() -> None:
+    """Run the memory-growth test: several rounds of small and large add and cognify cycles with the options given on the command line, printing memory figures.
+
+    Goes in: nothing; comes out: nothing. It prunes and writes only the test datasets.
+    """
     buffer_pool_bytes = max(1, ARGS.kuzu_buffer_mb) * 1024 * 1024
     rounds = ARGS.cycles
     total_cycles = 2 * rounds

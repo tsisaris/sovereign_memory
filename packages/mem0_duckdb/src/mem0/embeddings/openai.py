@@ -1,3 +1,9 @@
+"""An embedder that asks OpenAI, or a compatible service, for embeddings.
+
+Goes in: text; comes out: a list of floats. It calls a remote service and is not used by the memory
+owner path, which accepts only received numbers.
+"""
+
 import os
 import warnings
 from typing import Literal, Optional
@@ -9,7 +15,17 @@ from mem0.embeddings.base import EmbeddingBase
 
 
 class OpenAIEmbedding(EmbeddingBase):
+    """Embedder for OpenAI and compatible services.
+
+    Goes in: text to embed; comes out: its embedding from the configured model. It never caches
+    results.
+    """
+
     def __init__(self, config: Optional[BaseEmbedderConfig] = None):
+        """Set up the OpenAI client with defaults for model and width, passing the width to the service only when the caller set it.
+
+        Goes in: an optional embedder config; comes out: a ready embedder. It sends no request.
+        """
         super().__init__(config)
 
         self.config.model = self.config.model or "text-embedding-3-small"

@@ -4,11 +4,14 @@ One framed JSON request per connection, with "op" one of: "capture" (store an
 event and its pending receipts, then process it in the background),
 "retrieve" (scoped retrieval across the tiers), "forget" (durably remove an
 event the principal produced, then remove its projections) and "status" (an
-event's durable receipts and whether every tier finished). The principal comes
-from the transport, never from the request body.
+event's durable receipts and whether every tier finished). The review screen adds
+"review_list", "review_show", "review_page", "review_judge" and "review_select",
+and "models" lists the model registry with each model's freshness. The principal
+comes from the transport, never from the request body.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -18,20 +21,62 @@ import struct
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Mapping, Sequence
 
 import duckdb
 from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import AsyncConnection
 from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import connect as duckdb_connect
 
+from service.memory_combiners import (
+    SCORES,
+    ArtifactCombiner,
+    ensure_starting_combiner,
+    initialize_combiner_schema,
+    judge_comparison,
+    prepare_comparison,
+    record_decision,
+    register_combiner,
+)
 from service.memory_consolidation import MemoryConsolidator
 from service.memory_dispatcher import SUCCESS_STATUSES, MemoryDispatcher, ProcessorRegistry
-from service.memory_owner_core import SYSTEM_EVENT_PREFIX, OwnerCore
+from service.memory_ground_truth import (
+    export_manifest,
+    initialize_ground_truth_schema,
+    record_case,
+    verify_export,
+)
+from service.memory_models import list_models, model_state
+from service.memory_numbers import NumbersStore, initialize_numbers_schema, pending_requests
+from service.memory_numbers_services import NumbersServices
+from service.memory_owner_core import SYSTEM_EVENT_PREFIX, TIERS, OwnerCore
 from service.memory_processor_seam import AuthenticatedPrincipal, MemoryRetriever, VisibilityPolicy
 from service.memory_retrieval import MemoryRetrievalService
+from service.memory_review import ReviewScreen
+from service.memory_settings import (
+    SearchSettings,
+    initialize_settings_schema,
+    record_settings,
+)
+from service.memory_supplier import NumbersSupplier, UnavailableSupplier
 
 logger = logging.getLogger(__name__)
-OPERATIONS = ("capture", "retrieve", "forget", "status")
+OPERATIONS = (
+    "capture",
+    "retrieve",
+    "forget",
+    "status",
+    "models",
+    "review_list",
+    "review_show",
+    "review_page",
+    "review_judge",
+    "review_select",
+)
+SETTINGS_SOURCE = "declared configuration, table [ranking]"
+SUPPLIER_ABSENT_REASON = (
+    "no supplier is connected: agent_corpus has not built the door that hands saved numbers "
+    "to another agent or the door for the numbers of a single search question"
+)
 
 
 def _same_file(first: Path, second: Path) -> bool:
@@ -84,6 +129,10 @@ class OwnerService:
         *,
         max_request_bytes: int,
         drain_timeout_seconds: float,
+        ranking: Mapping[str, Any] | None = None,
+        supplier: NumbersSupplier | None = None,
+        models: Sequence[Mapping[str, Any]] = (),
+        artifacts: dict[str, ArtifactCombiner] | None = None,
     ):
         """Initialize the service with socket and db paths.
 
@@ -94,6 +143,12 @@ class OwnerService:
         max_request_bytes bounds one framed request and drain_timeout_seconds how
         long stop waits for open clients; both come from the deployment that
         starts the service, which reads them from its own declared configuration.
+        ranking is the declared table of the four search settings (validated here,
+        so a missing value fails before anything starts; required whenever a tier
+        ranks by models' numbers); supplier is where numbers come from, and when
+        absent every request for numbers answers "numbers not yet supplied";
+        models are registry rows to add at start; artifacts are trained
+        combiners from the builder, keyed by combiner id.
         """
         self.socket_path = Path(socket_path)
         self.db_path = Path(db_path)
@@ -110,6 +165,22 @@ class OwnerService:
         self.active_tasks: set[asyncio.Task] = set()
         self.processing_tasks: set[asyncio.Task] = set()
         self.lifetime_conn: AsyncConnection | None = None
+        engines = (
+            *self.retrievers.values(),
+            *(self.registry.get(t) for t in self.registry.tiers()),
+        )
+        if ranking is None and any(hasattr(engine, "attach_numbers") for engine in engines):
+            raise ValueError(
+                "A tier ranks by models' numbers, so the [ranking] settings are required"
+            )
+        self.settings: SearchSettings | None = (
+            None if ranking is None else SearchSettings.from_mapping(ranking, tuple(SCORES))
+        )
+        self.supplier: NumbersSupplier = supplier or UnavailableSupplier(SUPPLIER_ABSENT_REASON)
+        self.seed_models = tuple(models)
+        self.artifacts = dict(artifacts or {})
+        self.store: NumbersStore | None = None
+        self.numbers: NumbersServices | None = None
 
     async def start(self, *, process_pending: bool = True) -> None:
         """Initialize database connection and start UNIX socket server.
@@ -132,10 +203,12 @@ class OwnerService:
             self.lifetime_conn = await duckdb_connect(str(self.db_path))
             core = OwnerCore(self.lifetime_conn)
             await core.initialize_schema()
-            self.dispatcher = MemoryDispatcher(self.lifetime_conn, self.registry)
+            await self._initialize_search_storage()
+            self.dispatcher = MemoryDispatcher(self.lifetime_conn, self.registry, self.numbers)
             self.retrieval = MemoryRetrievalService(
-                self.lifetime_conn, self.retrievers, self.policy
+                self.lifetime_conn, self.retrievers, self.policy, self.settings, self.artifacts
             )
+            self.review = ReviewScreen(self.lifetime_conn, self.retrieval.policy)
             await self.dispatcher.initialize_storage()
             # Ensure socket directory exists
             self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,6 +243,97 @@ class OwnerService:
                 await self._release_connection()
             raise
         logger.info(f"Owner service listening on {self.socket_path}")
+
+    async def _initialize_search_storage(self) -> None:
+        """Create the search tables, record the declared settings, add the configured models.
+
+        The registry, pieces, requests, combiner and ground-truth tables are
+        created if absent; the declared settings are appended to the parameter
+        records when changed; each configured model becomes a registry row (an
+        identical row already stored is left as it is); and the starting combiner
+        is seeded once an embedding model exists. Called at start, on the owner's
+        connection.
+        """
+        self.store = NumbersStore(self.lifetime_conn)
+        self.numbers = NumbersServices(self.store, self.supplier)
+        now = datetime.now(timezone.utc).isoformat()
+
+        def work(handle) -> None:
+            """Create tables and record the declared settings in one transaction."""
+            initialize_numbers_schema(handle)
+            initialize_combiner_schema(handle)
+            initialize_ground_truth_schema(handle)
+            initialize_settings_schema(handle)
+            if self.settings is not None:
+                record_settings(handle, self.settings, SETTINGS_SOURCE, now)
+
+        await self.store.run_in_transaction(work)
+        for model in self.seed_models:
+            await self.store.register(**dict(model))
+        await self.store.run_in_transaction(lambda handle: ensure_starting_combiner(handle, now))
+
+    async def register_model(self, **fields: Any):
+        """Add a model revision to the registry (a trusted deployment call) and seed the starting combiner.
+
+        Fields are model_id, revision, width, kind, supplier_collection and
+        supplier_recipe. Adding a model is adding a row; its numbers are received
+        later. A model registered after the starting combiner exists joins no
+        combiner until a candidate naming it wins on held-back cases.
+        """
+        row = await self.store.register(**fields)
+        now = datetime.now(timezone.utc).isoformat()
+        await self.store.run_in_transaction(lambda handle: ensure_starting_combiner(handle, now))
+        return row
+
+    async def sync_numbers(self) -> dict[str, Any]:
+        """Compare each model's label with the supplier's and pull the numbers it can hand over.
+
+        The deployment's scheduler calls this; the service runs no timer of its own.
+        Where the supplier cannot answer, the numbers stay recorded as pending work.
+        """
+        return await self.store.sync(self.supplier)
+
+    async def propose_combiner(self, **fields: Any):
+        """Register a candidate combiner (it does not become current) and return its row."""
+        fields.setdefault("proposed_at", datetime.now(timezone.utc).isoformat())
+        return await self.store.run_in_transaction(
+            lambda handle: register_combiner(handle, **fields)
+        )
+
+    async def evaluate_combiner(
+        self, candidate_id: str, memory_kind: str | None = None
+    ) -> dict[str, Any]:
+        """Compare a candidate with the current combiner on held-back judged cases and record the decision.
+
+        The candidate replaces the current combiner only if it scores strictly
+        better and enough held-back cases exist; the decision and its reason are
+        recorded either way and returned.
+        """
+        if self.settings is None:
+            raise ValueError("Comparing combiners needs the declared search settings")
+        now = datetime.now(timezone.utc).isoformat()
+        settings = self.settings
+        # An artifact combiner is asked asynchronously, so the cases are read first,
+        # both combiners are scored without the database, and the decision row is
+        # then appended in its own transaction.
+        candidate, current, cases = await self.store.run_in_transaction(
+            lambda handle: prepare_comparison(handle, candidate_id, memory_kind)
+        )
+        outcome = await judge_comparison(candidate, current, cases, settings, self.artifacts)
+        return await self.store.run_in_transaction(
+            lambda handle: record_decision(handle, candidate, current, outcome, settings, now)
+        )
+
+    async def export_ground_truth(self, purpose: str, created_by: str) -> dict[str, Any]:
+        """Record and return an export manifest ("training" or "held_back_inputs") with its content."""
+        now = datetime.now(timezone.utc).isoformat()
+        return await self.store.run_in_transaction(
+            lambda handle: export_manifest(handle, purpose, created_by, now)
+        )
+
+    async def verify_ground_truth_export(self, export_id: str) -> dict[str, Any]:
+        """Say whether an earlier export's content is exactly as fingerprinted, and which cases lost their source."""
+        return await self.store.run_in_transaction(lambda handle: verify_export(handle, export_id))
 
     def _remove_own_socket(self) -> None:
         """Remove the socket file only if it is the very file this service bound; safe to repeat.
@@ -313,8 +477,12 @@ class OwnerService:
                     response = await self._retrieve(principal, payload)
                 elif operation == "forget":
                     response = await self._forget(principal, payload)
-                else:
+                elif operation == "status":
                     response = await self._status(principal, payload)
+                elif operation == "models":
+                    response = await self._models()
+                else:
+                    response = await self._review(operation, principal, payload)
             except PermissionError as refusal:
                 self._send_error(writer, "Visibility Refused", str(refusal))
                 return
@@ -443,6 +611,131 @@ class OwnerService:
             raise ValueError("Invalid retrieval request: query and limit required")
         answers = await self.retrieval.retrieve(principal, query, limit)
         return {"status": "success", "tiers": answers}
+
+    async def _models(self) -> dict:
+        """Report every registered model with its freshness and reasons, and the numbers still owed.
+
+        It names no event and shows no event text, so it needs no visibility check
+        beyond authentication. A stale model is reported stale with why.
+        """
+
+        def read(handle):
+            """Measure every model and list the owed numbers on the owner's worker."""
+            states = []
+            for model in list_models(handle):
+                state = model_state(handle, model, "event")
+                derived = model_state(handle, model, "derived")
+                states.append(
+                    {
+                        "model_id": model.model_id,
+                        "revision": model.revision,
+                        "width": model.width,
+                        "kind": model.kind,
+                        "supplier_collection": model.supplier_collection,
+                        "supplier_recipe": model.supplier_recipe,
+                        "registered_at": model.registered_at,
+                        "numbers_table": model.numbers_table,
+                        "fresh": state.fresh,
+                        "reasons": list(state.reasons),
+                        "rows": state.rows,
+                        "stale_rows": state.stale_rows,
+                        "missing_pieces": state.missing_pieces,
+                        "derived_fresh": derived.fresh,
+                        "derived_reasons": list(derived.reasons),
+                        "derived_rows": derived.rows,
+                        "derived_missing": derived.missing_pieces,
+                    }
+                )
+            owed = [
+                {k: v for k, v in request.items() if k != "text"}
+                for request in pending_requests(handle)
+            ]
+            return states, owed
+
+        states, owed = await self.lifetime_conn.run(lambda: read(self.lifetime_conn.native))
+        return {"status": "success", "models": states, "numbers_owed": owed}
+
+    async def _review(
+        self, operation: str, principal: AuthenticatedPrincipal, request: dict
+    ) -> dict:
+        """Serve the review screen: list, show, page, judge and select.
+
+        Every call is limited to cases whose events the principal may see and
+        that are not removed; a refused case raises PermissionError. Raises
+        ValueError for a malformed request.
+        """
+        if operation == "review_list":
+            return {"status": "success", "cases": await self.review.list_cases(principal)}
+        if operation == "review_select":
+            return await self._review_select(principal, request)
+        case_id = request.get("case_id")
+        if not isinstance(case_id, str) or not case_id:
+            raise ValueError("A review request needs a case_id")
+        if operation in ("review_show", "review_page"):
+            view = await self.review.show(principal, case_id)
+            if operation == "review_page":
+                return {"status": "success", "html": ReviewScreen.render(view)}
+            return {"status": "success", "view": view}
+        chosen = request.get("chosen_items", [])
+        if not isinstance(chosen, list) or not all(isinstance(item, str) for item in chosen):
+            raise ValueError("chosen_items must be a list of item ids")
+        judgment_id = await self.review.judge(
+            principal,
+            case_id,
+            verdict=request.get("verdict", ""),
+            chosen_items=chosen,
+            typed_answer=request.get("typed_answer"),
+            note=request.get("note"),
+        )
+        return {"status": "success", "judgment_id": judgment_id}
+
+    async def _review_select(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Queue a case the principal chooses to judge; it points to events and copies no event text.
+
+        The question and the events must be given, every event must be live and
+        visible to the principal, and the case id derives from its content so
+        asking again queues one case. Raises PermissionError when an event is not
+        visible and ValueError for a malformed request.
+        """
+        question, events = request.get("question"), request.get("events")
+        memory_kind = request.get("memory_kind")
+        if (
+            not isinstance(question, str)
+            or not question
+            or not isinstance(events, list)
+            or not events
+            or not all(isinstance(event, str) for event in events)
+            or memory_kind not in TIERS
+        ):
+            raise ValueError("review_select needs question, events and a memory_kind")
+        visibility = await self.retrieval.policy.resolve(principal)
+        producers = await OwnerCore(self.lifetime_conn).live_producers(events)
+        if not all(
+            event in producers and visibility.permits(producers[event], principal.agent_id)
+            for event in events
+        ):
+            raise PermissionError("An event of the case is not visible to this principal")
+        digest = hashlib.sha256(
+            json.dumps([principal.agent_id, memory_kind, question, sorted(set(events))]).encode()
+        ).hexdigest()
+        case_id = f"case-{digest}"
+        now = datetime.now(timezone.utc).isoformat()
+        await self.store.run_in_transaction(
+            lambda handle: record_case(
+                handle,
+                case_id=case_id,
+                kind="retrieved_item",
+                memory_kind=memory_kind,
+                input_kind="question",
+                input_value=question,
+                events=events,
+                created_at=now,
+                created_by=principal.agent_id,
+                held_back_share=self.settings.held_back_share,
+                selected_by_owner=True,
+            )
+        )
+        return {"status": "success", "case_id": case_id}
 
     async def _forget(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
         """Forget one captured event the principal produced, through every registered engine.

@@ -1,3 +1,9 @@
+"""An OpenAI-style chat interface that adds Mem0 memories to the prompt and stores the conversation, using litellm for the model call.
+
+Goes in: chat arguments plus user, agent and run ids; comes out: the model's completion. It needs
+the litellm package and a model service.
+"""
+
 import logging
 import threading
 from typing import List, Optional, Union
@@ -21,12 +27,23 @@ logger = logging.getLogger(__name__)
 
 
 class Mem0:
+    """The entry object of the chat proxy: it builds a Mem0 client (hosted or local) and exposes a chat interface.
+
+    Goes in: an optional config, API key and host; comes out: an object with a chat attribute. It
+    makes no model call on creation.
+    """
+
     def __init__(
         self,
         config: Optional[dict] = None,
         api_key: Optional[str] = None,
         host: Optional[str] = None,
     ):
+        """Create the memory client: a hosted MemoryClient when an API key is given, otherwise a local Memory from the config.
+
+        Goes in: an optional config dict, API key and host; comes out: a ready proxy. It makes no
+        model call.
+        """
         if api_key:
             self.mem0_client = MemoryClient(api_key, host)
         else:
@@ -36,12 +53,30 @@ class Mem0:
 
 
 class Chat:
+    """The chat namespace of the proxy, holding the completions interface.
+
+    It keeps no state of its own and makes no calls.
+    """
+
     def __init__(self, mem0_client):
+        """Create the completions interface for the given memory client.
+
+        Goes in: the memory client; comes out: a chat object. It makes no calls.
+        """
         self.completions = Completions(mem0_client)
 
 
 class Completions:
+    """The completions interface of the proxy: it searches memories, builds the prompt, calls the model and stores the exchange.
+
+    It holds only the memory client and no conversation state.
+    """
+
     def __init__(self, mem0_client):
+        """Keep the memory client this completions interface will use.
+
+        Goes in: the memory client; comes out: nothing. It makes no calls.
+        """
         self.mem0_client = mem0_client
 
     def create(
@@ -87,6 +122,12 @@ class Completions:
         api_key: Optional[str] = None,
         model_list: Optional[list] = None,  # pass in a list of api_base,keys, etc.
     ):
+        """Answer a chat request with memories added to the prompt.
+
+        Goes in: the model name, messages, Mem0 ids, metadata, filters and model options; comes out:
+        the model completion. It searches memories before the call and stores the conversation
+        afterwards, in a background thread; it raises ValueError when no id is given.
+        """
         if messages is None:
             messages = []
         if not any([user_id, agent_id, run_id]):

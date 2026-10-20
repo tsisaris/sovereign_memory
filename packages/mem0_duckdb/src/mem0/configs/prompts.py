@@ -1,3 +1,9 @@
+"""The prompt texts Mem0 sends to language models (answering from memories, extracting facts, deciding memory updates) and the functions that fill them in.
+
+Goes in: memories, messages and dates; comes out: prompt strings or message lists. It never calls a
+model.
+"""
+
 import json
 from datetime import datetime, timezone
 
@@ -406,6 +412,12 @@ You are a memory summarization system that records and preserves the complete in
 def get_update_memory_messages(
     retrieved_old_memory_dict, response_content, custom_update_memory_prompt=None
 ):
+    """Build the prompt that asks a language model to decide ADD, UPDATE, DELETE or NONE for each new fact.
+
+    Goes in: the old memories as a dict, the model's fact response text and an optional custom
+    prompt; comes out: the full prompt string. It never calls a model, and a custom prompt replaces
+    the default for this call only.
+    """
     if custom_update_memory_prompt is None:
         global DEFAULT_UPDATE_MEMORY_PROMPT
         custom_update_memory_prompt = DEFAULT_UPDATE_MEMORY_PROMPT

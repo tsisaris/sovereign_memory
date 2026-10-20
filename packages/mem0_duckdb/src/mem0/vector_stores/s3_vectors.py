@@ -1,3 +1,9 @@
+"""A Mem0 vector store on AWS S3 Vectors.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to AWS and is not used by the DuckDB-only owner path.
+"""
+
 import json
 import logging
 from typing import Dict, List, Optional
@@ -18,12 +24,22 @@ logger = logging.getLogger(__name__)
 
 
 class OutputData(BaseModel):
+    """One search result: an id, a score and a payload, all optional.
+
+    It carries data only and does nothing.
+    """
+
     id: Optional[str]
     score: Optional[float]
     payload: Optional[Dict]
 
 
 class S3Vectors(VectorStoreBase):
+    """The S3 Vectors store: it creates the bucket index and inserts, searches, updates, deletes and lists vectors with metadata.
+
+    It talks to AWS and never touches DuckDB.
+    """
+
     def __init__(
         self,
         vector_bucket_name: str,
@@ -32,6 +48,11 @@ class S3Vectors(VectorStoreBase):
         distance_metric: str = "cosine",
         region_name: Optional[str] = None,
     ):
+        """Create the AWS client and make sure the vector bucket and index exist.
+
+        Goes in: bucket and collection names, vector width, distance metric and region; comes out: a
+        ready store. It may create the bucket and index in AWS.
+        """
         self.client = boto3.client("s3vectors", region_name=region_name)
         self.vector_bucket_name = vector_bucket_name
         self.collection_name = collection_name
@@ -54,6 +75,11 @@ class S3Vectors(VectorStoreBase):
                 raise
 
     def create_col(self, name, vector_size, distance="cosine"):
+        """Create the index with the given vector size and distance if it does not exist.
+
+        Goes in: a name, a size and a distance; comes out: nothing. It does nothing when the index
+        exists.
+        """
         try:
             self.client.get_index(vectorBucketName=self.vector_bucket_name, indexName=name)
             logger.info(f"Index '{name}' already exists in bucket '{self.vector_bucket_name}'.")
@@ -100,6 +126,10 @@ class S3Vectors(VectorStoreBase):
         return results
 
     def insert(self, vectors, payloads=None, ids=None):
+        """Put vectors with their metadata into the index under the given ids.
+
+        Goes in: vectors, optional payloads and ids; comes out: nothing. Payloads default to empty.
+        """
         vectors_to_put = []
         for i, vec in enumerate(vectors):
             vectors_to_put.append(
@@ -116,6 +146,11 @@ class S3Vectors(VectorStoreBase):
         )
 
     def search(self, query, vectors, top_k=5, filters=None):
+        """Find the nearest vectors to a query vector.
+
+        Goes in: a query text (unused), the vector, a count and optional filters; comes out: a list
+        of results with distances. It only reads.
+        """
         params = {
             "vectorBucketName": self.vector_bucket_name,
             "indexName": self.collection_name,
@@ -131,6 +166,10 @@ class S3Vectors(VectorStoreBase):
         return self._parse_output(response.get("vectors", []))
 
     def delete(self, vector_id):
+        """Delete one vector by id.
+
+        Goes in: the id; comes out: nothing. It removes only that key.
+        """
         self.client.delete_vectors(
             vectorBucketName=self.vector_bucket_name,
             indexName=self.collection_name,
@@ -143,6 +182,11 @@ class S3Vectors(VectorStoreBase):
         # fetch the existing vector data first to avoid passing None to boto3
         # which causes a parameter validation error:
         #   "Invalid type for parameter vectors[0].data.float32, value: None"
+        """Overwrite one vector and its metadata.
+
+        Goes in: the id, an optional new vector and an optional payload; comes out: nothing. When no
+        vector is given it reads the stored one first so the write stays valid.
+        """
         if vector is None:
             existing = self.get(vector_id)
             if existing is None:
@@ -169,11 +213,17 @@ class S3Vectors(VectorStoreBase):
                 if payload is None:
                     payload = existing.payload
             except Exception as e:
-                logger.error(f"update: failed to fetch existing vector for {vector_id}: {e}")
+                logger.error(
+                    f"update: failed to fetch existing vector for {vector_id}: {e}", exc_info=True
+                )
                 return
         self.insert(vectors=[vector], payloads=[payload], ids=[vector_id])
 
     def get(self, vector_id) -> Optional[OutputData]:
+        """Fetch one vector's metadata by id.
+
+        Goes in: the id; comes out: a result, or None when the id is absent. It only reads.
+        """
         response = self.client.get_vectors(
             vectorBucketName=self.vector_bucket_name,
             indexName=self.collection_name,
@@ -187,21 +237,37 @@ class S3Vectors(VectorStoreBase):
         return self._parse_output(vectors)[0]
 
     def list_cols(self):
+        """List the names of the indexes in the bucket.
+
+        Goes in: nothing; comes out: a list of names. It only reads.
+        """
         response = self.client.list_indexes(vectorBucketName=self.vector_bucket_name)
         return [idx["indexName"] for idx in response.get("indexes", [])]
 
     def delete_col(self):
+        """Delete this store's index.
+
+        Goes in: nothing; comes out: nothing. It removes the whole index.
+        """
         self.client.delete_index(
             vectorBucketName=self.vector_bucket_name, indexName=self.collection_name
         )
 
     def col_info(self):
+        """Describe this store's index.
+
+        Goes in: nothing; comes out: the index description dict. It only reads.
+        """
         response = self.client.get_index(
             vectorBucketName=self.vector_bucket_name, indexName=self.collection_name
         )
         return response.get("index", {})
 
     def list(self, filters=None, top_k=None):
+        """List stored vectors' metadata, optionally limited by filters and a count.
+
+        Goes in: filters and a top_k limit; comes out: a list of results. It only reads.
+        """
         params = {
             "vectorBucketName": self.vector_bucket_name,
             "indexName": self.collection_name,
@@ -228,6 +294,10 @@ class S3Vectors(VectorStoreBase):
         return [results]
 
     def reset(self):
+        """Delete the index and create it again empty.
+
+        Goes in: nothing; comes out: nothing. All vectors in the index are lost.
+        """
         logger.warning(f"Resetting index {self.collection_name}...")
         self.delete_col()
         self.create_col(self.collection_name, self.embedding_model_dims, self.distance_metric)

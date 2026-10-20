@@ -1,3 +1,8 @@
+"""Constants of the Letta memory model: the Letta directory, default endpoint and time zone, provider ordering, the names of the core memory tools, limits and default values.
+
+It defines values and one message helper and opens nothing.
+"""
+
 import os
 import re
 from logging import CRITICAL, DEBUG, ERROR, INFO, NOTSET, WARN, WARNING
@@ -213,6 +218,11 @@ LETTA_PARALLEL_SAFE_TOOLS = {
 
 
 def FUNCTION_RETURN_VALUE_TRUNCATED(return_str, return_char: int, return_char_limit: int):
+    """Build the note appended to a tool result that was cut for being too long.
+
+    Goes in: the (already cut) text, the original length and the character limit; comes out: the
+    text followed by a bracketed note giving both numbers. It never cuts anything itself.
+    """
     return f"{return_str}... [NOTE: function output was truncated since it exceeded the character limit: {return_char} > {return_char_limit}]"
 
 

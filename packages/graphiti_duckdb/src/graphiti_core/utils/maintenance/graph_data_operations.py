@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 
 async def clear_data(driver: GraphDriver, group_ids: list[str] | None = None):
+    """Delete data from the graph.
+
+    Goes in: the driver and optional group ids; comes out: nothing. It uses the driver's own
+    operation set when one is provided and otherwise runs the generic query. It deletes the data of
+    the given groups, or everything when no group is given.
+    """
     if driver.graph_operations_interface:
         try:
             return await driver.graph_operations_interface.clear_data(driver, group_ids)

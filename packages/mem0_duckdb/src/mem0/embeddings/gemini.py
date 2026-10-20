@@ -1,3 +1,9 @@
+"""An embedder that asks Google's Generative AI service for embeddings.
+
+Goes in: text; comes out: a list of floats. It calls a remote service and is not used by the memory
+owner path, which accepts only received numbers.
+"""
+
 import os
 from typing import Literal, Optional
 
@@ -9,7 +15,18 @@ from mem0.embeddings.base import EmbeddingBase
 
 
 class GoogleGenAIEmbedding(EmbeddingBase):
+    """Embedder for Google Generative AI.
+
+    Goes in: text to embed; comes out: its embedding from the configured Gemini model. It calls a
+    remote service and never caches results.
+    """
+
     def __init__(self, config: Optional[BaseEmbedderConfig] = None):
+        """Set up the Gemini client.
+
+        Goes in: an optional embedder config (model, width, API key; the environment supplies a
+        missing key); comes out: a ready embedder. It sends no request.
+        """
         super().__init__(config)
 
         self.config.model = self.config.model or "models/gemini-embedding-001"
@@ -43,6 +60,12 @@ class GoogleGenAIEmbedding(EmbeddingBase):
         return response.embeddings[0].values
 
     def embed_batch(self, texts, memory_action="add"):
+        """Embed several texts, at most 100 per request.
+
+        Goes in: a list of texts and an unused memory action; comes out: one embedding per text in
+        order. It raises ValueError if the service returns a different count, and returns an empty
+        list for no texts.
+        """
         if not texts:
             return []
         config = types.EmbedContentConfig(output_dimensionality=self.config.embedding_dims)

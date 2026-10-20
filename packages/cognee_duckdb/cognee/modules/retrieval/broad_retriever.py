@@ -89,6 +89,11 @@ class DecisionLarge(BaseModel):
 
 @dataclass
 class Unit:
+    """One unit of text read from the graph: its id, text, kind and the document it came from.
+
+    It holds values only.
+    """
+
     id: str
     text: str
     kind: str
@@ -97,6 +102,11 @@ class Unit:
 
 @dataclass
 class BroadContext:
+    """What the broad retriever decided and gathered for a question: the route taken, the text for the answer model, a note on how it was reached, what the store held when the dataset was too large, and an optional ready answer.
+
+    It holds values only.
+    """
+
     route: Literal["answer", "sql", "reading"]
     # What the answer model reads; empty when the decision call already answered.
     text: str
@@ -147,10 +157,18 @@ class Corpus:
     batch_chars: int
 
     async def fetch(self, documents: list[str]) -> list[Unit]:
+        """Fetch the units of text for the given documents from the graph.
+
+        Goes in: document ids; comes out: a list of units. It only reads.
+        """
         nodes, edges = await self.graph.get_neighborhood(documents, depth=1)
         return _units_of(nodes, edges, self.names)
 
     async def batches(self) -> AsyncIterator[list[Unit]]:
+        """Yield the corpus's documents in batches that fit the character budget, adjusting the estimate as it goes.
+
+        Goes in: nothing; comes out: lists of units, one list per batch. It only reads.
+        """
         ratio, start = 1.0, 0
         while start < len(self.documents):
             batch = [self.documents[start]]
@@ -183,7 +201,7 @@ def _documents_of(units: list[Unit]) -> list[tuple[str, list[Unit]]]:
 def _merged(ranked: list[list]) -> list:
     """Several ranked lists as one: the first of each, then the second of each, ..."""
     return (
-        [r for tier in zip(*ranked) for r in tier]
+        [r for tier in zip(*ranked, strict=False) for r in tier]
         if len(ranked) > 1
         else ranked[0]
         if ranked
@@ -232,6 +250,11 @@ class BroadRetriever(CompletionRetriever):
         store_mb: float = BROAD_STORE_MB,
         **kwargs,
     ):
+        """Set the broad retriever's token and size budgets for context, reading, batches and the store.
+
+        Goes in: the four budgets and the base retriever's keyword arguments; comes out: a
+        retriever. It reads nothing yet.
+        """
         super().__init__(**kwargs)
         if min(context_tokens, reading_tokens, batch_mb, store_mb) <= 0:
             raise ValueError(
@@ -243,7 +266,16 @@ class BroadRetriever(CompletionRetriever):
         self.store_chars = int(store_mb * 1_000_000)
         self.tokenizer = TikTokenTokenizer()
 
-    async def get_retrieved_objects(self, query: str) -> BroadContext:
+    async def get_retrieved_objects(
+        self, query: str | None = None, query_batch: str | None = None
+    ) -> BroadContext:
+        """Gather what is needed to answer a query: it sizes the dataset, loads it whole when small or reads it in batches, builds a record store and asks the model how to proceed.
+
+        Goes in: the query (query_batch is not used); comes out: a BroadContext. It raises
+        ValueError when no query is given and calls the language model.
+        """
+        if query is None:
+            raise ValueError("The broad retriever needs a query")
         engine = await get_unified_engine()
         store = RecordStore()
         try:
@@ -390,6 +422,11 @@ class BroadRetriever(CompletionRetriever):
     # --- deciding and answering ---------------------------------------------------------
 
     async def decide(self, query: str, store: RecordStore, whole: str | None) -> BroadContext:
+        """Ask the language model whether to answer directly, query the record store with SQL, or read the corpus.
+
+        Goes in: the query, the record store and the whole dataset text (or None when too large);
+        comes out: a BroadContext with the chosen route. It calls the language model.
+        """
         schema = store.describe(query)
         if whole is not None:
             prompt = (
@@ -506,11 +543,30 @@ class BroadRetriever(CompletionRetriever):
             response_model=response_model,
         )
 
-    async def get_context_from_objects(self, query: str, retrieved_objects: Any) -> str:
+    async def get_context_from_objects(self, *args: Any, **kwargs: Any) -> str:
+        """Return the text the answer model should read.
+
+        Goes in: the query and the broad context, in the form (query, retrieved_objects) or by
+        keyword; comes out: the context's text, else its ready answer, else an empty string. The
+        two parent classes declare different parameter lists for this method, so this one forwards
+        whatever it is given to _context_text, which keeps the real parameters.
+        """
+        return await self._context_text(*args, **kwargs)
+
+    async def _context_text(self, query: str, retrieved_objects: Any) -> str:
+        """Return the context's text, else its ready answer, else an empty string. It touches nothing."""
         context: BroadContext = retrieved_objects
         return context.text or context.answer or ""
 
-    async def get_completion_from_context(
+    async def get_completion_from_context(self, *args: Any, **kwargs: Any) -> list[Any]:
+        """Answer from the retrieved context, in the form (query, retrieved_objects, context, ...) or by keyword.
+
+        The two parent classes declare different parameter lists for this method, so this one
+        forwards whatever it is given to _completion, which keeps the real parameters.
+        """
+        return await self._completion(*args, **kwargs)
+
+    async def _completion(
         self,
         query: str,
         retrieved_objects: Any,
@@ -538,10 +594,22 @@ class BroadRetriever(CompletionRetriever):
         return [f"{c.rstrip()}\n\n{suffix}" if isinstance(c, str) else c for c in completions]
 
     def extract_context_object_ids(self, retrieved_objects: Any) -> dict[str, list[str]] | None:
+        """This retriever has no object ids to report.
+
+        Goes in: the retrieved objects; comes out: always None.
+        """
         return None
 
     def get_context_evidence(self, retrieved_objects: Any, dataset_id: Any = None):
+        """This retriever has no evidence to report.
+
+        Goes in: the retrieved objects and an optional dataset id; comes out: always None.
+        """
         return None
 
     async def append_references(self, completions: list[Any], retrieved_objects: Any) -> list[Any]:
+        """This retriever adds no references to its answers.
+
+        Goes in: the completions and the retrieved objects; comes out: the completions unchanged.
+        """
         return completions

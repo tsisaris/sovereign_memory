@@ -1,4 +1,4 @@
-"""remove unique constraint tenant name
+"""remove unique constraint tenant name.
 
 Revision ID: 6ee94db7381f
 Revises: d4e5f6a7b8c9

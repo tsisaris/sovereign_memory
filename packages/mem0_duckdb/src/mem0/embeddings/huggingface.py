@@ -1,3 +1,9 @@
+"""An embedder that uses Hugging Face, either a local sentence-transformers model or a text-embeddings server reached through an OpenAI-compatible client.
+
+Goes in: text; comes out: a list of floats. It is not used by the memory owner path, which accepts
+only received numbers.
+"""
+
 import logging
 import os
 from typing import Literal, Optional
@@ -14,7 +20,18 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 
 class HuggingFaceEmbedding(EmbeddingBase):
+    """Embedder for Hugging Face models.
+
+    Goes in: text to embed; comes out: its embedding from a local model or a server. It never caches
+    results.
+    """
+
     def __init__(self, config: Optional[BaseEmbedderConfig] = None):
+        """Set up the embedder: a client for a configured server URL, or a local sentence-transformers model.
+
+        Goes in: an optional embedder config; comes out: a ready embedder. The local model is loaded
+        here when no server URL is set.
+        """
         super().__init__(config)
 
         if self.config.huggingface_base_url:
@@ -52,6 +69,11 @@ class HuggingFaceEmbedding(EmbeddingBase):
             return self.model.encode(text, convert_to_numpy=True).tolist()
 
     def embed_batch(self, texts, memory_action="add"):
+        """Embed several texts in one call, through the server when one is configured and otherwise with the local model.
+
+        Goes in: a list of texts and an unused memory action; comes out: one embedding per text in
+        order. It returns an empty list for no texts.
+        """
         if not texts:
             return []
         if self.config.huggingface_base_url:

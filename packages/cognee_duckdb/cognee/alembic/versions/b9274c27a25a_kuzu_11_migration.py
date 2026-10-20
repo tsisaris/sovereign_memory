@@ -1,4 +1,4 @@
-"""kuzu-11-migration
+"""kuzu-11-migration.
 
 Revision ID: b9274c27a25a
 Revises: e4ebee1091e7
@@ -77,4 +77,9 @@ def downgrade() -> None:
     # To downgrade you will have to manually change the backup old kuzu graph databases
     # stored in the user folder to its previous name and remove the new kuzu graph
     # database that replaced it
+    """Undo this migration step.
+
+    It does nothing: to go back, the old Kuzu graph databases kept in the user folder must be
+    renamed back by hand and the new Kuzu database removed. Goes in: nothing; comes out: nothing.
+    """
     pass

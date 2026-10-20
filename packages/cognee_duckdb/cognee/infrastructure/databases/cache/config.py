@@ -1,3 +1,8 @@
+"""The settings of Cognee's session and lock cache (backend, database URL, purge interval, feedback and session search options), read from the environment.
+
+It holds and validates values only and opens no connection.
+"""
+
 from functools import lru_cache
 from typing import Literal
 
@@ -82,11 +87,20 @@ class CacheConfig(BaseSettings):
 
     @pydantic.model_validator(mode="after")
     def sync_legacy_ladybug_lock(self):
+        """Copy the legacy Kuzu lock setting to the Ladybug lock setting when only the legacy one is set.
+
+        Goes in: nothing but the settings object; comes out: the same object. It changes nothing
+        else.
+        """
         if self.shared_kuzu_lock and not self.shared_ladybug_lock:
             self.shared_ladybug_lock = self.shared_kuzu_lock
         return self
 
     def to_dict(self) -> dict:
+        """Return the cache settings as a plain dict.
+
+        Goes in: nothing; comes out: a dict of the settings. It reads only.
+        """
         return {
             "cache_backend": self.cache_backend,
             "cache_db_url": self.cache_db_url,
@@ -118,4 +132,8 @@ class CacheConfig(BaseSettings):
 
 @lru_cache
 def get_cache_config():
+    """Return the cache settings read from the environment.
+
+    Goes in: nothing; comes out: a settings object. It opens no connection.
+    """
     return CacheConfig()

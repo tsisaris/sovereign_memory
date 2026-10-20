@@ -1,3 +1,8 @@
+"""The settings of Cognee's vector database (provider, URL, key, port, dataset handler and pool options), read from the environment.
+
+It holds and validates values only and opens no connection.
+"""
+
 import json
 import os
 from functools import lru_cache
@@ -44,6 +49,11 @@ class VectorConfig(BaseSettings):
         # Note: When the vector provider is pgvector, automatically use the pgvector
         # dataset handler instead of the default lancedb one. This mirrors the same
         # pattern used in GraphConfig for postgres → postgres_graph.
+        """Normalise the vector settings after they are read: lower-case the provider and handler names and use the pgvector handler for the pgvector provider.
+
+        Goes in: nothing but the settings object; comes out: the same object. It opens no
+        connection.
+        """
         provider = self.vector_db_provider.lower()
         self.vector_db_provider = provider
         vector_dataset_database_handler = self.vector_dataset_database_handler.lower()
@@ -56,6 +66,11 @@ class VectorConfig(BaseSettings):
 
     @pydantic.model_validator(mode="after")
     def parse_vector_pool_args(self):
+        """Parse the vector pool arguments when they are given as JSON text.
+
+        Goes in: nothing but the settings object; comes out: the same object. It raises ValueError
+        naming the line and column when the text is not valid JSON.
+        """
         if self.vector_pool_args and isinstance(self.vector_pool_args, str):
             try:
                 parsed = json.loads(self.vector_pool_args)
@@ -72,6 +87,10 @@ class VectorConfig(BaseSettings):
 
     @pydantic.model_validator(mode="after")
     def validate_paths(self):
+        """Turn the vector database path into an absolute path when it names an existing local path (a URL is left alone).
+
+        Goes in: nothing but the settings object; comes out: the same object. It creates nothing.
+        """
         base_config = get_base_config()
 
         # If vector_db_url is provided and is not a path skip checking if path is absolute (as it can also be a url)

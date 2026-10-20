@@ -1,4 +1,4 @@
-"""Add composite index on data for the dataset listing
+"""Add composite index on data for the dataset listing.
 
 Revision ID: e7f9a1c3d5b8
 Revises: a7c2e9f4b8d1

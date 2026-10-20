@@ -1,3 +1,9 @@
+"""An embedder that asks a local LM Studio server for embeddings through an OpenAI-compatible client.
+
+Goes in: text; comes out: a list of floats. It is not used by the memory owner path, which accepts
+only received numbers.
+"""
+
 from typing import Literal, Optional
 
 from openai import OpenAI
@@ -7,7 +13,17 @@ from mem0.embeddings.base import EmbeddingBase
 
 
 class LMStudioEmbedding(EmbeddingBase):
+    """Embedder for LM Studio.
+
+    Goes in: text to embed; comes out: its embedding from the configured local model. It never
+    caches results.
+    """
+
     def __init__(self, config: Optional[BaseEmbedderConfig] = None):
+        """Set up the LM Studio client with defaults for model, width, key and server address.
+
+        Goes in: an optional embedder config; comes out: a ready embedder. It sends no request.
+        """
         super().__init__(config)
 
         self.config.model = (
@@ -34,6 +50,12 @@ class LMStudioEmbedding(EmbeddingBase):
         )
 
     def embed_batch(self, texts, memory_action="add"):
+        """Embed several texts in one request with newlines replaced by spaces.
+
+        Goes in: a list of texts and an unused memory action; comes out: one embedding per text in
+        order. It raises ValueError if the server returns a different count and returns an empty
+        list for no texts.
+        """
         if not texts:
             return []
         cleaned = [t.replace("\n", " ") for t in texts]

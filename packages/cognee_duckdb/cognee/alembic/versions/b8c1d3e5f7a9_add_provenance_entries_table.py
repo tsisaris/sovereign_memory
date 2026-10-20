@@ -1,4 +1,4 @@
-"""Add provenance_entries table
+"""Add provenance_entries table.
 
 Revision ID: b8c1d3e5f7a9
 Revises: f2b4c6d8e0a1
@@ -27,6 +27,11 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     # The table may already exist: Base.metadata.create_all() on the startup
     # path creates it once cognee.modules.provenance.models has been imported.
+    """Apply this migration step: create the provenance_entries table.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It checks first
+    and does nothing when the change is already present.
+    """
     connection = op.get_bind()
     inspector = sa.inspect(connection)
     if "provenance_entries" in inspector.get_table_names():
@@ -96,6 +101,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Undo this migration step: drop the provenance_entries table.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It does nothing
+    when there is nothing to undo.
+    """
     connection = op.get_bind()
     inspector = sa.inspect(connection)
     if "provenance_entries" in inspector.get_table_names():

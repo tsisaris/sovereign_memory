@@ -1,20 +1,28 @@
 """Declare storage operations and the default batch-search implementation."""
 
 from abc import ABC, abstractmethod
-from typing import List
+from typing import Any, List
 
 
 class VectorStoreBase(ABC):
     """Describe vector persistence and search without selecting a storage engine."""
 
     @abstractmethod
-    def create_col(self, name, vector_size, distance):
-        """Create a new collection."""
+    def create_col(self, *args: Any, **kwargs: Any):
+        """Create a new collection.
+
+        Implementations take different arguments (a name, a vector size and a distance, or only
+        the settings given at construction), so the abstract signature accepts any.
+        """
         pass
 
     @abstractmethod
-    def insert(self, vectors, payloads=None, ids=None):
-        """Insert vectors into a collection."""
+    def insert(self, *args: Any, **kwargs: Any):
+        """Insert vectors into a collection.
+
+        The usual call is insert(vectors, payloads=None, ids=None); some implementations add
+        arguments, so the abstract signature accepts any.
+        """
         pass
 
     @abstractmethod
@@ -56,8 +64,11 @@ class VectorStoreBase(ABC):
         pass
 
     @abstractmethod
-    def col_info(self):
-        """Get information about a collection."""
+    def col_info(self, *args: Any, **kwargs: Any):
+        """Get information about a collection.
+
+        Some implementations take a collection name, so the abstract signature accepts any.
+        """
         pass
 
     @abstractmethod

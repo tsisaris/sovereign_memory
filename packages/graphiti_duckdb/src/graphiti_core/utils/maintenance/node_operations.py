@@ -942,6 +942,11 @@ async def extract_attributes_only_from_nodes(
     previous_episodes: list[EpisodicNode] | None = None,
     entity_types: dict[str, type[BaseModel]] | None = None,
 ) -> list[EntityNode]:
+    """Fill in attributes of entity nodes from their episodes with the language model, without writing summaries.
+
+    Goes in: the clients, the nodes, the episode or episodes, previous episodes and entity types;
+    comes out: the nodes with attributes filled. It calls the language model and saves nothing.
+    """
     if not nodes or not entity_types:
         return nodes
 
@@ -994,6 +999,12 @@ async def extract_attributes_from_nodes(
     include_type_descriptions: bool = False,
     skip_attribute_extraction: bool = False,
 ) -> list[EntityNode]:
+    """Fill in attributes and summaries of entity nodes from their episodes with the language model.
+
+    Goes in: the clients, the nodes, episodes, entity types, an optional summary filter and edges;
+    comes out: the nodes with attributes and summaries filled. It calls the language model and saves
+    nothing.
+    """
     llm_client = clients.llm_client
     embedder = clients.embedder
 

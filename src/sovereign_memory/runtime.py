@@ -3,7 +3,7 @@
 build_service wires the engines the configuration names to the one owner
 service: Letta recall (episodic), Graphiti episodes (temporal), Cognee chunks
 (relational) and Mem0 (personalization), each registered as both processor and
-retriever. A tier the file does not configure gets no processor, so its
+retriever; the declared search settings and the models to register go to the Owner. A tier the file does not configure gets no processor, so its
 receipts stay pending and its retrieval reports unavailable; nothing is
 simulated. run serves until stopped and runs the owner's scheduled work
 (retrying owed receipts and expiring events) at the configured interval. It
@@ -61,44 +61,17 @@ def build_tiers(config: RuntimeConfig, only_tier: str | None = None) -> list[Any
         from service.memory_graphiti_episodes import GraphitiEpisodeTier
 
         tiers.append(_built("temporal", GraphitiEpisodeTier))
-    if (
-        config.relational_embedding is not None
-        and config.relational_database_name is not None
-        and only_tier in (None, "relational")
-    ):
-        settings = config.relational_embedding
+    if config.relational_database_name is not None and only_tier in (None, "relational"):
         database_name = config.relational_database_name
+        embedding_model = config.relational_embedding_model
 
         def relational() -> Any:
-            """Build the Cognee embedding engine from the configured model and the chunk tier."""
+            """Build the relational tier: one Cognee chunk per supplied piece, no model of its own."""
             from service.memory_cognee_chunks import CogneeChunkTier
 
-            if settings.provider == "agent_embedding":
-                from mem0.configs.embeddings.base import BaseEmbedderConfig
-                from mem0.embeddings.agent_embedding import AgentEmbedding
+            return CogneeChunkTier(database_name, embedding_model=embedding_model)
 
-                engine = AgentEmbedding(
-                    BaseEmbedderConfig(
-                        model=settings.model,
-                        embedding_dims=settings.dimensions,
-                        agent_embedding=settings.agent_embedding,
-                    )
-                )
-            else:
-                from cognee.infrastructure.databases.vector.embeddings.LiteLLMEmbeddingEngine import (
-                    LiteLLMEmbeddingEngine,
-                )
-
-                engine = LiteLLMEmbeddingEngine(
-                    model=settings.model,
-                    provider=settings.provider,
-                    dimensions=settings.dimensions,
-                    api_key=settings.api_key,
-                    endpoint=settings.endpoint,
-                )
-            return CogneeChunkTier(engine, database_name, revision=settings.revision)
-
-        tiers.append(_built("relational.embedding", relational))
+        tiers.append(_built("relational", relational))
     if config.personalization is not None and only_tier in (None, "personalization"):
         from mem0.memory.owner_tier import Mem0Tier
 
@@ -125,15 +98,20 @@ def build_service(config: RuntimeConfig, only_tier: str | None = None) -> OwnerS
         if config.pool_scope_labels
         else RestrictedPolicy()
     )
-    return OwnerService(
-        config.socket_path,
-        config.database_path,
-        registry=registry,
-        retrievers={tier.tier_name: tier for tier in tiers},
-        policy=policy,
-        max_request_bytes=config.max_request_bytes,
-        drain_timeout_seconds=config.drain_timeout_seconds,
-    )
+    try:
+        return OwnerService(
+            config.socket_path,
+            config.database_path,
+            registry=registry,
+            retrievers={tier.tier_name: tier for tier in tiers},
+            policy=policy,
+            max_request_bytes=config.max_request_bytes,
+            drain_timeout_seconds=config.drain_timeout_seconds,
+            ranking=config.ranking,
+            models=config.models,
+        )
+    except ValueError as error:
+        raise ConfigurationError(f"ranking: {error}") from error
 
 
 async def maintain(service: OwnerService, interval: float, stop: asyncio.Event) -> None:
@@ -149,6 +127,7 @@ async def maintain(service: OwnerService, interval: float, stop: asyncio.Event) 
             pass
         try:
             await service.enforce_expiry()
+            await service.sync_numbers()
             await service.process_owed()
         except Exception:
             logger.exception("Scheduled owner maintenance failed")

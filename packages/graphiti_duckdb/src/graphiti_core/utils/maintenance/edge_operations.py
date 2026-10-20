@@ -118,6 +118,11 @@ def build_community_edges(
     community_node: CommunityNode,
     created_at: datetime,
 ) -> list[CommunityEdge]:
+    """Build the edges that link a community node to its member entity nodes.
+
+    Goes in: the entity nodes, the community node and a creation time; comes out: a list of
+    community edges. It saves nothing.
+    """
     edges: list[CommunityEdge] = [
         CommunityEdge(
             source_node_uuid=community_node.uuid,
@@ -748,6 +753,12 @@ def _apply_temporal_invalidation(
 def resolve_edge_contradictions(
     resolved_edge: EntityEdge, invalidation_candidates: list[EntityEdge]
 ) -> list[EntityEdge]:
+    """Decide which existing edges a new edge invalidates.
+
+    Goes in: the resolved new edge and candidate edges that might contradict it; comes out: the
+    edges that must be marked expired (empty when none). It changes only the returned edges' expiry
+    fields in memory and saves nothing.
+    """
     if len(invalidation_candidates) == 0:
         return []
 
@@ -1088,6 +1099,10 @@ async def _dedupe_extracted_edge(
 async def filter_existing_duplicate_of_edges(
     driver: GraphDriver, duplicates_node_tuples: list[tuple[EntityNode, EntityNode]]
 ) -> list[tuple[EntityNode, EntityNode]]:
+    """Drop the duplicate-of pairs that are already stored as edges.
+
+    Goes in: the driver and pairs of nodes; comes out: the pairs not yet linked. It only reads.
+    """
     if not duplicates_node_tuples:
         return []
 
@@ -1132,7 +1147,7 @@ async def filter_existing_duplicate_of_edges(
             """
             duplicate_node_uuids = [{"src": src, "dst": dst} for src, dst in duplicate_nodes_map]
         else:
-            query: LiteralString = """
+            query = """
                 UNWIND $duplicate_node_uuids AS duplicate_tuple
                 MATCH (n:Entity {uuid: duplicate_tuple[0]})-[r:RELATES_TO {name: 'IS_DUPLICATE_OF'}]->(m:Entity {uuid: duplicate_tuple[1]})
                 RETURN DISTINCT

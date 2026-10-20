@@ -1,3 +1,8 @@
+"""Settings for Mem0's Hugging Face reranker: the model name, device, batch size, token limit and score normalisation.
+
+It holds values only and never loads a model.
+"""
+
 from typing import Optional
 
 from pydantic import Field

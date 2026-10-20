@@ -1,3 +1,9 @@
+"""Mem0's optional graph memory on Neo4j: it stores entities and relations extracted from conversations and searches them.
+
+Goes in: graph store settings, filters and text; comes out: graph query results. It needs the
+langchain-neo4j package and is not part of the DuckDB-only owner path.
+"""
+
 import logging
 
 from mem0.memory.utils import format_entities, remove_spaces_from_entities
@@ -29,7 +35,18 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryGraph:
+    """Graph memory backed by a Neo4j database.
+
+    Goes in: text and filters; comes out: added, searched or deleted graph entries. It talks to a
+    separate Neo4j server and never writes to the owner's DuckDB file.
+    """
+
     def __init__(self, config):
+        """Connect to the Neo4j graph and prepare the embedder, language model and similarity threshold from the config.
+
+        Goes in: the Mem0 config; comes out: a ready graph memory. It opens the Neo4j connection but
+        writes nothing.
+        """
         self.config = config
         self.graph = Neo4jGraph(
             url=self.config.graph_store.config.url,
@@ -53,13 +70,13 @@ class MemoryGraph:
                     f"CREATE INDEX entity_single IF NOT EXISTS FOR (n {self.node_label}) ON (n.user_id)"
                 )
             except Exception:
-                pass
+                logger.debug("Exception ignored in __init__", exc_info=True)
             try:  # Safely try to add composite index (Enterprise only)
                 self.graph.query(
                     f"CREATE INDEX entity_composite IF NOT EXISTS FOR (n {self.node_label}) ON (n.name, n.user_id)"
                 )
             except Exception:
-                pass
+                logger.debug("Exception ignored in __init__", exc_info=True)
 
         # Default to openai if no specific provider is configured
         self.llm_provider = "openai"
@@ -175,10 +192,15 @@ class MemoryGraph:
             if to_be_deleted:
                 self._delete_entities(to_be_deleted, filters)
         except Exception as e:
-            logger.error(f"Error during graph cleanup for memory delete: {e}")
+            logger.error(f"Error during graph cleanup for memory delete: {e}", exc_info=True)
 
     def delete_all(self, filters):
         # Build node properties for filtering
+        """Delete every graph node (and its relations) that matches the filters.
+
+        Goes in: filters with a user id and optionally an agent id and run id; comes out: the count
+        or result of the deletion query. It touches only nodes matching all given filters.
+        """
         node_props = ["user_id: $user_id"]
         if filters.get("agent_id"):
             node_props.append("agent_id: $agent_id")
@@ -200,6 +222,7 @@ class MemoryGraph:
     def get_all(self, filters, limit=100):
         """
         Retrieves all nodes and relationships from the graph database based on optional filtering criteria.
+
          Args:
             filters (dict): A dictionary containing filters to be applied during the retrieval.
             limit (int): The maximum number of nodes and relationships to retrieve. Defaults to 100.

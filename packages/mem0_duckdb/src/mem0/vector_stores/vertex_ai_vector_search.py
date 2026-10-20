@@ -1,3 +1,9 @@
+"""A Mem0 vector store on Google Vertex AI Vector Search (Matching Engine).
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to Google Cloud and is not used by the DuckDB-only owner path.
+"""
+
 import logging
 import traceback
 import uuid
@@ -26,12 +32,22 @@ logger = logging.getLogger(__name__)
 
 
 class OutputData(BaseModel):
+    """One search result: a memory id, a distance score and the metadata payload.
+
+    It carries data only and does nothing.
+    """
+
     id: Optional[str]  # memory id
     score: Optional[float]  # distance
     payload: Optional[Dict]  # metadata
 
 
 class GoogleMatchingEngine(VectorStoreBase):
+    """The Vertex AI Matching Engine vector store: it connects to an index endpoint and inserts, searches, updates, deletes and lists vectors with payloads.
+
+    It talks to Google Cloud and never touches DuckDB.
+    """
+
     def __init__(self, **kwargs):
         """Initialize Google Matching Engine client."""
         logger.debug("Initializing Google Matching Engine with config keys: %s", sorted(kwargs))
@@ -111,7 +127,9 @@ class GoogleMatchingEngine(VectorStoreBase):
             )
             logger.debug("Endpoint initialized successfully")
         except Exception as e:
-            logger.error("Failed to initialize Matching Engine components: %s", str(e))
+            logger.error(
+                "Failed to initialize Matching Engine components: %s", str(e), exc_info=True
+            )
             raise ValueError(f"Invalid configuration: {str(e)}")
 
     def _parse_output(self, data: Dict) -> List[OutputData]:
@@ -233,6 +251,7 @@ class GoogleMatchingEngine(VectorStoreBase):
     ) -> List[OutputData]:
         """
         Search for similar vectors.
+
         Args:
             query (str): Query.
             vectors (List[float]): Query vector.
@@ -307,11 +326,17 @@ class GoogleMatchingEngine(VectorStoreBase):
     def keyword_search(self, query, top_k=5, filters=None):
         # Vertex AI hybrid search requires sparse embeddings configuration.
         # Not yet supported - requires HybridQuery with sparse encoder setup.
+        """Keyword search is not supported by this store.
+
+        Goes in: a query, a count and filters (all ignored); comes out: always None. It never
+        searches.
+        """
         return None
 
     def delete(self, vector_id: Optional[str] = None, ids: Optional[List[str]] = None) -> bool:
         """
         Delete vectors from the Matching Engine index.
+
         Args:
             vector_id (Optional[str]): Single ID to delete (for backward compatibility)
             ids (Optional[List[str]]): List of IDs of vectors to delete
@@ -345,7 +370,7 @@ class GoogleMatchingEngine(VectorStoreBase):
                 return False
 
         except Exception as e:
-            logger.error("Error occurred: %s", str(e))
+            logger.error("Error occurred: %s", str(e), exc_info=True)
             logger.error("Error type: %s", type(e))
             logger.error("Stack trace: %s", traceback.format_exc())
             return False
@@ -548,6 +573,11 @@ class GoogleMatchingEngine(VectorStoreBase):
         pass
 
     def add(self, text: str, metadata: Optional[Dict] = None, user_id: Optional[str] = None) -> str:
+        """Add one text with its metadata and user id as a new vector and return the new id.
+
+        Goes in: the text, optional metadata and optional user id; comes out: a generated id string.
+        It writes one record to the index.
+        """
         logger.debug("Starting add operation")
         logger.debug("Text: %s", text)
         logger.debug("Metadata: %s", metadata)

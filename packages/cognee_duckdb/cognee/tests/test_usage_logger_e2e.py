@@ -1,3 +1,8 @@
+"""End-to-end checks that the API and the MCP tool wrappers log their usage into the cache engine.
+
+They start the app with a test client and clean the engines before each check.
+"""
+
 import asyncio
 import logging
 import os

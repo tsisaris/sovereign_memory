@@ -1,3 +1,8 @@
+"""Settings for Mem0's sentence-transformer reranker: the cross-encoder model, device, batch size and progress display.
+
+It holds values only and never loads a model.
+"""
+
 from typing import Optional
 
 from pydantic import Field

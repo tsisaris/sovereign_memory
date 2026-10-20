@@ -1,3 +1,8 @@
+"""Settings for Mem0's language-model reranker: the model, provider, key, sampling values and scoring prompt.
+
+It holds values only and never calls a model.
+"""
+
 from typing import Any, Dict, Optional
 
 from pydantic import Field

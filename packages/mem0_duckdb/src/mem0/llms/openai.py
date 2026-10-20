@@ -1,3 +1,9 @@
+"""A language-model client for OpenAI chat completions, also used for OpenAI-compatible servers.
+
+Goes in: messages and optional tools; comes out: the reply text or tool calls. It calls a remote
+service.
+"""
+
 import json
 import logging
 import os
@@ -12,8 +18,19 @@ from mem0.memory.utils import extract_json
 
 
 class OpenAILLM(LLMBase):
+    """Chat client for OpenAI and compatible servers.
+
+    Goes in: messages, optional response format and tools; comes out: the reply text or tool calls.
+    It keeps no conversation state.
+    """
+
     def __init__(self, config: Optional[Union[BaseLlmConfig, OpenAIConfig, Dict]] = None):
         # Convert to OpenAIConfig if needed
+        """Set up the OpenAI client from the config or environment.
+
+        Goes in: a config object, dict or None; comes out: a ready client. It converts other config
+        kinds to the OpenAI config and sends no request.
+        """
         if config is None:
             config = OpenAIConfig()
         elif isinstance(config, dict):
@@ -89,9 +106,9 @@ class OpenAILLM(LLMBase):
     def generate_response(
         self,
         messages: List[Dict[str, str]],
-        response_format=None,
         tools: Optional[List[Dict]] = None,
         tool_choice: str = "auto",
+        response_format=None,
         **kwargs,
     ):
         """
@@ -151,6 +168,6 @@ class OpenAILLM(LLMBase):
                 self.config.response_callback(self, response, params)
             except Exception as e:
                 # Log error but don't propagate
-                logging.error(f"Error due to callback: {e}")
+                logging.error(f"Error due to callback: {e}", exc_info=True)
                 pass
         return parsed_response

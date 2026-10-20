@@ -1,4 +1,4 @@
-"""add_created_and_last_used_to_user_api_key
+"""add_created_and_last_used_to_user_api_key.
 
 Revision ID: c7e2a9b4d1f3
 Revises: a7f3c9e1b5d2

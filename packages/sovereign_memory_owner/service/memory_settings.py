@@ -1,0 +1,117 @@
+"""Memory's four tunable search settings, read at run time and recorded as parameter records.
+
+The settings are the score used to compare combiners, the held-back share, the
+smallest held-back set that may decide, and the merging constant. They are never
+written into code (project Law 32): the deployment's configuration file declares
+them, the service validates them at start so a missing or invalid value fails
+clearly, and every value in effect is appended to the memory_settings table, so
+an answer or a comparison can report the value it used. This module only holds,
+validates and records them; it chooses no value, ranks nothing and calls no model.
+"""
+
+import json
+import math
+from dataclasses import asdict, dataclass
+from typing import Any, Mapping
+
+import duckdb
+
+SETTING_NAMES = (
+    "comparison_score",
+    "held_back_share",
+    "smallest_held_back_set",
+    "merging_constant",
+)
+
+SETTINGS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS memory_settings (
+    name VARCHAR NOT NULL,
+    value VARCHAR NOT NULL,
+    source VARCHAR NOT NULL,
+    recorded_at VARCHAR NOT NULL
+);
+"""
+
+
+@dataclass(frozen=True)
+class SearchSettings:
+    """The four declared settings, exactly as the deployment gave them.
+
+    comparison_score names one of the scores memory can compute; held_back_share
+    is the fraction of cases held back, strictly between 0 and 1;
+    smallest_held_back_set is the fewest held-back cases that may decide a
+    comparison; merging_constant is the constant added to a rank in reciprocal
+    rank fusion. None has a default.
+    """
+
+    comparison_score: str
+    held_back_share: float
+    smallest_held_back_set: int
+    merging_constant: float
+
+    @classmethod
+    def from_mapping(cls, table: Any, known_scores: tuple[str, ...]) -> "SearchSettings":
+        """Validate a declared table and return the settings; nothing is defaulted.
+
+        Goes in: a mapping with exactly the four setting names, and the score
+        names memory can compute. Comes out: the settings. Raises ValueError
+        naming the setting that is missing, unknown, of the wrong type or out
+        of range.
+        """
+        if not isinstance(table, Mapping):
+            raise ValueError("The search settings must be a table")
+        missing = [name for name in SETTING_NAMES if name not in table]
+        if missing:
+            raise ValueError(f"The search settings are missing: {', '.join(missing)}")
+        unknown = sorted(set(table) - set(SETTING_NAMES))
+        if unknown:
+            raise ValueError(f"The search settings have unknown keys: {', '.join(unknown)}")
+        score = table["comparison_score"]
+        if score not in known_scores:
+            raise ValueError(f"comparison_score must be one of {list(known_scores)}")
+        share = table["held_back_share"]
+        if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 < share < 1:
+            raise ValueError("held_back_share must be a number strictly between 0 and 1")
+        smallest = table["smallest_held_back_set"]
+        if isinstance(smallest, bool) or not isinstance(smallest, int) or smallest < 1:
+            raise ValueError("smallest_held_back_set must be a positive integer")
+        constant = table["merging_constant"]
+        if isinstance(constant, bool) or not isinstance(constant, (int, float)):
+            raise ValueError("merging_constant must be a number")
+        if not math.isfinite(constant) or constant <= 0:
+            raise ValueError("merging_constant must be a finite number above 0")
+        return cls(score, float(share), smallest, float(constant))
+
+    def report(self) -> dict[str, Any]:
+        """Return the values as a plain dict, for reporting the value achieved with an answer."""
+        return asdict(self)
+
+
+def initialize_settings_schema(handle: duckdb.DuckDBPyConnection) -> None:
+    """Create the settings table if absent, inside the caller's transaction."""
+    handle.execute(SETTINGS_SCHEMA)
+
+
+def record_settings(
+    handle: duckdb.DuckDBPyConnection, settings: SearchSettings, source: str, recorded_at: str
+) -> list[str]:
+    """Append every setting whose value differs from its latest record; return the names written.
+
+    The table is append-only: a changed setting adds a row, an unchanged one
+    adds nothing, and no earlier row is edited or removed.
+    """
+    written = []
+    for name, value in settings.report().items():
+        encoded = json.dumps(value)
+        latest = handle.execute(
+            "SELECT value FROM memory_settings WHERE name = ? ORDER BY recorded_at DESC, "
+            "rowid DESC LIMIT 1",
+            [name],
+        ).fetchone()
+        if latest is None or latest[0] != encoded:
+            handle.execute(
+                "INSERT INTO memory_settings VALUES (?, ?, ?, ?)",
+                [name, encoded, source, recorded_at],
+            )
+            written.append(name)
+    return written

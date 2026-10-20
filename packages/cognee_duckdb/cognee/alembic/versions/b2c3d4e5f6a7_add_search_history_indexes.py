@@ -1,4 +1,4 @@
-"""add created_at index to queries and results tables
+"""add created_at index to queries and results tables.
 
 Revision ID: b2c3d4e5f6a7
 Revises:

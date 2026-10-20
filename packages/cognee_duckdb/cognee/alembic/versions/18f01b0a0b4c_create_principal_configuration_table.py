@@ -1,4 +1,4 @@
-"""create principal configuration table
+"""create principal configuration table.
 
 Revision ID: 18f01b0a0b4c
 Revises: 84e5d08260d6
@@ -19,6 +19,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """Apply this migration step: create the principal_configuration table.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It checks first
+    and does nothing when the change is already present.
+    """
     table_name = "principal_configuration"
     connection = op.get_bind()
     inspector = sa.inspect(connection)
@@ -45,6 +50,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Undo this migration step: drop the principal_configuration table.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It does nothing
+    when there is nothing to undo.
+    """
     table_name = "principal_configuration"
     connection = op.get_bind()
     inspector = sa.inspect(connection)

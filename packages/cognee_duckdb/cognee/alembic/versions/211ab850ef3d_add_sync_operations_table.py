@@ -1,4 +1,4 @@
-"""Add sync_operations table
+"""Add sync_operations table.
 
 Revision ID: 211ab850ef3d
 Revises: 9e7a3cb85175

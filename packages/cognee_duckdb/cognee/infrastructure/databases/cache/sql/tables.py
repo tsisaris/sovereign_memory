@@ -43,6 +43,10 @@ class StringKey(TypeDecorator):
     cache_ok = True
 
     def process_bind_param(self, value, dialect):
+        """Convert a value to text before it is bound into a query: None and strings pass through and anything else becomes its string form.
+
+        Goes in: the value and the SQL dialect; comes out: the value to bind. It never writes.
+        """
         if value is None or isinstance(value, str):
             return value
         return str(value)
@@ -50,6 +54,10 @@ class StringKey(TypeDecorator):
     def coerce_compared_value(self, op, value):
         # Compare through this decorator (not the raw impl) so binds in
         # WHERE/IN comparisons run through process_bind_param too.
+        """Make comparisons use this type as well, so values bound in WHERE and IN clauses also pass through the bind conversion.
+
+        Goes in: the operator and the value; comes out: this type. It touches nothing.
+        """
         return self
 
 

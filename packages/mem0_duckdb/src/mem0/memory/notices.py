@@ -1,3 +1,9 @@
+"""First-run and usage notices for Mem0, driven by a bundled configuration file and feature flags, with detectors for temporal, decay and scale usage.
+
+Goes in: calls and results from Mem0 operations; comes out: notice texts printed or error messages.
+It sends nothing over the network when telemetry is off.
+"""
+
 import asyncio
 import hashlib
 import json
@@ -35,13 +41,26 @@ class StaticFlagResult:
     """Drop-in replacement for PostHog's evaluate_flags return value."""
 
     def __init__(self, variant, payload):
+        """Keep the flag variant and payload this stand-in flag source will report.
+
+        Goes in: a variant string and a payload; comes out: nothing. It does not contact any flag
+        service.
+        """
         self._variant = variant
         self._payload = payload
 
     def get_flag(self, key):
+        """Return the fixed flag variant, whatever the key.
+
+        Goes in: a flag key (ignored); comes out: the stored variant. It never looks anything up.
+        """
         return self._variant
 
     def get_flag_payload(self, key):
+        """Return the fixed flag payload, whatever the key.
+
+        Goes in: a flag key (ignored); comes out: the stored payload. It never looks anything up.
+        """
         return self._payload
 
     def _get_event_properties(self):
@@ -56,6 +75,7 @@ def _load_bundled_config():
         with open(_BUNDLED_CONFIG_PATH) as f:
             return json.load(f)
     except Exception:
+        _logger.debug("Exception ignored in _load_bundled_config", exc_info=True)
         return {"version": 1, "variant_split": 0.5, "notices": {}}
 
 
@@ -69,7 +89,7 @@ def __fetch_remote_config():
         with urllib.request.urlopen(req, timeout=_CONFIG_FETCH_TIMEOUT_SECONDS) as resp:
             return json.loads(resp.read())
     except Exception:
-        _logger.debug("Failed to fetch remote notice config, using bundled fallback")
+        _logger.debug("Failed to fetch remote notice config, using bundled fallback", exc_info=True)
         return None
 
 
@@ -232,6 +252,7 @@ def display_first_run_notice(memory_instance, sync_type: str, trigger_function: 
         if displayed:
             print(copy, file=sys.stderr)
     except Exception:
+        _logger.debug("Exception ignored in display_first_run_notice", exc_info=True)
         if variant is not None:
             _update_first_run_variant(variant)
 
@@ -239,6 +260,12 @@ def display_first_run_notice(memory_instance, sync_type: str, trigger_function: 
 async def display_first_run_notice_async(
     memory_instance, sync_type: str, trigger_function: str
 ) -> None:
+    """Run the first-run notice in a worker thread so an async caller is not blocked.
+
+    Goes in: the memory instance, the sync type and the triggering function name; comes out:
+    nothing. It does nothing when telemetry is off or the notice was already claimed in this
+    process.
+    """
     if not telemetry_module.MEM0_TELEMETRY or _first_run_claimed_in_process:
         return
     await asyncio.to_thread(display_first_run_notice, memory_instance, sync_type, trigger_function)
@@ -325,6 +352,7 @@ def display_temporal_usage_notice(
         if displayed:
             print(copy, file=sys.stderr)
     except Exception:
+        _logger.debug("Exception ignored in display_temporal_usage_notice", exc_info=True)
         return
 
 
@@ -335,6 +363,11 @@ async def display_temporal_usage_notice_async(
     trigger_source: str,
     trigger_reason: str,
 ) -> None:
+    """Run the temporal-usage notice in a worker thread so an async caller is not blocked.
+
+    Goes in: the memory instance and the sync type, trigger function, source and reason; comes out:
+    nothing. It never blocks the event loop.
+    """
     await asyncio.to_thread(
         display_temporal_usage_notice,
         memory_instance,
@@ -346,6 +379,11 @@ async def display_temporal_usage_notice_async(
 
 
 def detect_decay_usage_from_delete() -> Optional[Tuple[str, str, Optional[int], Optional[int]]]:
+    """Count a successful delete toward decay-usage detection.
+
+    Goes in: nothing; comes out: a tuple describing the trigger when the count reaches capacity,
+    otherwise None. It returns None when telemetry is off and never raises on bookkeeping errors.
+    """
     if not telemetry_module.MEM0_TELEMETRY:
         return None
 
@@ -360,6 +398,7 @@ def detect_decay_usage_from_delete() -> Optional[Tuple[str, str, Optional[int], 
         if delete_count >= DECAY_USAGE_DELETE_THRESHOLD and not _decay_usage_at_capacity():
             return ("delete_count", "repeated_deletes", delete_count, None)
     except Exception:
+        _logger.debug("Exception ignored in detect_decay_usage_from_delete", exc_info=True)
         return None
 
     return None
@@ -368,6 +407,11 @@ def detect_decay_usage_from_delete() -> Optional[Tuple[str, str, Optional[int], 
 def detect_decay_usage_from_delete_all(
     deleted_count: Any,
 ) -> Optional[Tuple[str, str, Optional[int], Optional[int]]]:
+    """Count a delete-all result toward decay-usage detection.
+
+    Goes in: the number of memories deleted; comes out: a tuple describing the trigger when capacity
+    is reached, otherwise None. It returns None when telemetry is off or nothing was deleted.
+    """
     if not telemetry_module.MEM0_TELEMETRY:
         return None
 
@@ -465,6 +509,7 @@ def display_decay_usage_notice(
         if displayed:
             print(copy, file=sys.stderr)
     except Exception:
+        _logger.debug("Exception ignored in display_decay_usage_notice", exc_info=True)
         return
 
 
@@ -477,6 +522,11 @@ async def display_decay_usage_notice_async(
     delete_count: Optional[int] = None,
     deleted_count: Optional[int] = None,
 ) -> None:
+    """Run the decay-usage notice in a worker thread so an async caller is not blocked.
+
+    Goes in: the memory instance, the sync type, trigger details and optional delete counts; comes
+    out: nothing. It never blocks the event loop.
+    """
     await asyncio.to_thread(
         display_decay_usage_notice,
         memory_instance,
@@ -492,6 +542,11 @@ async def display_decay_usage_notice_async(
 def detect_scale_threshold_from_top_k(
     top_k: Any,
 ) -> Optional[Tuple[str, str, Optional[int], Optional[int], int]]:
+    """Say whether a search's top_k reaches the scale threshold.
+
+    Goes in: the top_k value; comes out: a tuple describing the trigger, or None when top_k is not a
+    number or is below the threshold. It never raises on a bad value.
+    """
     try:
         top_k_value = int(top_k)
     except (TypeError, ValueError):
@@ -507,6 +562,11 @@ def detect_scale_threshold_from_add_result(
     memory_instance,
     add_result: Any,
 ) -> Optional[Tuple[str, str, Optional[int], Optional[int], int]]:
+    """Say whether the memories an add call created reach the scale threshold.
+
+    Goes in: the memory instance and the add result; comes out: a tuple describing the trigger, or
+    None. It returns None when telemetry is off or nothing was added.
+    """
     if not telemetry_module.MEM0_TELEMETRY:
         return None
 
@@ -539,6 +599,7 @@ def detect_scale_threshold_from_add_result(
                 _scale_memory_count_threshold_evaluated_in_process = True
                 return None
     except Exception:
+        _logger.debug("Exception ignored in detect_scale_threshold_from_add_result", exc_info=True)
         return None
 
     provider_count = _get_provider_memory_count(memory_instance)
@@ -649,6 +710,7 @@ def display_scale_threshold_notice(
         if displayed:
             print(copy, file=sys.stderr)
     except Exception:
+        _logger.debug("Exception ignored in display_scale_threshold_notice", exc_info=True)
         return
 
 
@@ -662,6 +724,11 @@ async def display_scale_threshold_notice_async(
     memory_count: Optional[int] = None,
     threshold: Optional[int] = None,
 ) -> None:
+    """Run the scale-threshold notice in a worker thread so an async caller is not blocked.
+
+    Goes in: the memory instance, the sync type, trigger details and optional top_k, memory count
+    and threshold; comes out: nothing. It never blocks the event loop.
+    """
     await asyncio.to_thread(
         display_scale_threshold_notice,
         memory_instance,
@@ -760,6 +827,7 @@ def display_performance_slow_query_notice(
         if displayed:
             print(copy, file=sys.stderr)
     except Exception:
+        _logger.debug("Exception ignored in display_performance_slow_query_notice", exc_info=True)
         return
 
 
@@ -771,6 +839,11 @@ async def display_performance_slow_query_notice_async(
     top_k: int,
     result_count: int,
 ) -> None:
+    """Run the slow-query notice in a worker thread so an async caller is not blocked.
+
+    Goes in: the memory instance, the sync type, the function name, elapsed seconds, top_k and
+    result count; comes out: nothing. It never blocks the event loop.
+    """
     await asyncio.to_thread(
         display_performance_slow_query_notice,
         memory_instance,
@@ -800,6 +873,11 @@ async def get_temporal_feature_error_message_async(
     trigger_function: str,
     trigger_parameter: str,
 ) -> str:
+    """Build, in a worker thread, the error message shown when a temporal feature is used without support.
+
+    Goes in: the sync type, function name and parameter name; comes out: the message text. It never
+    raises for a missing config.
+    """
     return await asyncio.to_thread(
         get_temporal_feature_error_message,
         sync_type,
@@ -826,6 +904,11 @@ async def get_decay_feature_error_message_async(
     trigger_function: str,
     trigger_parameter: str,
 ) -> str:
+    """Build, in a worker thread, the error message shown when a decay feature is used without support.
+
+    Goes in: the sync type, function name and parameter name; comes out: the message text. It never
+    raises for a missing config.
+    """
     return await asyncio.to_thread(
         get_decay_feature_error_message,
         sync_type,
@@ -911,6 +994,7 @@ def _get_feature_error_message(
         if displayed:
             return copy
     except Exception:
+        _logger.debug("Exception ignored in _get_feature_error_message", exc_info=True)
         return plain_error
 
     return plain_error
@@ -919,6 +1003,11 @@ def _get_feature_error_message(
 def detect_temporal_usage_from_metadata(
     metadata: Optional[Dict[str, Any]],
 ) -> Optional[Tuple[str, str]]:
+    """Look through a metadata dict for a temporal key or value.
+
+    Goes in: the metadata (anything else is ignored); comes out: a tuple naming where and how
+    temporal use was found, or None. It never raises on odd input.
+    """
     try:
         if not isinstance(metadata, dict):
             return None
@@ -928,6 +1017,7 @@ def detect_temporal_usage_from_metadata(
             if temporal_key and _looks_temporal_value(value, allow_epoch=True):
                 return ("metadata", "date_like_metadata")
     except Exception:
+        _logger.debug("Exception ignored in detect_temporal_usage_from_metadata", exc_info=True)
         return None
     return None
 
@@ -936,6 +1026,11 @@ def detect_temporal_usage_from_search(
     query: Any,
     filters: Optional[Dict[str, Any]],
 ) -> Optional[Tuple[str, str]]:
+    """Look in a search query and its filters for temporal use such as a relative time phrase or an ISO date.
+
+    Goes in: the query text and the filters dict; comes out: a tuple naming where and how temporal
+    use was found, or None. It never raises on odd input.
+    """
     try:
         if isinstance(query, str):
             if _RELATIVE_TIME_RE.search(query):
@@ -946,6 +1041,7 @@ def detect_temporal_usage_from_search(
         if _has_temporal_filter(filters):
             return ("filter", "date_range_filter")
     except Exception:
+        _logger.debug("Exception ignored in detect_temporal_usage_from_search", exc_info=True)
         return None
     return None
 
@@ -995,6 +1091,7 @@ def _update_first_run_variant(variant) -> None:
             config[STATE_SECTION] = state
             _write_config(config)
     except Exception:
+        _logger.debug("Exception ignored in _update_first_run_variant", exc_info=True)
         return
 
 
@@ -1011,6 +1108,7 @@ def _feature_error_at_capacity(notice_id: str) -> bool:
                 _feature_error_capacity_reached_in_process.add(notice_id)
             return at_capacity
     except Exception:
+        _logger.debug("Exception ignored in _feature_error_at_capacity", exc_info=True)
         return True
 
 
@@ -1055,6 +1153,7 @@ def _record_feature_error_opportunity(
                 _feature_error_capacity_reached_in_process.add(notice_id)
             return True
     except Exception:
+        _logger.debug("Exception ignored in _record_feature_error_opportunity", exc_info=True)
         return False
 
 
@@ -1096,6 +1195,7 @@ def _temporal_usage_at_capacity() -> bool:
                 _temporal_usage_capacity_reached_in_process = True
             return at_capacity
     except Exception:
+        _logger.debug("Exception ignored in _temporal_usage_at_capacity", exc_info=True)
         return True
 
 
@@ -1142,6 +1242,7 @@ def _record_temporal_usage_opportunity(
                 _temporal_usage_capacity_reached_in_process = True
             return True
     except Exception:
+        _logger.debug("Exception ignored in _record_temporal_usage_opportunity", exc_info=True)
         return False
 
 
@@ -1183,6 +1284,7 @@ def _decay_usage_at_capacity() -> bool:
                 _decay_usage_capacity_reached_in_process = True
             return at_capacity
     except Exception:
+        _logger.debug("Exception ignored in _decay_usage_at_capacity", exc_info=True)
         return True
 
 
@@ -1234,6 +1336,7 @@ def _record_decay_usage_opportunity(
                 _decay_usage_capacity_reached_in_process = True
             return True
     except Exception:
+        _logger.debug("Exception ignored in _record_decay_usage_opportunity", exc_info=True)
         return False
 
 
@@ -1275,6 +1378,7 @@ def _scale_threshold_at_capacity() -> bool:
                 _scale_threshold_capacity_reached_in_process = True
             return at_capacity
     except Exception:
+        _logger.debug("Exception ignored in _scale_threshold_at_capacity", exc_info=True)
         return True
 
 
@@ -1331,6 +1435,7 @@ def _record_scale_threshold_opportunity(
                 _scale_threshold_capacity_reached_in_process = True
             return True
     except Exception:
+        _logger.debug("Exception ignored in _record_scale_threshold_opportunity", exc_info=True)
         return False
 
 
@@ -1356,6 +1461,9 @@ def _mark_scale_memory_count_threshold_evaluated() -> bool:
             _scale_memory_count_threshold_evaluated_in_process = True
             return True
     except Exception:
+        _logger.debug(
+            "Exception ignored in _mark_scale_memory_count_threshold_evaluated", exc_info=True
+        )
         return False
 
 
@@ -1397,6 +1505,7 @@ def _performance_slow_query_at_capacity() -> bool:
                 _performance_slow_query_capacity_reached_in_process = True
             return at_capacity
     except Exception:
+        _logger.debug("Exception ignored in _performance_slow_query_at_capacity", exc_info=True)
         return True
 
 
@@ -1441,6 +1550,9 @@ def _record_performance_slow_query_opportunity(
                 _performance_slow_query_capacity_reached_in_process = True
             return True
     except Exception:
+        _logger.debug(
+            "Exception ignored in _record_performance_slow_query_opportunity", exc_info=True
+        )
         return False
 
 
@@ -1513,7 +1625,7 @@ def _get_provider_memory_count(memory_instance) -> Optional[int]:
             if value is not None:
                 return value
     except Exception:
-        pass
+        _logger.debug("Exception ignored in _get_provider_memory_count", exc_info=True)
 
     try:
         col_info = getattr(vector_store, "col_info", None)
@@ -1545,6 +1657,7 @@ def _get_provider_memory_count(memory_instance) -> Optional[int]:
             if callable(client_count):
                 return _extract_count(client_count(index=collection_name))
     except Exception:
+        _logger.debug("Exception ignored in _get_provider_memory_count", exc_info=True)
         return None
 
     return None
@@ -1568,6 +1681,7 @@ def _extract_count(info: Any) -> Optional[int]:
             if value is not None:
                 return value
         except Exception:
+            _logger.debug("Exception ignored in _extract_count", exc_info=True)
             return None
 
     for attr in ("count", "points_count", "vectors_count", "indexed_vectors_count", "num_docs"):
@@ -1586,6 +1700,7 @@ def _render_scale_copy(
     try:
         return copy_template.format(top_k=top_k, memory_count=memory_count)
     except Exception:
+        _logger.debug("Exception ignored in _render_scale_copy", exc_info=True)
         return copy_template
 
 
@@ -1606,6 +1721,7 @@ def _coerce_mapping(payload: Any) -> Dict[str, Any]:
         try:
             parsed = json.loads(payload)
         except Exception:
+            _logger.debug("Exception ignored in _coerce_mapping", exc_info=True)
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}

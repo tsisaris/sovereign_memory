@@ -1,4 +1,4 @@
-"""add_integration_credentials_table
+"""add_integration_credentials_table.
 
 Revision ID: b2c4d6e8f0a1
 Revises: aa753a730673

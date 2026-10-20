@@ -1,4 +1,4 @@
-"""add_dataset_id_to_data
+"""add_dataset_id_to_data.
 
 Data rows become dataset-scoped: `dataset_id` names the dataset that owns the
 content row, and the (dataset_id, owner_id, content_hash) index backs

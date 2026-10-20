@@ -1,4 +1,4 @@
-"""Add the capability layer
+"""Add the capability layer.
 
 Revision ID: f6b8d0a2c4e6
 Revises: e7f9a1c3d5b8
@@ -46,6 +46,11 @@ DROPPED_TABLES = (
 
 
 def upgrade() -> None:
+    """Apply this migration step: create the capability table and its index.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It checks first
+    and does nothing when the change is already present.
+    """
     inspector = sa.inspect(op.get_bind())
     existing = set(inspector.get_table_names())
 
@@ -84,6 +89,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Undo this migration step: drop the capability table and its index, and restore the tables this revision dropped.
+
+    Goes in: nothing (it uses the migration's open connection); comes out: nothing. It does nothing
+    for tables that are absent.
+    """
     inspector = sa.inspect(op.get_bind())
     existing = set(inspector.get_table_names())
 

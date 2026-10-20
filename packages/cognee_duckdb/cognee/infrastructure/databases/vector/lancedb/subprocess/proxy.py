@@ -45,8 +45,17 @@ logger = get_logger()
 
 
 class LanceDBSubprocessSession(SubprocessSession):
+    """The session that runs LanceDB in a separate spawned process and restarts it when it dies.
+
+    It starts the worker process and keeps the request and response queues.
+    """
+
     @classmethod
     def start(cls, *, max_retries: int | None = None) -> LanceDBSubprocessSession:
+        """Start the worker process (spawned, with request and response queues) and return a session around it.
+
+        Goes in: an optional retry limit; comes out: a session. It starts a new process.
+        """
         ctx = mp.get_context("spawn")
 
         def _spawn():
@@ -78,6 +87,10 @@ class LanceDBSubprocessSession(SubprocessSession):
         return session
 
     def memory_used_bytes(self) -> int:
+        """Return the worker process's current resident memory in bytes.
+
+        Goes in: nothing; comes out: the byte count, or 0 when the process has no id. It only reads.
+        """
         if self._proc.pid is None:
             return 0
         return get_process_rss_bytes(self._proc.pid)
@@ -120,9 +133,18 @@ class RemoteQuery(_BuilderChain):
     """Proxy for ``Table.query()``."""
 
     def where(self, predicate: str) -> RemoteQuery:
+        """Add a filter condition to the remote query.
+
+        Goes in: a predicate string; comes out: the query, for chaining. It sends nothing until the
+        query is run.
+        """
         return self._add("where", predicate)
 
     async def to_list(self) -> list:
+        """Run the remote query and return its rows.
+
+        Goes in: nothing; comes out: a list. It sends one request to the worker.
+        """
         return await self._terminal("to_list")
 
 
@@ -130,21 +152,50 @@ class RemoteVectorSearch(_BuilderChain):
     """Proxy for ``Table.vector_search(vector)``."""
 
     def bypass_vector_index(self) -> RemoteVectorSearch:
+        """Ask the remote vector search to bypass its vector index.
+
+        Goes in: nothing; comes out: the search, for chaining. It sends nothing until the search is
+        run.
+        """
         return self._add("bypass_vector_index")
 
     def distance_type(self, metric: str) -> RemoteVectorSearch:
+        """Set the distance metric of the remote vector search.
+
+        Goes in: the metric name; comes out: the search, for chaining. It sends nothing until the
+        search is run.
+        """
         return self._add("distance_type", metric)
 
     def where(self, predicate: str) -> RemoteVectorSearch:
+        """Add a filter condition to the remote vector search.
+
+        Goes in: a predicate string; comes out: the search, for chaining. It sends nothing until the
+        search is run.
+        """
         return self._add("where", predicate)
 
     def select(self, columns: list[str]) -> RemoteVectorSearch:
+        """Choose the columns the remote vector search returns.
+
+        Goes in: a list of column names; comes out: the search, for chaining. It sends nothing until
+        the search is run.
+        """
         return self._add("select", columns)
 
     def limit(self, n: int) -> RemoteVectorSearch:
+        """Limit how many rows the remote vector search returns.
+
+        Goes in: a number; comes out: the search, for chaining. It sends nothing until the search is
+        run.
+        """
         return self._add("limit", n)
 
     async def to_list(self) -> list:
+        """Run the remote vector search and return its rows.
+
+        Goes in: nothing; comes out: a list. It sends one request to the worker.
+        """
         return await self._terminal("to_list")
 
 
@@ -152,12 +203,26 @@ class RemoteMergeInsert(_BuilderChain):
     """Proxy for ``Table.merge_insert(key)``."""
 
     def when_matched_update_all(self) -> RemoteMergeInsert:
+        """Make the remote merge update rows that match.
+
+        Goes in: nothing; comes out: the merge, for chaining. It sends nothing until the merge is
+        run.
+        """
         return self._add("when_matched_update_all")
 
     def when_not_matched_insert_all(self) -> RemoteMergeInsert:
+        """Make the remote merge insert rows that do not match.
+
+        Goes in: nothing; comes out: the merge, for chaining. It sends nothing until the merge is
+        run.
+        """
         return self._add("when_not_matched_insert_all")
 
     async def execute(self, records: list) -> None:
+        """Run the remote merge with the given records.
+
+        Goes in: a list of records; comes out: nothing. It sends one request to the worker.
+        """
         await self._terminal("execute", records)
 
 
@@ -170,6 +235,11 @@ class RemoteLanceDBTable:
     """
 
     def __init__(self, session: LanceDBSubprocessSession, handle_id: int, name: str):
+        """Keep the session, the worker's table handle id and the table name, and register a replay step that re-opens the table if the worker is restarted.
+
+        Goes in: the session, handle id and name; comes out: a table proxy. It sends no request
+        itself.
+        """
         self._session = session
         self._handle_id: int | None = handle_id
         self.name = name
@@ -207,6 +277,10 @@ class RemoteLanceDBTable:
 
     @property
     def handle_id(self) -> int:
+        """Return the worker-side handle id of this table.
+
+        Goes in: nothing; comes out: the id. It raises RuntimeError once the handle was released.
+        """
         if self._handle_id is None:
             raise RuntimeError("lancedb table handle released")
         return self._handle_id
@@ -250,6 +324,10 @@ class RemoteLanceDBTable:
     def __del__(self):
         # Best-effort; async release is preferred. Only try sync release if the
         # session still looks alive — otherwise the handle is already gone.
+        """Release the worker's table handle when the proxy is garbage collected, as a last resort.
+
+        Goes in: nothing; comes out: nothing. Any error is logged and ignored.
+        """
         try:
             if self._handle_id is not None and not self._session._closed_event.is_set():
                 self.release_sync()
@@ -257,12 +335,20 @@ class RemoteLanceDBTable:
             logger.debug("Ignoring exception in RemoteLanceDBTable.__del__", exc_info=True)
 
     async def count_rows(self) -> int:
+        """Count the rows of the remote table.
+
+        Goes in: nothing; comes out: the row count. It sends one request.
+        """
         resp = await self._session.call_async(
             Request(op=OP_TABLE_COUNT_ROWS, handle_id=self.handle_id)
         )
         return int(resp.result)
 
     async def to_arrow(self) -> pa.Table:
+        """Read the whole remote table as an Arrow table.
+
+        Goes in: nothing; comes out: a pyarrow table. It sends one request.
+        """
         resp = await self._session.call_async(
             Request(op=OP_TABLE_TO_ARROW, handle_id=self.handle_id)
         )
@@ -287,11 +373,19 @@ class RemoteLanceDBTable:
         return pa.ipc.read_schema(pa.py_buffer(resp.result))
 
     async def add(self, records: list) -> None:
+        """Append records to the remote table.
+
+        Goes in: a list of records; comes out: nothing. It sends one request.
+        """
         await self._session.call_async(
             Request(op=OP_TABLE_ADD, handle_id=self.handle_id, args=(records,))
         )
 
     async def delete(self, where_expr: str) -> None:
+        """Delete rows of the remote table matching a condition.
+
+        Goes in: a filter expression; comes out: nothing. It sends one request.
+        """
         await self._session.call_async(
             Request(op=OP_TABLE_DELETE, handle_id=self.handle_id, args=(where_expr,))
         )
@@ -328,6 +422,11 @@ class RemoteLanceDBTable:
     # first attempt is still running in the worker.
 
     async def compact_fragments(self, *, target_rows_per_fragment: int, max_tasks: int) -> dict:
+        """Compact the remote table's fragments.
+
+        Goes in: the target rows per fragment and the task limit; comes out: a result dict. It sends
+        one request.
+        """
         resp = await self._session.call_async(
             Request(
                 op=OP_TABLE_COMPACT_FRAGMENTS,
@@ -342,6 +441,11 @@ class RemoteLanceDBTable:
         return resp.result
 
     async def prune_versions(self, *, retention_seconds: int, max_versions: int) -> dict:
+        """Prune old versions of the remote table.
+
+        Goes in: the retention seconds and the maximum versions to keep; comes out: a result dict.
+        It sends one request.
+        """
         resp = await self._session.call_async(
             Request(
                 op=OP_TABLE_PRUNE_VERSIONS,
@@ -356,14 +460,28 @@ class RemoteLanceDBTable:
         return resp.result
 
     def query(self) -> RemoteQuery:
+        """Start a query on the remote table.
+
+        Goes in: nothing; comes out: a query builder. It sends nothing until the query is run.
+        """
         return RemoteQuery(self._session, self.handle_id, OP_TABLE_QUERY_EXECUTE, ())
 
     def vector_search(self, vector: list) -> RemoteVectorSearch:
+        """Start a vector search on the remote table.
+
+        Goes in: the query vector; comes out: a search builder. It sends nothing until the search is
+        run.
+        """
         return RemoteVectorSearch(
             self._session, self.handle_id, OP_TABLE_VECTOR_SEARCH_EXECUTE, (vector,)
         )
 
     def merge_insert(self, key: str) -> RemoteMergeInsert:
+        """Start a merge-insert on the remote table.
+
+        Goes in: the key column; comes out: a merge builder. It sends nothing until the merge is
+        run.
+        """
         return RemoteMergeInsert(
             self._session, self.handle_id, OP_TABLE_MERGE_INSERT_EXECUTE, (key,)
         )
@@ -377,16 +495,28 @@ class RemoteLanceDBTable:
     # the ``handle_id`` property, matching upstream's
     # "any attempt to use the table after it has been closed will raise".
     def __enter__(self):
+        """Enter the table's context and return the table proxy itself. It sends nothing."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Leave the table's context by releasing the worker handle synchronously.
+
+        Goes in: the exception details (unused); comes out: False, so an exception is never
+        suppressed.
+        """
         self.release_sync()
         return False
 
     async def __aenter__(self):
+        """Enter the table's async context and return the table proxy itself. It sends nothing."""
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Leave the table's async context by releasing the worker handle.
+
+        Goes in: the exception details (unused); comes out: False, so an exception is never
+        suppressed.
+        """
         await self.release()
         return False
 
@@ -397,6 +527,11 @@ class RemoteLanceDBConnection:
     """
 
     def __init__(self, session: LanceDBSubprocessSession, url: str, api_key: str | None):
+        """Keep the session, URL and key of the remote connection and prepare the lock that serialises the first connect.
+
+        Goes in: the session, a URL and an optional key; comes out: a connection proxy. It does not
+        connect yet.
+        """
         self._session = session
         self._url = url
         self._api_key = api_key
@@ -413,6 +548,10 @@ class RemoteLanceDBConnection:
 
     async def connect(self) -> None:
         # Fast path: already connected, no lock needed.
+        """Connect the worker to LanceDB once, even when several tasks ask together, and register the replay step that reconnects after a worker restart.
+
+        Goes in: nothing; comes out: nothing. It does nothing when already connected.
+        """
         if self._connected:
             return
         # Slow path: re-check under the lock so only one task does the
@@ -443,6 +582,10 @@ class RemoteLanceDBConnection:
             await self.connect()
 
     async def table_names(self) -> list:
+        """List the table names in the remote database.
+
+        Goes in: nothing; comes out: a list of names. It connects first if needed and only reads.
+        """
         await self._ensure_connected()
         resp = await self._session.call_async(Request(op=OP_TABLE_NAMES))
         return list(resp.result or [])
@@ -450,6 +593,11 @@ class RemoteLanceDBConnection:
     async def create_table(
         self, name: str, schema: pa.Schema, exist_ok: bool = True
     ) -> RemoteLanceDBTable:
+        """Create a remote table from an Arrow schema.
+
+        Goes in: a name, a schema and an exist_ok flag; comes out: a table proxy. The schema travels
+        in Arrow's own format, never pickled.
+        """
         await self._ensure_connected()
         # Use Arrow's native IPC schema serialization rather than pickle —
         # the worker is otherwise an unconditional ``pickle.loads`` target
@@ -463,10 +611,19 @@ class RemoteLanceDBConnection:
         return await self.open_table(name)
 
     async def open_table(self, name: str) -> RemoteLanceDBTable:
+        """Open a remote table by name.
+
+        Goes in: the name; comes out: a table proxy. It connects first if needed.
+        """
         await self._ensure_connected()
         resp = await self._session.call_async(Request(op=OP_OPEN_TABLE, args=(name,)))
         return RemoteLanceDBTable(self._session, resp.new_handle_id, name)
 
     async def drop_table(self, name: str) -> None:
+        """Drop a remote table by name.
+
+        Goes in: the name; comes out: nothing. It connects first if needed; the table's data is
+        lost.
+        """
         await self._ensure_connected()
         await self._session.call_async(Request(op=OP_DROP_TABLE, args=(name,)))

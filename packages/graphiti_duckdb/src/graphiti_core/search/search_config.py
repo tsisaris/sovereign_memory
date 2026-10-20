@@ -30,27 +30,49 @@ DEFAULT_SEARCH_LIMIT = 10
 
 
 class EdgeSearchMethod(Enum):
+    """The ways to search entity edges: by cosine similarity, by BM25 text match or by breadth-first walk.
+
+    It names methods only.
+    """
+
     cosine_similarity = "cosine_similarity"
     bm25 = "bm25"
     bfs = "breadth_first_search"
 
 
 class NodeSearchMethod(Enum):
+    """The ways to search entity nodes: by cosine similarity, by BM25 text match or by breadth-first walk.
+
+    It names methods only.
+    """
+
     cosine_similarity = "cosine_similarity"
     bm25 = "bm25"
     bfs = "breadth_first_search"
 
 
 class EpisodeSearchMethod(Enum):
+    """The ways to search episodes: BM25 text match only. It names methods only."""
+
     bm25 = "bm25"
 
 
 class CommunitySearchMethod(Enum):
+    """The ways to search communities: by cosine similarity or by BM25 text match.
+
+    It names methods only.
+    """
+
     cosine_similarity = "cosine_similarity"
     bm25 = "bm25"
 
 
 class EdgeReranker(Enum):
+    """The ways to re-rank edge search results: reciprocal rank fusion, node distance, episode mentions, MMR or a cross-encoder.
+
+    It names methods only.
+    """
+
     rrf = "reciprocal_rank_fusion"
     node_distance = "node_distance"
     episode_mentions = "episode_mentions"
@@ -59,6 +81,11 @@ class EdgeReranker(Enum):
 
 
 class NodeReranker(Enum):
+    """The ways to re-rank node search results: reciprocal rank fusion, node distance, episode mentions, MMR or a cross-encoder.
+
+    It names methods only.
+    """
+
     rrf = "reciprocal_rank_fusion"
     node_distance = "node_distance"
     episode_mentions = "episode_mentions"
@@ -67,17 +94,32 @@ class NodeReranker(Enum):
 
 
 class EpisodeReranker(Enum):
+    """The ways to re-rank episode search results: reciprocal rank fusion or a cross-encoder.
+
+    It names methods only.
+    """
+
     rrf = "reciprocal_rank_fusion"
     cross_encoder = "cross_encoder"
 
 
 class CommunityReranker(Enum):
+    """The ways to re-rank community search results: reciprocal rank fusion, MMR or a cross-encoder.
+
+    It names methods only.
+    """
+
     rrf = "reciprocal_rank_fusion"
     mmr = "mmr"
     cross_encoder = "cross_encoder"
 
 
 class EdgeSearchConfig(BaseModel):
+    """The settings for one edge search: which search methods to use, the re-ranker, the minimum similarity, the MMR weight and the breadth-first depth.
+
+    It holds values only.
+    """
+
     search_methods: list[EdgeSearchMethod]
     reranker: EdgeReranker = Field(default=EdgeReranker.rrf)
     sim_min_score: float = Field(default=DEFAULT_MIN_SCORE)
@@ -86,6 +128,11 @@ class EdgeSearchConfig(BaseModel):
 
 
 class NodeSearchConfig(BaseModel):
+    """The settings for one node search: which search methods to use, the re-ranker, the minimum similarity, the MMR weight and the breadth-first depth.
+
+    It holds values only.
+    """
+
     search_methods: list[NodeSearchMethod]
     reranker: NodeReranker = Field(default=NodeReranker.rrf)
     sim_min_score: float = Field(default=DEFAULT_MIN_SCORE)
@@ -94,6 +141,11 @@ class NodeSearchConfig(BaseModel):
 
 
 class EpisodeSearchConfig(BaseModel):
+    """The settings for one episode search: which search methods to use, the re-ranker, the minimum similarity, the MMR weight and the breadth-first depth.
+
+    It holds values only.
+    """
+
     search_methods: list[EpisodeSearchMethod]
     reranker: EpisodeReranker = Field(default=EpisodeReranker.rrf)
     sim_min_score: float = Field(default=DEFAULT_MIN_SCORE)
@@ -102,6 +154,11 @@ class EpisodeSearchConfig(BaseModel):
 
 
 class CommunitySearchConfig(BaseModel):
+    """The settings for one community search: which search methods to use, the re-ranker, the minimum similarity, the MMR weight and the breadth-first depth.
+
+    It holds values only.
+    """
+
     search_methods: list[CommunitySearchMethod]
     reranker: CommunityReranker = Field(default=CommunityReranker.rrf)
     sim_min_score: float = Field(default=DEFAULT_MIN_SCORE)
@@ -110,6 +167,11 @@ class CommunitySearchConfig(BaseModel):
 
 
 class SearchConfig(BaseModel):
+    """The settings for a whole search: the edge, node, episode and community configurations, the result limit and the minimum re-ranker score.
+
+    It holds values only.
+    """
+
     edge_config: EdgeSearchConfig | None = Field(default=None)
     node_config: NodeSearchConfig | None = Field(default=None)
     episode_config: EpisodeSearchConfig | None = Field(default=None)
@@ -119,6 +181,11 @@ class SearchConfig(BaseModel):
 
 
 class SearchResults(BaseModel):
+    """What a search returns: edges, nodes, episodes and communities, each with its re-ranker scores.
+
+    It carries data only and does nothing.
+    """
+
     edges: list[EntityEdge] = Field(default_factory=list)
     edge_reranker_scores: list[float] = Field(default_factory=list)
     nodes: list[EntityNode] = Field(default_factory=list)

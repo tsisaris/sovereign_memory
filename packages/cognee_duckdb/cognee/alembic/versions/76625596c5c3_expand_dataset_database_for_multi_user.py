@@ -1,4 +1,4 @@
-"""Expand dataset database for multi user
+"""Expand dataset database for multi user.
 
 Revision ID: 76625596c5c3
 Revises: 211ab850ef3d

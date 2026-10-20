@@ -1,3 +1,9 @@
+"""A Mem0 vector store on Upstash Vector.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to a remote service and is not used by the DuckDB-only owner path.
+"""
+
 import logging
 import re
 from typing import Any, Dict, List, Optional
@@ -34,12 +40,22 @@ def _validate_filter(key: str, value: Any) -> None:
 
 
 class OutputData(BaseModel):
+    """One search result: a memory id, a score (None for a plain get) and a metadata payload.
+
+    It carries data only and does nothing.
+    """
+
     id: Optional[str]  # memory id
     score: Optional[float]  # is None for `get` method
     payload: Optional[Dict]  # metadata
 
 
 class UpstashVector(VectorStoreBase):
+    """The Upstash Vector store: it inserts, searches, updates, deletes and lists vectors with payloads, optionally letting Upstash embed text.
+
+    It talks to a remote service and never touches DuckDB.
+    """
+
     def __init__(
         self,
         collection_name: str,
@@ -75,7 +91,7 @@ class UpstashVector(VectorStoreBase):
         ids: Optional[List[str]] = None,
     ):
         """
-        Insert vectors
+        Insert vectors.
 
         Args:
             vectors (list): List of vectors to insert.
@@ -217,7 +233,7 @@ class UpstashVector(VectorStoreBase):
                 for res in response
             ]
         except Exception as e:
-            logger.error(f"Error during keyword search for query '{query}': {e}")
+            logger.error(f"Error during keyword search for query '{query}': {e}", exc_info=True)
             return None
 
     def delete(self, vector_id: int):

@@ -1,3 +1,9 @@
+"""Community building for the knowledge graph: grouping entity nodes by label propagation, summarizing each group with the language model, and saving, removing and updating community nodes and edges.
+
+Goes in: a driver, clients and nodes; comes out: communities. It calls the language model for
+summaries.
+"""
+
 import logging
 from collections import defaultdict
 
@@ -23,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 
 class Neighbor(BaseModel):
+    """A neighbouring node of a node in the projection: its uuid and how many edges connect them.
+
+    It holds values only.
+    """
+
     node_uuid: str
     edge_count: int
 
@@ -32,6 +43,12 @@ async def get_community_clusters(
     group_ids: list[str] | None,
     max_coroutines: int | None = None,
 ) -> list[list[EntityNode]]:
+    """Group entity nodes into clusters by their connections.
+
+    Goes in: the driver, optional group ids and a concurrency limit; comes out: a list of node
+    clusters. It uses the driver's own operation set when one is provided and otherwise runs the
+    generic query. It only reads.
+    """
     if driver.graph_operations_interface:
         try:
             return await driver.graph_operations_interface.get_community_clusters(driver, group_ids)
@@ -100,6 +117,11 @@ def label_propagation(projection: dict[str, list[Neighbor]]) -> list[list[str]]:
     # 3. Ties are broken by going to the largest community
     # 4. Continue until no communities change during propagation
 
+    """Find communities with label propagation: each node starts in its own community and repeatedly takes the community most of its neighbours hold, ties going to the larger community, until nothing changes.
+
+    Goes in: a dict from uuid to its neighbours; comes out: lists of uuids, one list per community.
+    It touches nothing outside its argument.
+    """
     community_map = {uuid: i for i, uuid in enumerate(projection.keys())}
 
     while True:
@@ -299,6 +321,12 @@ async def build_communities(
 
 
 async def remove_communities(driver: GraphDriver, group_ids: list[str] | None = None):
+    """Remove community nodes from the graph.
+
+    Goes in: the driver and optional group ids; comes out: nothing. It uses the driver's own
+    operation set when one is provided and otherwise runs the generic query. It deletes the
+    communities of the given groups, or all communities when no group is given.
+    """
     if driver.graph_operations_interface:
         try:
             return await driver.graph_operations_interface.remove_communities(
@@ -331,6 +359,12 @@ async def remove_communities(driver: GraphDriver, group_ids: list[str] | None = 
 async def determine_entity_community(
     driver: GraphDriver, entity: EntityNode
 ) -> tuple[CommunityNode | None, bool]:
+    """Find the community an entity belongs to.
+
+    Goes in: the driver and an entity node; comes out: the community node (or None) and whether it
+    is new. It uses the driver's own operation set when one is provided and otherwise runs the
+    generic query. It only reads.
+    """
     if driver.graph_operations_interface:
         try:
             return await driver.graph_operations_interface.determine_entity_community(

@@ -1,4 +1,4 @@
-"""Add Cognee version and migration revision tracking to dataset_database
+"""Add Cognee version and migration revision tracking to dataset_database.
 
 Revision ID: c1a2b3d4e5f9
 Revises: 760ef4f08ef0
