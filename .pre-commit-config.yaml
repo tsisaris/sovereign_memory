@@ -1032,7 +1032,6 @@ exclude: |
     packages/cognee_duckdb/cognee/modules/pipelines/models/PipelineContext\.py|
     packages/cognee_duckdb/cognee/modules/pipelines/models/PipelineRun\.py|
     packages/cognee_duckdb/cognee/modules/pipelines/models/PipelineRunInfo\.py|
-    packages/cognee_duckdb/cognee/modules/pipelines/models/PipelineTask\.py|
     packages/cognee_duckdb/cognee/modules/pipelines/models/TaskRun\.py|
     packages/cognee_duckdb/cognee/modules/pipelines/models/__init__\.py|
     packages/cognee_duckdb/cognee/modules/pipelines/operations/__init__\.py|
