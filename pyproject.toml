@@ -94,7 +94,7 @@ select = [
 ]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.10"
 ignore_missing_imports = true
 check_untyped_defs = true
 # Classes ruled ADVISORY in sovereign/pyproject.toml (no birth case yet).
@@ -108,7 +108,7 @@ disable_error_code = [
 exclude = ["^data/sovereign/", "^local/"]
 
 [tool.pyright]
-pythonVersion = "3.12"
+pythonVersion = "3.10"
 # Gating class: reportUndefinedVariable (UC-5). Nothing else gates.
 typeCheckingMode = "off"
 reportUndefinedVariable = "error"
@@ -116,11 +116,11 @@ exclude = ["data/sovereign", "local", ".venv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["packages/duckdb_sqlalchemy_async/duckdb_sqlalchemy_async"]
+pythonpath = ["src", "."]
 addopts = "-ra"
 
 [tool.coverage.run]
-source = ["packages"]
+source = ["src"]
 
 [tool.deptry]
 # exclude REPLACES deptry's defaults, which would silently skip every folder
@@ -129,8 +129,8 @@ exclude = [".venv", ".git", "data/sovereign", "local"]
 
 # The advisory checkers are run by name, never imported; naming their modules
 # stops deptry guessing, and the GitHub check fails on any line where it guesses.
-package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "semgrep", duckdb_sqlalchemy_async = "duckdb_sqlalchemy_async" }
+package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "semgrep" }
 
 [tool.deptry.per_rule_ignores]
 # The test runner is declared as a development package and imported by tests.
-DEP004 = ["pytest", "pytest_asyncio"]
+DEP004 = ["pytest"]
