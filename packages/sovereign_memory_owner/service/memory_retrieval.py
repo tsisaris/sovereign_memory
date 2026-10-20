@@ -33,6 +33,7 @@ from service.memory_combiners import (
     current_combiner,
     reciprocal_rank_fusion,
 )
+from service.memory_context_assembler import ContextAssembler
 from service.memory_ground_truth import COMBINED_OUTPUT, MODEL_OUTPUT, record_case, record_output
 from service.memory_owner_core import TIERS, OwnerCore
 from service.memory_processor_seam import (
@@ -211,6 +212,9 @@ class MemoryRetrievalService:
                 "models": models,
             }
         merged = await self._combine(combiner, kept, used)
+        decay = {"applied": False, "reason": "no decay_time_constant_seconds is declared"}
+        if self.settings.decay_time_constant_seconds is not None:
+            merged, decay = await self._apply_decay(merged, kept, used)
         events = self._roll_up(merged, kept, used)
         case_id, error = await self._record_disagreement(
             tier, principal, query, combiner, kept, merged
@@ -221,6 +225,7 @@ class MemoryRetrievalService:
             "hits": events[:limit],
             "combiner": combiner.describe(),
             "models": models,
+            "decay": decay,
             "ground_truth_case": case_id,
         }
         if error is not None:
@@ -251,6 +256,48 @@ class MemoryRetrievalService:
             order = (await artifact.merge([{"case_id": None, "rankings": rankings}]))[None]
             return [(item, 1.0 / rank) for rank, item in enumerate(order, start=1)]
         raise RuntimeError(f"Unknown combiner rule {combiner.rule!r}")
+
+    async def _apply_decay(
+        self,
+        merged: list[tuple[str, float]],
+        kept: dict[str, list[dict[str, Any]]],
+        used: list[str],
+    ) -> tuple[list[tuple[str, float]], dict[str, Any]]:
+        """Bias each merged score by the age of its event and re-order; never remove an item.
+
+        Used only when the deployment declared decay_time_constant_seconds. Each item's
+        score is multiplied by the bounded exponential factor of its event's age and kept
+        within [0, 1]; items keep their combiner order among equal scores. Returns the
+        biased list and a report naming the time constant. Raises ValueError for an event
+        whose created_at is not an ISO 8601 time, because its age cannot be known.
+        """
+        settings = self.settings
+        if settings is None or settings.decay_time_constant_seconds is None:
+            raise RuntimeError("Decay needs a declared decay_time_constant_seconds")
+        tau = settings.decay_time_constant_seconds
+        event_of = {hit["item_id"]: hit["event_id"] for label in used for hit in kept[label]}
+
+        def read() -> dict[str, str]:
+            """Read each involved event's recorded creation time on the owner's worker."""
+            ids = sorted(set(event_of.values()))
+            rows = self.conn.native.execute(
+                "SELECT event_id, created_at FROM memory_events WHERE event_id IN (SELECT unnest(?))",
+                [ids],
+            ).fetchall()
+            return dict(rows)
+
+        created = await self.conn.run(read)
+        now = datetime.now(timezone.utc)
+        assembler = ContextAssembler()
+        biased: list[tuple[str, float]] = []
+        for item_id, score in merged:
+            stamp = datetime.fromisoformat(created[event_of[item_id]])
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            age = (now - stamp).total_seconds()
+            biased.append((item_id, assembler.calculate_decay_score(score, age, tau)))
+        ordered = sorted(enumerate(biased), key=lambda pair: (-pair[1][1], pair[0]))
+        return [pair[1] for pair in ordered], {"applied": True, "time_constant_seconds": tau}
 
     @staticmethod
     def _roll_up(

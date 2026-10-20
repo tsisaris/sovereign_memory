@@ -66,7 +66,12 @@ class ContextAssembler:
                 discloses no value, so the caller supplies it from its own configuration.
 
         Returns:
-            The original score multiplied by the bounded decay factor.
+            The original score multiplied by the bounded decay factor, clamped to [0, 1].
+            Bounds 0.3 and 1.5 and the clamp are the Mem0 Platform changelog's (2026-05-04);
+            the exponential form is this project's own because no source publishes one.
         """
-        decay_factor = math.exp(-time_diff_seconds / tau)
-        return base_score * max(self.lower_bound, min(decay_factor, self.upper_bound))
+        if not math.isfinite(tau) or tau <= 0:
+            raise ValueError("The decay time constant must be a finite number above 0")
+        decay_factor = math.exp(-max(time_diff_seconds, 0.0) / tau)
+        biased = base_score * max(self.lower_bound, min(decay_factor, self.upper_bound))
+        return max(0.0, min(biased, 1.0))
