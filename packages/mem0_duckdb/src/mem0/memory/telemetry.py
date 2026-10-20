@@ -1,3 +1,9 @@
+"""Mem0's anonymous usage telemetry.
+
+In this project it is switched off: the telemetry object holds no PostHog client, and the capture
+functions return without sending anything. Goes in: event names and properties; comes out: nothing.
+"""
+
 import atexit
 import logging
 import os
@@ -92,7 +98,19 @@ def _sampling_before_send(msg):
 
 
 class AnonymousTelemetry:
+    """The telemetry sender.
+
+    Here it is disabled, so it holds no client and no user id. Goes in: event names and properties;
+    comes out: nothing. It never sends data.
+    """
+
     def __init__(self, vector_store=None, before_send=None):
+        """Set up the telemetry sender.
+
+        In this project it always leaves the client and user id empty and returns, so nothing is
+        ever sent. Goes in: an optional vector store and send hook (ignored); comes out: a disabled
+        sender.
+        """
         if True:
             self.posthog = None
             self.user_id = None
@@ -107,6 +125,11 @@ class AnonymousTelemetry:
         self.user_id = get_or_create_user_id(vector_store)
 
     def capture_event(self, event_name, properties=None, user_email=None, flags=None):
+        """Record one telemetry event if a client exists.
+
+        Goes in: an event name, properties, optional email and flags; comes out: nothing. With the
+        client absent, as here, it returns at once and sends nothing.
+        """
         if self.posthog is None:
             return
 
@@ -135,7 +158,7 @@ class AnonymousTelemetry:
                 capture_kwargs["flags"] = flags
             self.posthog.capture(event_name, **capture_kwargs)
         except Exception as e:
-            _logger.debug("Failed to capture telemetry event %r: %s", event_name, e)
+            _logger.debug("Failed to capture telemetry event %r: %s", event_name, e, exc_info=True)
 
     def capture_identify(self, anon_id, email):
         """Fire $identify with $anon_distinct_id so PostHog merges anon_id into email."""
@@ -151,10 +174,14 @@ class AnonymousTelemetry:
             )
             return True
         except Exception as e:
-            _logger.debug("Failed to capture $identify for %r: %s", email, e)
+            _logger.debug("Failed to capture $identify for %r: %s", email, e, exc_info=True)
             return False
 
     def close(self):
+        """Shut down the telemetry client if one exists.
+
+        Goes in: nothing; comes out: nothing. With the client absent, as here, it does nothing.
+        """
         if self.posthog is not None:
             self.posthog.shutdown()
             self.posthog = None
@@ -235,7 +262,7 @@ def capture_event(event_name, memory_instance, additional_data=None):
 
         oss_telemetry.capture_event(event_name, event_data)
     except Exception as e:
-        _logger.debug("Failed to capture OSS telemetry event %r: %s", event_name, e)
+        _logger.debug("Failed to capture OSS telemetry event %r: %s", event_name, e, exc_info=True)
 
 
 def capture_client_event(event_name, instance, additional_data=None):
@@ -256,4 +283,6 @@ def capture_client_event(event_name, instance, additional_data=None):
 
         client_telemetry.capture_event(event_name, event_data, instance.user_email)
     except Exception as e:
-        _logger.debug("Failed to capture client telemetry event %r: %s", event_name, e)
+        _logger.debug(
+            "Failed to capture client telemetry event %r: %s", event_name, e, exc_info=True
+        )

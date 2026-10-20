@@ -224,6 +224,11 @@ class OracleAIVectorSearch(VectorStoreBase):
     """Oracle AI Vector Search backend for mem0."""
 
     def __init__(self, **kwargs: Any) -> None:
+        """Connect to Oracle from the settings (an existing client or pool, or connection details) and remember whether this store owns the connection.
+
+        Goes in: keyword settings; comes out: a ready store. It does not create the collection table
+        yet.
+        """
         self.config = OracleAIVectorSearchConfig(**kwargs)
         self.collection_name = self.config.collection_name
 
@@ -272,7 +277,7 @@ class OracleAIVectorSearch(VectorStoreBase):
                 try:
                     self.client.close()
                 except Exception:
-                    pass
+                    logger.debug("Exception ignored in __init__", exc_info=True)
             raise
 
     @contextmanager
@@ -373,6 +378,11 @@ class OracleAIVectorSearch(VectorStoreBase):
         payloads: Optional[List[Dict[str, Any]]] = None,
         ids: Optional[List[str]] = None,
     ) -> None:
+        """Insert vectors with their payloads and ids into the collection.
+
+        Goes in: a list of vectors, optional payloads and optional ids, all the same length; comes
+        out: nothing. It raises ValueError when the lengths differ.
+        """
         logger.info(f"Inserting {len(vectors)} vectors into collection {self.collection_name}")
 
         if payloads is not None and len(payloads) != len(vectors):
@@ -387,7 +397,9 @@ class OracleAIVectorSearch(VectorStoreBase):
         ids = ids or [str(uuid.uuid4()) for _ in vectors]
         data = [
             {"id": _id, "vector": array.array("f", vector), "payload": payload}
-            for vector, payload, _id in zip(vectors, payloads or [{}] * len(vectors), ids)
+            for vector, payload, _id in zip(
+                vectors, payloads or [{}] * len(vectors), ids, strict=False
+            )
         ]
 
         with self._get_cursor(commit=True) as cursor:
@@ -610,4 +622,4 @@ class OracleAIVectorSearch(VectorStoreBase):
             if getattr(self, "_owns_client", False):
                 self.client.close()
         except Exception:
-            pass
+            logger.debug("Exception ignored in __del__", exc_info=True)

@@ -1,6 +1,12 @@
+"""A Mem0 vector store on Elasticsearch.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to a remote server and is not used by the DuckDB-only owner path.
+"""
+
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     from elasticsearch import Elasticsearch
@@ -19,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 
 class OutputData(BaseModel):
+    """One search result: an id, a score and a payload. It carries data only and does nothing."""
+
     id: str
     score: float
     payload: Dict
@@ -37,7 +45,18 @@ def _validate_filter(key: str, value: Any) -> None:
 
 
 class ElasticsearchDB(VectorStoreBase):
+    """The Elasticsearch vector store: it creates the index and inserts, searches, updates, deletes and lists vectors with payloads.
+
+    Filter keys must match a safe-name pattern. It talks to a remote server and never touches
+    DuckDB.
+    """
+
     def __init__(self, **kwargs):
+        """Connect to Elasticsearch from the settings (cloud id or host, key or password, certificate checks) and prepare the index name.
+
+        Goes in: keyword settings; comes out: a ready store. It opens the client connection but
+        creates nothing until asked.
+        """
         config = ElasticsearchConfig(**kwargs)
 
         # Initialize Elasticsearch client
@@ -67,13 +86,14 @@ class ElasticsearchDB(VectorStoreBase):
         if config.auto_create_index:
             self.create_index()
 
+        self.custom_search_query: Optional[Callable[..., Any]]
         if config.custom_search_query:
             self.custom_search_query = config.custom_search_query
         else:
             self.custom_search_query = None
 
     def create_index(self) -> None:
-        """Create Elasticsearch index with proper mappings if it doesn't exist"""
+        """Create Elasticsearch index with proper mappings if it doesn't exist."""
         index_settings = {
             "settings": {
                 "index": {"number_of_replicas": 1, "number_of_shards": 5, "refresh_interval": "1s"}
@@ -140,7 +160,7 @@ class ElasticsearchDB(VectorStoreBase):
             payloads = [{} for _ in range(len(vectors))]
 
         actions = []
-        for i, (vec, id_) in enumerate(zip(vectors, ids)):
+        for i, (vec, id_) in enumerate(zip(vectors, ids, strict=False)):
             action = {
                 "_index": self.collection_name,
                 "_id": id_,
@@ -168,7 +188,8 @@ class ElasticsearchDB(VectorStoreBase):
         self, query: str, vectors: List[float], top_k: int = 5, filters: Optional[Dict] = None
     ) -> List[OutputData]:
         """
-        Search with two options:
+        Search with two options.
+
         1. Use custom search query if provided
         2. Use KNN search on vectors with pre-filtering if no custom search query is provided
         """
@@ -287,7 +308,9 @@ class ElasticsearchDB(VectorStoreBase):
             logger.warning(f"Invalid response type from Elasticsearch: {e}")
             return None
         except Exception as e:
-            logger.error(f"Unexpected error while parsing Elasticsearch response: {e}")
+            logger.error(
+                f"Unexpected error while parsing Elasticsearch response: {e}", exc_info=True
+            )
             return None
 
     def list_cols(self) -> List[str]:

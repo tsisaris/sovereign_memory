@@ -1,3 +1,9 @@
+"""A Mem0 vector store on Qdrant, local or remote.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+is not used by the DuckDB-only owner path.
+"""
+
 import logging
 import re
 from typing import Optional
@@ -27,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 
 class Qdrant(VectorStoreBase):
+    """The Qdrant vector store: it creates the collection and inserts, searches, updates, deletes and lists vectors with payloads.
+
+    Filter keys are checked against a safe pattern. It talks to Qdrant and never touches DuckDB.
+    """
+
     def __init__(
         self,
         collection_name: str,
@@ -105,7 +116,7 @@ class Qdrant(VectorStoreBase):
                 )
                 self._bm25_encoder = False  # sentinel: tried and failed
             except Exception as e:
-                logger.warning(f"Failed to load BM25 encoder: {e}")
+                logger.warning(f"Failed to load BM25 encoder: {e}", exc_info=True)
                 self._bm25_encoder = False
         return self._bm25_encoder if self._bm25_encoder is not False else None
 
@@ -123,7 +134,7 @@ class Qdrant(VectorStoreBase):
                     values=sparse.values.tolist(),
                 )
         except Exception as e:
-            logger.debug(f"BM25 encoding failed: {e}")
+            logger.debug(f"BM25 encoding failed: {e}", exc_info=True)
         return None
 
     def create_col(self, vector_size: int, on_disk: bool, distance: Distance = Distance.COSINE):
@@ -182,7 +193,7 @@ class Qdrant(VectorStoreBase):
                 )
                 logger.info(f"Created index for {field} in collection {self.collection_name}")
             except Exception as e:
-                logger.debug(f"Index for {field} might already exist: {e}")
+                logger.debug(f"Index for {field} might already exist: {e}", exc_info=True)
 
     def insert(self, vectors: list, payloads: list = None, ids: list = None):
         """
@@ -228,7 +239,10 @@ class Qdrant(VectorStoreBase):
                     except Exception as e:
                         # Fall back to per-row encoding so a single bad input
                         # doesn't drop BM25 for the whole batch.
-                        logger.debug(f"Batch BM25 encoding failed, falling back to per-row: {e}")
+                        logger.debug(
+                            f"Batch BM25 encoding failed, falling back to per-row: {e}",
+                            exc_info=True,
+                        )
                         for i, text in enumerate(texts_for_bm25):
                             bm25_sparse_vectors[indices_for_bm25[i]] = self._encode_bm25(text)
 
@@ -448,10 +462,10 @@ class Qdrant(VectorStoreBase):
             )
             return [r.points for r in results]
         except Exception as e:
-            logger.warning(f"Batch search failed, falling back to sequential: {e}")
+            logger.warning(f"Batch search failed, falling back to sequential: {e}", exc_info=True)
             return [
                 self.search(q, v, top_k=top_k, filters=filters)
-                for q, v in zip(queries, vectors_list)
+                for q, v in zip(queries, vectors_list, strict=False)
             ]
 
     def keyword_search(self, query, top_k=5, filters=None):
@@ -483,7 +497,7 @@ class Qdrant(VectorStoreBase):
             )
             return hits.points
         except Exception as e:
-            logger.debug(f"BM25 keyword search failed: {e}")
+            logger.debug(f"BM25 keyword search failed: {e}", exc_info=True)
             return None
 
     def delete(self, vector_id: int):

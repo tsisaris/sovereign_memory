@@ -1,3 +1,9 @@
+"""The hosted-platform clients of Mem0: a synchronous MemoryClient and an asynchronous AsyncMemoryClient that send memory requests to the Mem0 web service with an API key.
+
+Goes in: an API key, host and request arguments; comes out: the service's decoded replies. It never
+stores memories locally and never touches the owner's DuckDB file.
+"""
+
 import hashlib
 import logging
 import os
@@ -132,7 +138,7 @@ def _maybe_alias_anon_to_email(user_email):
             if client_telemetry.capture_identify(anon_id, user_email):
                 mark_aliased(anon_id, user_email)
     except Exception as e:
-        logger.debug("Failed to alias anon telemetry to %r: %s", user_email, e)
+        logger.debug("Failed to alias anon telemetry to %r: %s", user_email, e, exc_info=True)
 
 
 def _sdk_version() -> str:
@@ -142,6 +148,7 @@ def _sdk_version() -> str:
 
         return importlib.metadata.version("mem0ai")
     except Exception:
+        logger.debug("Exception ignored in _sdk_version", exc_info=True)
         return "unknown"
 
 
@@ -314,6 +321,7 @@ class MemoryClient:
                 error_data = e.response.json()
                 error_message = error_data.get("detail", str(e))
             except Exception:
+                logger.debug("Exception ignored in _validate_api_key", exc_info=True)
                 error_message = str(e)
             raise ValueError(f"Error: {error_message}")
 
@@ -1135,7 +1143,7 @@ class MemoryClient:
         return response.json()
 
     def chat(self):
-        """Start a chat with the Mem0 AI. (Not implemented)
+        """Start a chat with the Mem0 AI. (Not implemented).
 
         Raises:
             NotImplementedError: This method is not implemented yet.
@@ -1272,6 +1280,12 @@ class MemoryClient:
         feedback: Optional[str] = None,
         feedback_reason: Optional[str] = None,
     ) -> Dict[str, str]:
+        """Send feedback about one memory to the platform.
+
+        Goes in: the memory id, a feedback value (POSITIVE, NEGATIVE, VERY_NEGATIVE or None) and an
+        optional reason; comes out: the platform's reply as a dict. It raises ValueError for any
+        other feedback value and never changes the memory itself.
+        """
         VALID_FEEDBACK_VALUES = {"POSITIVE", "NEGATIVE", "VERY_NEGATIVE"}
 
         feedback = feedback.upper() if feedback else None
@@ -1414,6 +1428,7 @@ class AsyncMemoryClient:
                 error_data = e.response.json()
                 error_message = error_data.get("detail", str(e))
             except Exception:
+                logger.debug("Exception ignored in _validate_api_key", exc_info=True)
                 error_message = str(e)
             raise ValueError(f"Error: {error_message}")
 
@@ -1453,9 +1468,18 @@ class AsyncMemoryClient:
         return {k: v for k, v in kwargs.items() if v is not None}
 
     async def __aenter__(self):
+        """Enter the async context and return the client itself, ready for requests.
+
+        It takes nothing and opens no new connection; it never fails.
+        """
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Leave the async context by closing the underlying HTTP client.
+
+        Goes in: the exception details the context manager passes (unused); comes out: nothing. It
+        never suppresses an exception raised inside the context.
+        """
         await self.async_client.aclose()
 
     @api_error_handler
@@ -1509,6 +1533,11 @@ class AsyncMemoryClient:
 
     @api_error_handler
     async def get(self, memory_id: str) -> Dict[str, Any]:
+        """Fetch one memory from the platform by id.
+
+        Goes in: the memory id; comes out: the memory as a dict. It raises for an HTTP error status
+        and never modifies the memory.
+        """
         params = self._prepare_params()
         response = await self.async_client.get(
             f"/v1/memories/{_encode_path_segment(memory_id)}/", params=params
@@ -2263,7 +2292,7 @@ class AsyncMemoryClient:
         return response.json()
 
     async def chat(self):
-        """Start a chat with the Mem0 AI. (Not implemented)
+        """Start a chat with the Mem0 AI. (Not implemented).
 
         Raises:
             NotImplementedError: This method is not implemented yet.
@@ -2397,6 +2426,12 @@ class AsyncMemoryClient:
     async def feedback(
         self, memory_id: str, feedback: Optional[str] = None, feedback_reason: Optional[str] = None
     ) -> Dict[str, str]:
+        """Send feedback about one memory to the platform without blocking.
+
+        Goes in: the memory id, a feedback value (POSITIVE, NEGATIVE, VERY_NEGATIVE or None) and an
+        optional reason; comes out: the platform's reply as a dict. It raises ValueError for any
+        other feedback value and never changes the memory itself.
+        """
         VALID_FEEDBACK_VALUES = {"POSITIVE", "NEGATIVE", "VERY_NEGATIVE"}
 
         feedback = feedback.upper() if feedback else None

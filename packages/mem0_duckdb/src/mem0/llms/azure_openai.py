@@ -1,3 +1,9 @@
+"""A language-model client for Azure OpenAI chat completions.
+
+Goes in: messages and optional tools; comes out: the model's text or tool calls. It calls a remote
+service and is used only by Mem0's own pipeline.
+"""
+
 import copy
 import json
 import os
@@ -15,8 +21,19 @@ SCOPE = "https://cognitiveservices.azure.com/.default"
 
 
 class AzureOpenAILLM(LLMBase):
+    """Chat client for Azure OpenAI.
+
+    Goes in: a list of messages, optional response format and tools; comes out: the reply text or
+    tool calls. It sends each request to the remote service and keeps no conversation state.
+    """
+
     def __init__(self, config: Optional[Union[BaseLlmConfig, AzureOpenAIConfig, Dict]] = None):
         # Convert to AzureOpenAIConfig if needed
+        """Set up the Azure OpenAI client from the config or environment.
+
+        Goes in: a config object, dict or None; comes out: a ready client. It converts other config
+        kinds to the Azure config and sends no request.
+        """
         if config is None:
             config = AzureOpenAIConfig()
         elif isinstance(config, dict):
@@ -125,9 +142,9 @@ class AzureOpenAILLM(LLMBase):
     def generate_response(
         self,
         messages: List[Dict[str, str]],
-        response_format=None,
         tools: Optional[List[Dict]] = None,
         tool_choice: str = "auto",
+        response_format=None,
         **kwargs,
     ):
         """

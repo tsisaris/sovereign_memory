@@ -1,3 +1,9 @@
+"""A language-model client for DeepSeek chat completions through an OpenAI-compatible client.
+
+Goes in: messages and optional tools; comes out: the reply text or tool calls. It calls a remote
+service.
+"""
+
 import json
 import os
 from typing import Dict, List, Optional, Union
@@ -11,8 +17,19 @@ from mem0.memory.utils import extract_json
 
 
 class DeepSeekLLM(LLMBase):
+    """Chat client for DeepSeek.
+
+    Goes in: messages, optional response format and tools; comes out: the reply text or tool calls.
+    It keeps no conversation state.
+    """
+
     def __init__(self, config: Optional[Union[BaseLlmConfig, DeepSeekConfig, Dict]] = None):
         # Convert to DeepSeekConfig if needed
+        """Set up the DeepSeek client from the config or environment.
+
+        Goes in: a config object, dict or None; comes out: a ready client. It converts other config
+        kinds to the DeepSeek config and sends no request.
+        """
         if config is None:
             config = DeepSeekConfig()
         elif isinstance(config, dict):
@@ -77,9 +94,9 @@ class DeepSeekLLM(LLMBase):
     def generate_response(
         self,
         messages: List[Dict[str, str]],
-        response_format=None,
         tools: Optional[List[Dict]] = None,
         tool_choice: str = "auto",
+        response_format=None,
         **kwargs,
     ):
         """

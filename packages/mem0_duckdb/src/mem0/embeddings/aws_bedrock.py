@@ -1,3 +1,9 @@
+"""An embedder that asks AWS Bedrock for embeddings.
+
+Goes in: text; comes out: a list of floats from the chosen Bedrock model. It calls a remote service
+and is not used by the memory owner path, which accepts only received numbers.
+"""
+
 import json
 import os
 from typing import Literal, Optional
@@ -22,6 +28,11 @@ class AWSBedrockEmbedding(EmbeddingBase):
     """
 
     def __init__(self, config: Optional[BaseEmbedderConfig] = None):
+        """Set up the Bedrock client.
+
+        Goes in: an optional embedder config (model name, AWS keys; the environment supplies missing
+        ones); comes out: a ready embedder. It makes the client but sends no request.
+        """
         super().__init__(config)
 
         self.config.model = self.config.model or "amazon.titan-embed-text-v1"
@@ -97,7 +108,7 @@ class AWSBedrockEmbedding(EmbeddingBase):
 
             return embeddings
         except Exception as e:
-            raise ValueError(f"Error getting embedding from AWS Bedrock: {e}")
+            raise ValueError(f"Error getting embedding from AWS Bedrock: {e}") from e
 
     def embed(self, text, memory_action: Optional[Literal["add", "search", "update"]] = None):
         """

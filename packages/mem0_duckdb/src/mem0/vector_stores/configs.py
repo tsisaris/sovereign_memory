@@ -1,9 +1,20 @@
+"""The vector-store provider choice for Mem0's configuration and the check that turns it into the matching provider settings.
+
+It holds and validates values only and opens no store.
+"""
+
 from typing import Dict, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
 
 class VectorStoreConfig(BaseModel):
+    """The vector-store part of Mem0's configuration: a provider name (default duckdb) and that provider's settings.
+
+    Goes in: a provider and a settings dict; comes out: a validated object. It never connects to a
+    store.
+    """
+
     provider: str = Field(
         description="Provider of the vector store (e.g., 'qdrant', 'chroma', 'upstash_vector')",
         default="duckdb",
@@ -43,6 +54,12 @@ class VectorStoreConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_and_create_config(self) -> "VectorStoreConfig":
+        """Check the provider is supported and turn the settings dict into that provider's settings object.
+
+        Goes in: nothing but the object's own fields; comes out: the same object with settings
+        validated. It raises ValueError for an unsupported provider and for settings the provider
+        does not accept.
+        """
         provider = self.provider
         config = self.config
 

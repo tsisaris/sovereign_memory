@@ -1,3 +1,5 @@
+"""An end-to-end check that Mem0 stores a memory in a DuckDB vector store and finds it again by search."""
+
 import os
 import shutil
 import tempfile
@@ -8,6 +10,10 @@ from mem0 import Memory
 
 @pytest.fixture
 def temp_db_dir():
+    """Test fixture: make a temporary directory for the database file and remove it afterwards.
+
+    Comes out: the directory path. It never touches any other path.
+    """
     temp_dir = tempfile.mkdtemp()
     yield temp_dir
     shutil.rmtree(temp_dir)
@@ -15,6 +21,10 @@ def temp_db_dir():
 
 @pytest.fixture
 def memory(temp_db_dir):
+    """Test fixture: build a Memory configured with a small DuckDB vector store in the temporary directory.
+
+    Goes in: the directory; comes out: the memory object. It never touches a real database.
+    """
     config = {
         "vector_store": {
             "provider": "duckdb",
@@ -51,6 +61,10 @@ def memory(temp_db_dir):
 
 
 def test_memory_add_and_search(memory):
+    """Check that adding one memory for a user and searching for it returns that memory.
+
+    It reads and writes only the temporary database.
+    """
     memory.add("I like apples", user_id="alice")
 
     results = memory.search("apples", filters={"user_id": "alice"})

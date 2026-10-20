@@ -1,3 +1,9 @@
+"""Helpers that turn HTTP and network failures of the platform client into Mem0's own exception classes.
+
+Goes in: the wrapped client function; comes out: the same function with errors translated. It never
+retries a request and never hides an error.
+"""
+
 import inspect
 import json
 import logging

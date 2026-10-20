@@ -1,7 +1,13 @@
+"""A language-model client for Azure OpenAI that can request structured (JSON) output.
+
+Goes in: messages and optional tools; comes out: the reply text or parsed tool calls. It calls a
+remote service.
+"""
+
 import copy
 import json
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from openai import AzureOpenAI
@@ -14,7 +20,17 @@ SCOPE = "https://cognitiveservices.azure.com/.default"
 
 
 class AzureOpenAIStructuredLLM(LLMBase):
+    """Chat client for Azure OpenAI with structured output support.
+
+    Goes in: messages, optional response format and tools; comes out: the reply text or tool calls.
+    It keeps no conversation state.
+    """
+
     def __init__(self, config: Optional[BaseLlmConfig] = None):
+        """Set up the Azure OpenAI client, defaulting the deployment model name when none is given.
+
+        Goes in: an optional config; comes out: a ready client. It sends no request.
+        """
         super().__init__(config)
 
         # Model name should match the custom deployment name chosen for it.
@@ -54,9 +70,10 @@ class AzureOpenAIStructuredLLM(LLMBase):
     def generate_response(
         self,
         messages: List[Dict[str, str]],
-        response_format: Optional[str] = None,
         tools: Optional[List[Dict]] = None,
         tool_choice: str = "auto",
+        response_format: Optional[str] = None,
+        **kwargs,
     ) -> str:
         """
         Generate a response based on the given messages using Azure OpenAI.
@@ -68,6 +85,10 @@ class AzureOpenAIStructuredLLM(LLMBase):
         Returns:
             str: The generated response.
         """
+        if kwargs:
+            raise TypeError(
+                f"generate_response() got unexpected keyword arguments: {sorted(kwargs)}"
+            )
 
         # Azure's "Indirect Attacks" content filter can flag the literal word
         # "assistant" in the prompt, so it is rewritten to "ai" before the request.
@@ -76,7 +97,7 @@ class AzureOpenAIStructuredLLM(LLMBase):
         messages = self._rewrite_assistant_keyword(messages)
 
         is_reasoning = self._is_reasoning_model(self.config.model)
-        params = {
+        params: Dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
         }

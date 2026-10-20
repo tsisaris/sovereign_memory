@@ -1,3 +1,8 @@
+"""A language-model client for the Sarvam chat service, called over plain HTTP.
+
+Goes in: messages; comes out: the reply text. It calls a remote service.
+"""
+
 import os
 from typing import Dict, List, Optional
 
@@ -8,7 +13,16 @@ from mem0.llms.base import LLMBase
 
 
 class SarvamLLM(LLMBase):
+    """Chat client for Sarvam.
+
+    Goes in: a list of messages; comes out: the reply text. It keeps no conversation state.
+    """
+
     def __init__(self, config: Optional[BaseLlmConfig] = None):
+        """Set up the Sarvam client with a default model name and the key from the config or the SARVAM_API_KEY variable.
+
+        Goes in: an optional config; comes out: a ready client. It sends no request.
+        """
         super().__init__(config)
 
         # Set default model if not provided
@@ -31,7 +45,12 @@ class SarvamLLM(LLMBase):
         )
 
     def generate_response(
-        self, messages: List[Dict[str, str]], response_format=None, **kwargs
+        self,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[Dict]] = None,
+        tool_choice: Optional[str] = None,
+        response_format=None,
+        **kwargs,
     ) -> str:
         """
         Generate a response based on the given messages using Sarvam-M.
@@ -46,6 +65,12 @@ class SarvamLLM(LLMBase):
         Returns:
             str: The generated response.
         """
+        # tools and tool_choice are forwarded to the payload exactly as before, when given.
+        if tools is not None:
+            kwargs["tools"] = tools
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
+
         url = f"{self.base_url}/chat/completions"
 
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}

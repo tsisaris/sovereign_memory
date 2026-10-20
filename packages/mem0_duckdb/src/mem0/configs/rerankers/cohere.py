@@ -1,3 +1,8 @@
+"""Settings for Mem0's Cohere reranker: the model name, whether to return document texts and the chunk limit per document.
+
+It holds values only and never contacts Cohere.
+"""
+
 from typing import Optional
 
 from pydantic import Field

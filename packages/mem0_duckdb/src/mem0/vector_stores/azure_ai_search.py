@@ -1,3 +1,9 @@
+"""A Mem0 vector store on Azure AI Search.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to a remote service and is not used by the DuckDB-only owner path.
+"""
+
 import json
 import logging
 import re
@@ -35,12 +41,19 @@ logger = logging.getLogger(__name__)
 
 
 class OutputData(BaseModel):
+    """One search result: an id, a score and a payload. It carries data only and does nothing."""
+
     id: Optional[str]
     score: Optional[float]
     payload: Optional[dict]
 
 
 class AzureAISearch(VectorStoreBase):
+    """The Azure AI Search vector store: it creates the index and inserts, searches, updates, deletes and lists vectors with payloads.
+
+    It talks to a remote service and never touches DuckDB.
+    """
+
     def __init__(
         self,
         service_name,
@@ -182,7 +195,7 @@ class AzureAISearch(VectorStoreBase):
         logger.info(f"Inserting {len(vectors)} vectors into index {self.index_name}")
         documents = [
             self._generate_document(vector, payload, id)
-            for id, vector, payload in zip(ids, vectors, payloads)
+            for id, vector, payload in zip(ids, vectors, payloads, strict=False)
         ]
         response = self.search_client.upload_documents(documents)
         for doc in response:

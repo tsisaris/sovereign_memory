@@ -1,6 +1,12 @@
+"""A Mem0 vector store on Milvus.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to a remote server and is not used by the DuckDB-only owner path.
+"""
+
 import logging
 import re
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
 
@@ -27,12 +33,23 @@ logger = logging.getLogger(__name__)
 
 
 class OutputData(BaseModel):
+    """One search result: a memory id, a distance score and the metadata payload.
+
+    It carries data only and does nothing.
+    """
+
     id: Optional[str]  # memory id
     score: Optional[float]  # distance
     payload: Optional[Dict]  # metadata
 
 
 class MilvusDB(VectorStoreBase):
+    """The Milvus vector store: it creates the collection and inserts, searches, updates, deletes and lists vectors with payloads.
+
+    Filter keys must match a safe-name pattern. It talks to a remote server and never touches
+    DuckDB.
+    """
+
     def __init__(
         self,
         url: str,
@@ -132,7 +149,7 @@ class MilvusDB(VectorStoreBase):
             )
             self._has_bm25_schema = True
 
-    def insert(self, ids, vectors, payloads, **kwargs: Optional[dict[str, any]]):
+    def insert(self, ids, vectors, payloads, **kwargs: Optional[dict[str, Any]]):
         """Insert vectors into a collection.
 
         Args:
@@ -157,7 +174,7 @@ class MilvusDB(VectorStoreBase):
 
         data = [
             _build_record(idx, embedding, metadata)
-            for idx, embedding, metadata in zip(ids, vectors, payloads)
+            for idx, embedding, metadata in zip(ids, vectors, payloads, strict=False)
         ]
         self.client.insert(collection_name=self.collection_name, data=data, **kwargs)
 
@@ -283,7 +300,10 @@ class MilvusDB(VectorStoreBase):
             result = self._parse_output(data=hits[0])
             return result
         except Exception as e:
-            logger.debug(f"Keyword search not available for collection {self.collection_name}: {e}")
+            logger.debug(
+                f"Keyword search not available for collection {self.collection_name}: {e}",
+                exc_info=True,
+            )
             return None
 
     def delete(self, vector_id):

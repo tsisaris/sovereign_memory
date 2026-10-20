@@ -1,3 +1,9 @@
+"""A Mem0 vector store on OpenSearch.
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to a remote server and is not used by the DuckDB-only owner path.
+"""
+
 import logging
 import re
 import time
@@ -54,13 +60,26 @@ def _build_filter_clauses(filters):
 
 
 class OutputData(BaseModel):
+    """One search result: an id, a score and a payload. It carries data only and does nothing."""
+
     id: str
     score: float
     payload: Dict
 
 
 class OpenSearchDB(VectorStoreBase):
+    """The OpenSearch vector store: it creates the index and inserts, searches, updates, deletes and lists vectors with payloads.
+
+    Filter keys are checked against a safe pattern. It talks to a remote server and never touches
+    DuckDB.
+    """
+
     def __init__(self, **kwargs):
+        """Connect to OpenSearch from the settings (host, port, user and password or http auth, TLS options).
+
+        Goes in: keyword settings; comes out: a ready store. It opens the client connection but
+        creates no index until asked.
+        """
         config = OpenSearchConfig(**kwargs)
 
         # Initialize OpenSearch client
@@ -150,6 +169,7 @@ class OpenSearchDB(VectorStoreBase):
                     logger.info(f"Index {name} is ready")
                     return
                 except Exception:
+                    logger.debug("Exception ignored in create_col", exc_info=True)
                     retry_count += 1
                     if retry_count == max_retries:
                         raise TimeoutError(
@@ -190,7 +210,7 @@ class OpenSearchDB(VectorStoreBase):
                 )
 
         results = []
-        for i, (vec, id_) in enumerate(zip(vectors, ids)):
+        for i, (vec, id_) in enumerate(zip(vectors, ids, strict=False)):
             body = {
                 "vector_field": vec,
                 "payload": payloads[i],
@@ -408,7 +428,14 @@ class OpenSearchDB(VectorStoreBase):
         """Get information about a collection (index)."""
         return self.client.indices.get(index=name)
 
-    def list(self, filters: Optional[Dict] = None, top_k: Optional[int] = None) -> List[OutputData]:
+    def list(
+        self, filters: Optional[Dict] = None, top_k: Optional[int] = None
+    ) -> List[List[OutputData]]:
+        """List memories, optionally limited by filters and a count.
+
+        Goes in: a filters dict and a top_k limit; comes out: a list of results. It only reads and
+        raises nothing it does not already log.
+        """
         try:
             """List all memories with optional filters."""
             query: Dict = {"query": {"match_all": {}}}

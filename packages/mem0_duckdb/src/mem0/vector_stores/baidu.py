@@ -1,3 +1,9 @@
+"""A Mem0 vector store on Baidu VectorDB (Mochow).
+
+Goes in: vectors, payloads and filters; comes out: stored records and nearest-neighbour results. It
+talks to a remote service and is not used by the DuckDB-only owner path.
+"""
+
 import logging
 import re
 import time
@@ -44,12 +50,23 @@ logger = logging.getLogger(__name__)
 
 
 class OutputData(BaseModel):
+    """One search result: a memory id, a distance score and the metadata payload.
+
+    It carries data only and does nothing.
+    """
+
     id: Optional[str]  # memory id
     score: Optional[float]  # distance
     payload: Optional[Dict]  # metadata
 
 
 class BaiduDB(VectorStoreBase):
+    """The Baidu VectorDB vector store: it creates the database and table and inserts, searches, updates, deletes and lists vectors with payloads.
+
+    Filter keys must match a safe-name pattern. It talks to a remote service and never touches
+    DuckDB.
+    """
+
     _SAFE_FILTER_KEY = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
     def __init__(
@@ -192,7 +209,7 @@ class BaiduDB(VectorStoreBase):
             ids (List[str], optional): List of IDs corresponding to vectors.
         """
         # Prepare data for insertion
-        for idx, vector, metadata in zip(ids, vectors, payloads):
+        for idx, vector, metadata in zip(ids, vectors, payloads, strict=False):
             row = Row(id=idx, vector=vector, metadata=metadata)
             self._table.upsert(rows=[row])
 
@@ -284,7 +301,7 @@ class BaiduDB(VectorStoreBase):
 
             return output
         except Exception as e:
-            logger.error(f"Error during keyword search for query '{query}': {e}")
+            logger.error(f"Error during keyword search for query '{query}': {e}", exc_info=True)
             return None
 
     def delete(self, vector_id):
