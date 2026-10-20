@@ -35,6 +35,7 @@ from service.memory_supplier import (
     NumbersNotYetSupplied,
     NumbersSupplier,
     SuppliedNumbers,
+    SuppliedPiece,
     text_fingerprint,
 )
 
@@ -61,7 +62,25 @@ CREATE TABLE IF NOT EXISTS memory_number_requests (
     status VARCHAR NOT NULL,
     closed_at VARCHAR
 );
+CREATE TABLE IF NOT EXISTS memory_piece_retirements (
+    piece_id VARCHAR PRIMARY KEY,
+    retired_at VARCHAR NOT NULL,
+    reason VARCHAR NOT NULL,
+    replaced_by VARCHAR
+);
 """
+
+RECUT_DUTY = (
+    "a re-cut of an event must be sent as one batch holding the event's complete new set of "
+    "pieces, with 'retires' naming exactly the event's current piece ids; memory then retires "
+    "the old pieces (their numbers stay, but they no longer rank or count) and asks every model "
+    "for the new pieces"
+)
+
+
+def derived_piece_id(event_id: str, fingerprint: str) -> str:
+    """Return the piece id of a text derived from an event: keyed by the event and the text's fingerprint; pure."""
+    return f"derived:{event_id}:{fingerprint}"
 
 
 def _now() -> str:
@@ -104,11 +123,19 @@ def receive_numbers(
     if set(batch.numbers) != piece_ids:
         raise ValueError("The batch must carry numbers for exactly its pieces")
     counts = {"pieces_new": 0, "rows_new": 0, "rows_replaced": 0}
+    _check_cut_rules(handle, batch)
     for piece in batch.pieces:
         if piece.source not in (PIECE_SOURCE_EVENT, PIECE_SOURCE_DERIVED):
             raise ValueError(f"Piece {piece.piece_id} has an unknown source {piece.source!r}")
         if text_fingerprint(piece.text) != piece.text_fingerprint:
             raise ValueError(f"Piece {piece.piece_id} fingerprint is not that of its text")
+        if piece.source == PIECE_SOURCE_DERIVED and piece.piece_id != derived_piece_id(
+            piece.event_id, piece.text_fingerprint
+        ):
+            raise ValueError(
+                f"A derived piece is keyed by its event and its text fingerprint: expected "
+                f"{derived_piece_id(piece.event_id, piece.text_fingerprint)}, got {piece.piece_id}"
+            )
         if (
             handle.execute(
                 "SELECT 1 FROM memory_events WHERE event_id = ?", [piece.event_id]
@@ -126,6 +153,7 @@ def receive_numbers(
         elif stored != (piece.event_id, piece.position, piece.text_fingerprint, piece.source):
             raise ValueError(f"Piece {piece.piece_id} was already stored with other content")
     vectors = {pid: check_vector(batch.numbers[pid], model.width) for pid in piece_ids}
+    _retire_recut(handle, batch, received_at)
     for piece in batch.pieces:
         handle.execute(
             "INSERT OR IGNORE INTO memory_pieces VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -160,6 +188,101 @@ def receive_numbers(
         counts["rows_replaced" if existed else "rows_new"] += 1
         close_requests(handle, model, piece.event_id, piece.text_fingerprint, received_at)
     return counts
+
+
+def live_event_piece_ids(handle: duckdb.DuckDBPyConnection, event_id: str) -> set[str]:
+    """Return the ids of the event's pieces cut from its own text that are not retired. Reads only."""
+    rows = handle.execute(
+        "SELECT p.piece_id FROM memory_pieces p LEFT JOIN memory_piece_retirements r "
+        "ON r.piece_id = p.piece_id WHERE p.event_id = ? AND p.source = 'event' "
+        "AND r.piece_id IS NULL",
+        [event_id],
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def _check_cut_rules(handle: duckdb.DuckDBPyConnection, batch: SuppliedNumbers) -> None:
+    """Refuse a batch whose pieces of an event disagree with the event's stored cut, naming the supplier's duty.
+
+    An event's first cut must arrive whole and with no 'retires'. Later batches
+    for another model must carry exactly the same piece ids. A different set of
+    piece ids is a re-cut, accepted only as RECUT_DUTY says. Raises ValueError.
+    """
+    by_event: dict[str, set[str]] = {}
+    for piece in batch.pieces:
+        if piece.source == PIECE_SOURCE_EVENT:
+            by_event.setdefault(piece.event_id, set()).add(piece.piece_id)
+    retires = set(batch.retires)
+    seen_retires: set[str] = set()
+    for event_id, ids in by_event.items():
+        stored = live_event_piece_ids(handle, event_id)
+        if not stored:
+            continue
+        if ids == stored:
+            if retires & stored:
+                raise ValueError(f"Event {event_id}: 'retires' may not name the pieces it sends")
+            continue
+        if retires & stored != stored:
+            raise ValueError(
+                f"Event {event_id} is already cut into {sorted(stored)} and the batch sends "
+                f"{sorted(ids)}; {RECUT_DUTY}"
+            )
+        seen_retires |= stored
+    stray = retires - seen_retires
+    if stray:
+        raise ValueError(
+            f"'retires' names pieces that are not a current cut being replaced: {sorted(stray)}"
+        )
+
+
+def _retire_recut(
+    handle: duckdb.DuckDBPyConnection, batch: SuppliedNumbers, retired_at: str
+) -> None:
+    """Retire the pieces a re-cut replaces and send the event's relational receipt back to pending.
+
+    Runs after the batch passed every check. The old pieces and their numbers
+    are kept (nothing is deleted); they simply stop ranking and counting. The
+    relational receipt is set to pending so the tier drops the old chunks and
+    writes the new ones through the ordinary processor path.
+    """
+    if not batch.retires:
+        return
+    replacement = ",".join(
+        sorted(p.piece_id for p in batch.pieces if p.source == PIECE_SOURCE_EVENT)
+    )
+    for old in batch.retires:
+        event_id = handle.execute(
+            "SELECT event_id FROM memory_pieces WHERE piece_id = ?", [old]
+        ).fetchone()[0]
+        handle.execute(
+            "INSERT OR IGNORE INTO memory_piece_retirements VALUES (?, ?, ?, ?)",
+            [old, retired_at, "the supplier re-cut the event", replacement],
+        )
+        handle.execute(
+            "UPDATE memory_receipts SET status = 'pending', attempt_id = NULL, attempted_at = NULL, "
+            "completed_at = NULL, error_ref = NULL WHERE event_id = ? AND tier = 'relational'",
+            [event_id],
+        )
+
+
+def retire_derived(
+    handle: duckdb.DuckDBPyConnection, event_id: str, text: str, retired_at: str
+) -> bool:
+    """Retire the derived piece of a text an engine no longer holds; return whether one was retired.
+
+    A Mem0 memory whose text was updated or deleted no longer needs numbers for
+    the old text, so its derived piece stops counting as missing for any model.
+    Nothing is deleted; no piece for that text means nothing to retire.
+    """
+    piece_id = derived_piece_id(event_id, text_fingerprint(text))
+    found = handle.execute("SELECT 1 FROM memory_pieces WHERE piece_id = ?", [piece_id]).fetchone()
+    if found is None:
+        return False
+    handle.execute(
+        "INSERT OR IGNORE INTO memory_piece_retirements VALUES (?, ?, ?, NULL)",
+        [piece_id, retired_at, "the engine no longer holds this text"],
+    )
+    return True
 
 
 def mark_stale(
@@ -277,6 +400,63 @@ def request_numbers(
     return request_id
 
 
+def request_derived(
+    handle: duckdb.DuckDBPyConnection,
+    model: ModelRow,
+    event_id: str,
+    texts: list[str],
+    reason: str,
+    requested_at: str,
+) -> list[str]:
+    """Make the open requests for an event's derived texts exactly the texts now missing.
+
+    A pending request for a text of this event and model that is no longer in
+    texts (a retry produced other text) is closed as superseded, and its text is
+    cleared, so nothing stays open for text that no longer exists. A request is
+    recorded for each text in texts. Returns the request ids for texts.
+    """
+    wanted = {text_fingerprint(text) for text in texts}
+    open_rows = handle.execute(
+        "SELECT request_id, text_fingerprint FROM memory_number_requests WHERE model_id = ? "
+        "AND revision = ? AND event_id = ? AND status = 'pending' AND text_fingerprint IS NOT NULL",
+        [model.model_id, model.revision, event_id],
+    ).fetchall()
+    for request_id, fingerprint in open_rows:
+        if fingerprint not in wanted:
+            handle.execute(
+                "UPDATE memory_number_requests SET status = 'superseded', closed_at = ?, "
+                "text = NULL WHERE request_id = ?",
+                [requested_at, request_id],
+            )
+    return [request_numbers(handle, model, event_id, t, reason, requested_at) for t in texts]
+
+
+def close_derived_requests(
+    handle: duckdb.DuckDBPyConnection, model: ModelRow, event_id: str, closed_at: str
+) -> None:
+    """Close every open derived-text request of an event and model after a retry found all its numbers."""
+    handle.execute(
+        "UPDATE memory_number_requests SET status = 'superseded', closed_at = ?, text = NULL "
+        "WHERE model_id = ? AND revision = ? AND event_id = ? AND status = 'pending' "
+        "AND text_fingerprint IS NOT NULL",
+        [closed_at, model.model_id, model.revision, event_id],
+    )
+
+
+def withdraw_removed_requests(handle: duckdb.DuckDBPyConnection, closed_at: str) -> int:
+    """Close every open request whose event was removed, clear its text, and return how many closed."""
+    (count,) = handle.execute(
+        "SELECT count(*) FROM memory_number_requests q JOIN memory_removals r "
+        "ON r.target_event_id = q.event_id WHERE q.status = 'pending'"
+    ).fetchone()
+    handle.execute(
+        "UPDATE memory_number_requests SET status = 'withdrawn', closed_at = ?, text = NULL "
+        "WHERE status = 'pending' AND event_id IN (SELECT target_event_id FROM memory_removals)",
+        [closed_at],
+    )
+    return count
+
+
 def close_requests(
     handle: duckdb.DuckDBPyConnection,
     model: ModelRow,
@@ -319,22 +499,72 @@ def events_needing_numbers(handle: duckdb.DuckDBPyConnection, model: ModelRow) -
         WHERE r.target_event_id IS NULL AND e.event_type NOT LIKE 'system.%'
           AND (
             NOT EXISTS (SELECT 1 FROM memory_pieces p
-                        WHERE p.event_id = e.event_id AND p.source = 'event')
+                        LEFT JOIN memory_piece_retirements x ON x.piece_id = p.piece_id
+                        WHERE p.event_id = e.event_id AND p.source = 'event'
+                          AND x.piece_id IS NULL)
             OR EXISTS (SELECT 1 FROM memory_pieces p
+                       LEFT JOIN memory_piece_retirements x ON x.piece_id = p.piece_id
                        LEFT JOIN {model.numbers_table} n ON n.piece_id = p.piece_id
                        WHERE p.event_id = e.event_id AND p.source = 'event'
-                         AND (n.piece_id IS NULL OR n.stale)))
+                         AND x.piece_id IS NULL AND (n.piece_id IS NULL OR n.stale)))
         ORDER BY e.rowid
         """
     ).fetchall()
     return [row[0] for row in rows]
 
 
-def pieces_of_event(handle: duckdb.DuckDBPyConnection, event_id: str) -> list[dict[str, Any]]:
-    """Return the event's pieces cut from its own text, in position order. Reads only."""
+def derived_needing_numbers(
+    handle: duckdb.DuckDBPyConnection, model: ModelRow
+) -> list[tuple[str, str]]:
+    """List (event id, text) of live derived texts for which this model lacks fresh numbers.
+
+    A derived text is live when its event was not removed and its piece was not
+    retired. It lacks numbers when this model's table has no row, or only a
+    stale row, for it. Reads only.
+    """
     rows = handle.execute(
-        "SELECT piece_id, position, text, text_fingerprint FROM memory_pieces "
-        "WHERE event_id = ? AND source = 'event' ORDER BY position, piece_id",
+        f"SELECT p.event_id, p.text FROM memory_pieces p "
+        "LEFT JOIN memory_piece_retirements x ON x.piece_id = p.piece_id "
+        "LEFT JOIN memory_removals r ON r.target_event_id = p.event_id "
+        f"LEFT JOIN {model.numbers_table} n ON n.piece_id = p.piece_id "
+        "WHERE p.source = 'derived' AND x.piece_id IS NULL AND r.target_event_id IS NULL "
+        "AND (n.piece_id IS NULL OR n.stale) ORDER BY p.received_at, p.piece_id"
+    ).fetchall()
+    return [(row[0], row[1]) for row in rows]
+
+
+def pending_derived_texts(
+    handle: duckdb.DuckDBPyConnection, model: ModelRow
+) -> list[tuple[str, str]]:
+    """List (event id, text) of open derived-text requests for this model whose event is live. Reads only."""
+    rows = handle.execute(
+        "SELECT q.event_id, q.text FROM memory_number_requests q LEFT JOIN memory_removals r "
+        "ON r.target_event_id = q.event_id WHERE q.status = 'pending' AND q.model_id = ? "
+        "AND q.revision = ? AND q.text IS NOT NULL AND r.target_event_id IS NULL "
+        "ORDER BY q.requested_at, q.request_id",
+        [model.model_id, model.revision],
+    ).fetchall()
+    return [(row[0], row[1]) for row in rows]
+
+
+def retired_piece_ids_of_event(handle: duckdb.DuckDBPyConnection, event_id: str) -> list[str]:
+    """Return the ids of the event's retired event-source pieces, so their chunks can be dropped. Reads only."""
+    rows = handle.execute(
+        "SELECT p.piece_id FROM memory_pieces p JOIN memory_piece_retirements x "
+        "ON x.piece_id = p.piece_id WHERE p.event_id = ? AND p.source = 'event' "
+        "ORDER BY p.piece_id",
+        [event_id],
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def pieces_of_event(handle: duckdb.DuckDBPyConnection, event_id: str) -> list[dict[str, Any]]:
+    """Return the event's current (not retired) pieces cut from its own text, in position order. Reads only."""
+    rows = handle.execute(
+        "SELECT p.piece_id, p.position, p.text, p.text_fingerprint FROM memory_pieces p "
+        "LEFT JOIN memory_piece_retirements x ON x.piece_id = p.piece_id "
+        "WHERE p.event_id = ? AND p.source = 'event' AND x.piece_id IS NULL "
+        "ORDER BY p.position, p.piece_id",
         [event_id],
     ).fetchall()
     keys = ("piece_id", "position", "text", "text_fingerprint")
@@ -440,6 +670,8 @@ class NumbersStore:
         pending work. Returns {label: summary}. It writes no other model's rows.
         """
         report: dict[str, Any] = {}
+        now = _now()
+        await self.run_in_transaction(lambda handle: withdraw_removed_requests(handle, now))
         for model in await self.models():
             summary: dict[str, Any] = {"received_events": 0, "pending": None}
             report[model.label] = summary
@@ -485,7 +717,41 @@ class NumbersStore:
                     break
                 await self.receive(batch)
                 summary["received_events"] += 1
+            if summary["pending"] is None:
+                summary["received_derived"] = 0
+                await self._pull_derived(supplier, model, summary)
         return report
+
+    async def _pull_derived(
+        self, supplier: NumbersSupplier, model: ModelRow, summary: dict[str, Any]
+    ) -> None:
+        """Fetch this model's numbers for every live derived text it lacks, through the single-text door.
+
+        Each text becomes the one derived piece keyed by its event and fingerprint
+        (memory cuts nothing: the text is measured whole). A refusal is kept as
+        pending work and stops this model's pull.
+        """
+        wanted = await self.run_in_transaction(
+            lambda h: list(
+                dict.fromkeys(derived_needing_numbers(h, model) + pending_derived_texts(h, model))
+            )
+        )
+        for event_id, text in wanted:
+            try:
+                vector = await supplier.question_numbers(model.model_id, model.revision, text)
+            except NumbersNotYetSupplied as pending:
+                await self.request(model, event_id, text, str(pending))
+                summary["pending"] = str(pending)
+                return
+            fingerprint = text_fingerprint(text)
+            piece_id = derived_piece_id(event_id, fingerprint)
+            piece = SuppliedPiece(piece_id, event_id, 0, text, fingerprint, PIECE_SOURCE_DERIVED)
+            await self.receive(
+                SuppliedNumbers(
+                    model.model_id, model.revision, model.width, (piece,), {piece_id: vector}
+                )
+            )
+            summary["received_derived"] += 1
 
     async def _mismatch(
         self,

@@ -84,6 +84,7 @@ class ModelState:
     rows: int
     stale_rows: int
     missing_pieces: int
+    source: str = "event"
 
 
 def model_label(model_id: str, revision: str) -> str:
@@ -223,13 +224,17 @@ def get_model(handle: duckdb.DuckDBPyConnection, model_id: str, revision: str) -
     return None if row is None else _row(row)
 
 
-def model_state(handle: duckdb.DuckDBPyConnection, model: ModelRow) -> ModelState:
-    """Measure whether a model is fresh, from its label check and its numbers table. Reads only.
+def model_state(
+    handle: duckdb.DuckDBPyConnection, model: ModelRow, source: str = "event"
+) -> ModelState:
+    """Measure whether a model is fresh for one kind of piece, from its label check and its table. Reads only.
 
-    A model is stale when the supplier's current row for it no longer matches
-    its label, when any of its rows is marked stale, when a live event piece has
-    no row for it, or when it holds no numbers at all. A stale model is stale
-    for itself only; the answer names every reason found.
+    source is "event" (pieces cut from event text, which the relational kind
+    ranks) or "derived" (texts derived from events, which the personalization
+    kind ranks). A model is stale when the supplier's current row for it no
+    longer matches its label, when any of its rows is marked stale, when a live
+    piece of that source has no row for it, or when it holds no numbers for that
+    source. A stale model is stale for itself only; the answer names every reason.
     """
     table = model.numbers_table
     check = handle.execute(
@@ -237,12 +242,20 @@ def model_state(handle: duckdb.DuckDBPyConnection, model: ModelRow) -> ModelStat
         "ORDER BY checked_at DESC, rowid DESC LIMIT 1",
         [model.model_id, model.revision],
     ).fetchone()
-    (rows,) = handle.execute(f"SELECT count(*) FROM {table}").fetchone()
+    (rows,) = handle.execute(
+        f"SELECT count(*) FROM {table} n JOIN memory_pieces p ON p.piece_id = n.piece_id "
+        "WHERE p.source = ?",
+        [source],
+    ).fetchone()
     (stale_rows,) = handle.execute(f"SELECT count(*) FROM {table} WHERE stale").fetchone()
     (missing,) = handle.execute(
         f"SELECT count(*) FROM memory_pieces p LEFT JOIN memory_removals r "
-        f"ON r.target_event_id = p.event_id LEFT JOIN {table} n ON n.piece_id = p.piece_id "
-        "WHERE p.source = 'event' AND r.target_event_id IS NULL AND n.piece_id IS NULL"
+        f"ON r.target_event_id = p.event_id "
+        "LEFT JOIN memory_piece_retirements x ON x.piece_id = p.piece_id "
+        f"LEFT JOIN {table} n ON n.piece_id = p.piece_id "
+        "WHERE p.source = ? AND r.target_event_id IS NULL AND x.piece_id IS NULL "
+        "AND n.piece_id IS NULL",
+        [source],
     ).fetchone()
     reasons = []
     if check is not None and check[0] == "mismatch":
@@ -250,10 +263,10 @@ def model_state(handle: duckdb.DuckDBPyConnection, model: ModelRow) -> ModelStat
     if stale_rows:
         reasons.append(f"{stale_rows} of its rows are marked stale")
     if missing:
-        reasons.append(f"{missing} live pieces have no numbers for this model")
+        reasons.append(f"{missing} live {source} pieces have no numbers for this model")
     if rows == 0:
-        reasons.append("no numbers have been received for this model yet")
-    return ModelState(model, not reasons, tuple(reasons), rows, stale_rows, missing)
+        reasons.append(f"no numbers for {source} pieces have been received for this model yet")
+    return ModelState(model, not reasons, tuple(reasons), rows, stale_rows, missing, source)
 
 
 def check_vector(values: object, width: int) -> list[float]:

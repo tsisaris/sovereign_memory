@@ -623,7 +623,8 @@ class OwnerService:
             """Measure every model and list the owed numbers on the owner's worker."""
             states = []
             for model in list_models(handle):
-                state = model_state(handle, model)
+                state = model_state(handle, model, "event")
+                derived = model_state(handle, model, "derived")
                 states.append(
                     {
                         "model_id": model.model_id,
@@ -639,6 +640,10 @@ class OwnerService:
                         "rows": state.rows,
                         "stale_rows": state.stale_rows,
                         "missing_pieces": state.missing_pieces,
+                        "derived_fresh": derived.fresh,
+                        "derived_reasons": list(derived.reasons),
+                        "derived_rows": derived.rows,
+                        "derived_missing": derived.missing_pieces,
                     }
                 )
             owed = [

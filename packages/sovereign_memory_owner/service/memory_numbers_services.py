@@ -10,9 +10,16 @@ text; a missing number is always reported, never replaced by a vector.
 """
 
 import asyncio
+from datetime import datetime, timezone
 
 from service.memory_models import ModelRow, check_vector, get_model, list_models, model_state
-from service.memory_numbers import NumbersStore, numbers_for_text
+from service.memory_numbers import (
+    NumbersStore,
+    close_derived_requests,
+    numbers_for_text,
+    request_derived,
+    retire_derived,
+)
 from service.memory_processor_seam import OwnerReader
 from service.memory_supplier import (
     PENDING_WORK,
@@ -115,14 +122,67 @@ class NumbersServices:
         vector = await self.supplier.question_numbers(model_id, revision, text)
         return check_vector(vector, model.width)
 
-    async def fresh_models(self) -> tuple[list[ModelRow], dict[str, str]]:
-        """Return (fresh embedding models, {label: reason} for the stale ones). Reads only."""
+    async def request_derived(
+        self, model_id: str, revision: str, event_id: str, texts: list[str], reason: str
+    ) -> list[str]:
+        """Make the open requests for an event's derived texts exactly the texts now missing.
+
+        A request for text a retry no longer produces is closed as superseded;
+        returns the request ids for texts. See request_derived in memory_numbers.
+        """
+        model = await self.model(model_id, revision)
+        now = datetime.now(timezone.utc).isoformat()
+        return await self.store.run_in_transaction(
+            lambda handle: request_derived(handle, model, event_id, texts, reason, now)
+        )
+
+    async def derived_complete(self, model_id: str, revision: str, event_id: str) -> None:
+        """Close an event's open derived-text requests for a model once a retry found every number."""
+        model = await self.model(model_id, revision)
+        now = datetime.now(timezone.utc).isoformat()
+        await self.store.run_in_transaction(
+            lambda handle: close_derived_requests(handle, model, event_id, now)
+        )
+
+    @staticmethod
+    def retire_derived(handle, event_id: str, text: str) -> bool:
+        """Retire the derived piece of a text an engine no longer holds, on the caller's open transaction.
+
+        For use inside an engine's apply, on the owner's handle. Returns whether
+        a piece was retired. It deletes nothing and never commits.
+        """
+        return retire_derived(handle, event_id, text, datetime.now(timezone.utc).isoformat())
+
+    async def question_vectors(
+        self, source: str, query: str
+    ) -> tuple[dict[str, tuple[ModelRow, list[float]]], dict[str, str]]:
+        """Fetch the question's numbers, once per model fresh for this kind of piece, from the supplier.
+
+        Comes out: ({label: (model, numbers)}, {label: reason} for every model left
+        out). A model that is stale for this source, or whose question numbers the
+        supplier cannot give, is left out with the reason and is never counted as an
+        empty ranking. Memory never embeds the question itself.
+        """
+        fresh, left_out = await self.fresh_models(source)
+        vectors: dict[str, tuple[ModelRow, list[float]]] = {}
+        for model in fresh:
+            try:
+                vectors[model.label] = (
+                    model,
+                    await self.question_numbers(model.model_id, model.revision, query),
+                )
+            except NumbersNotYetSupplied as pending:
+                left_out[model.label] = f"question numbers not supplied: {pending}"
+        return vectors, left_out
+
+    async def fresh_models(self, source: str = "event") -> tuple[list[ModelRow], dict[str, str]]:
+        """Return (embedding models fresh for this source, {label: reason} for the stale ones). Reads only."""
 
         def read(handle):
-            """Measure every embedding model's freshness on the owner's worker."""
+            """Measure every embedding model's freshness for the source on the owner's worker."""
             fresh, left_out = [], {}
             for model in list_models(handle, "embedding"):
-                state = model_state(handle, model)
+                state = model_state(handle, model, source)
                 if state.fresh:
                     fresh.append(model)
                 else:

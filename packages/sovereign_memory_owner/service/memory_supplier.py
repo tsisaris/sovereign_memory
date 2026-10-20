@@ -79,7 +79,8 @@ class SuppliedNumbers:
 
     numbers maps a piece id to its list of numbers; every list has length width
     (the class count for a classifier). The batch is data in transit, never
-    memory's own computation.
+    memory's own computation. retires is only for a re-cut of an event: the ids
+    of the event's current pieces that this batch's pieces replace.
     """
 
     model_id: str
@@ -87,6 +88,7 @@ class SuppliedNumbers:
     width: int
     pieces: tuple[SuppliedPiece, ...]
     numbers: dict[str, list[float]]
+    retires: tuple[str, ...] = ()
 
 
 class NumbersSupplier(Protocol):

@@ -30,7 +30,7 @@ from cognee.modules.chunking.Chunker import Chunker
 from cognee_community_hybrid_adapter_duckdb.duckdb_adapter import DuckDBAdapter
 
 from service.memory_models import ModelRow
-from service.memory_numbers import pieces_of_event
+from service.memory_numbers import pieces_of_event, retired_piece_ids_of_event
 from service.memory_numbers_services import NumbersServices, ReceivedNumbersEmbeddingEngine
 from service.memory_processor_seam import (
     OwnerReader,
@@ -251,12 +251,26 @@ class CogneeChunkTier:
         reader, services = self._need_reader(), self._need_services()
         if is_removal(event_envelope):
             target, _ = removal_target(event_envelope, verified_payload_bytes)
-            pieces = await reader(lambda handle: pieces_of_event(handle, target))
-            ids = tuple(chunk_id(p["piece_id"]) for p in pieces) + (legacy_chunk_id(target),)
+            pieces, retired = await reader(
+                lambda handle: (
+                    pieces_of_event(handle, target),
+                    retired_piece_ids_of_event(handle, target),
+                )
+            )
+            ids = (
+                tuple(chunk_id(p["piece_id"]) for p in pieces)
+                + tuple(chunk_id(piece_id) for piece_id in retired)
+                + (legacy_chunk_id(target),)
+            )
             return PreparedChunks(removal_target=target, delete_ids=ids)
         event_id = event_envelope["event_id"]
         actor = actor_of(event_envelope)
-        pieces = await reader(lambda handle: pieces_of_event(handle, event_id))
+        pieces, retired = await reader(
+            lambda handle: (
+                pieces_of_event(handle, event_id),
+                retired_piece_ids_of_event(handle, event_id),
+            )
+        )
         if not pieces:
             await services.request_pieces(event_id, f"{PENDING_WORK}: no pieces yet")
             raise NumbersNotYetSupplied(
@@ -286,7 +300,11 @@ class CogneeChunkTier:
             )
             for piece in pieces
         )
-        return PreparedChunks(chunks=chunks, embedding_engine=engine)
+        return PreparedChunks(
+            chunks=chunks,
+            delete_ids=tuple(chunk_id(piece_id) for piece_id in retired),
+            embedding_engine=engine,
+        )
 
     async def _engine(self, services: NumbersServices) -> ReceivedNumbersEmbeddingEngine | None:
         """Build the received-numbers embedder object for the configured model, if one is bound."""
@@ -312,6 +330,8 @@ class CogneeChunkTier:
             asyncio.run(adapter.delete_nodes(list(prepared_work.delete_ids)))
             status = "processed" if existed else "processed_no_new_fact"
         else:
+            if prepared_work.delete_ids:
+                asyncio.run(adapter.delete_nodes(list(prepared_work.delete_ids)))
             asyncio.run(
                 adapter.add_nodes([(c.chunk_id, c.properties) for c in prepared_work.chunks])
             )
@@ -327,17 +347,7 @@ class CogneeChunkTier:
         is left out with its reason; it is never counted as an empty ranking.
         Memory never embeds the question itself.
         """
-        services = self._need_services()
-        fresh, left_out = await services.fresh_models()
-        vectors: dict[str, tuple[ModelRow, list[float]]] = {}
-        for model in fresh:
-            try:
-                vectors[model.label] = (
-                    model,
-                    await services.question_numbers(model.model_id, model.revision, query),
-                )
-            except NumbersNotYetSupplied as pending:
-                left_out[model.label] = f"question numbers not supplied: {pending}"
+        vectors, left_out = await self._need_services().question_vectors("event", query)
         return {"vectors": vectors, "left_out": left_out, "limit": limit}
 
     def retrieve(
@@ -376,7 +386,9 @@ class CogneeChunkTier:
                 f"FROM {model.numbers_table} n JOIN memory_pieces p ON p.piece_id = n.piece_id "
                 "JOIN memory_events e ON e.event_id = n.event_id "
                 "LEFT JOIN memory_removals r ON r.target_event_id = n.event_id "
+                "LEFT JOIN memory_piece_retirements x ON x.piece_id = n.piece_id "
                 f"WHERE NOT n.stale AND p.source = 'event' AND r.target_event_id IS NULL "
+                "AND x.piece_id IS NULL "
                 f"AND {condition} ORDER BY distance, n.piece_id LIMIT ?",
                 [vector, *params, prepared_query["limit"]],
             ).fetchall()

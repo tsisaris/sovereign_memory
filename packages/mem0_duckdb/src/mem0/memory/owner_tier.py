@@ -216,10 +216,31 @@ class Mem0Tier:
         embedder.attach_lookup(services.lookup)
 
     async def _owe(self, event_id: str, missing: NumbersMissing) -> None:
-        """Record every text whose numbers are owed, so the supplier can be asked for them."""
+        """Make the open requests for this event exactly the texts whose numbers are owed now.
+
+        A request for a text an earlier attempt produced and this attempt did not
+        is closed, so no request stays open for text that no longer exists.
+        """
         services = self._need_services()
-        for text in missing.texts:
-            await services.request(self.model_id, self.revision, event_id, text, str(missing))
+        await services.request_derived(
+            self.model_id, self.revision, event_id, missing.texts, str(missing)
+        )
+
+    def _retire_replaced(self, memory: Memory, work: "PreparedWork", handle: Any) -> None:
+        """Retire the derived pieces of memory texts an UPDATE or DELETE in this work replaces.
+
+        Runs inside apply on the owner's transaction, before the change, so the old
+        text (read from the memory about to change) stops counting as missing for any
+        model. Nothing is deleted.
+        """
+        services = self._need_services()
+        for action in work.decisions.get("memory", []):
+            if action["event"] not in ("UPDATE", "DELETE"):
+                continue
+            target = memory.vector_store.get(vector_id=work.mapping[action["id"]])
+            payload = (target.payload if target is not None else None) or {}
+            if payload.get("event_id") and payload.get("data"):
+                services.retire_derived(handle, payload["event_id"], payload["data"])
 
     def initialize_storage(self, native_tx_handle: duckdb.DuckDBPyConnection) -> None:
         """Bind Memory to the owner's handle and create its tables, in the owner's transaction.
@@ -350,11 +371,15 @@ class Mem0Tier:
         (fact extraction) runs in worker threads, never on the owner's database
         worker and never inside a write transaction.
         """
+        event_id = event_envelope["event_id"]
         try:
-            return await self._prepare(event_envelope, verified_payload_bytes)
+            prepared = await self._prepare(event_envelope, verified_payload_bytes)
         except NumbersMissing as missing:
-            await self._owe(event_envelope["event_id"], missing)
+            await self._owe(event_id, missing)
             raise
+        if prepared.kind != "remove":
+            await self._need_services().derived_complete(self.model_id, self.revision, event_id)
+        return prepared
 
     async def _prepare(
         self, event_envelope: Dict[str, Any], verified_payload_bytes: Optional[bytes]
@@ -552,6 +577,7 @@ class Mem0Tier:
                 status = "processed" if texts else "processed_no_new_fact"
             else:
                 self._require_may_modify(memory, work)
+                self._retire_replaced(memory, work, native_tx_handle)
                 returned = memory._execute_memory_actions(
                     work.decisions, work.mapping, work.embeddings, work.metadata, work.filters
                 )
@@ -600,83 +626,83 @@ class Mem0Tier:
     # ---- read seam --------------------------------------------------------------
 
     async def prepare_query(self, scope: Any, query: str, limit: int) -> Dict[str, Any]:
-        """Fetch the question's numbers from the supplier's door, unless the model is left out.
+        """Fetch the question's numbers, once per model fresh for derived texts, from the supplier.
 
-        The model is left out, with its reason, when it is not a fresh registered
-        embedding model or when the supplier cannot give the question's numbers;
-        that is never reported as an empty ranking. Memory never embeds the question.
+        A model that is stale for derived texts, or whose question numbers the
+        supplier cannot give, is left out with its reason and is never reported as
+        an empty ranking. Memory never embeds the question itself.
         """
-        services = self._need_services()
-        await self._read(self._require_matching_index)
-        fresh, left_out = await services.fresh_models()
-        prepared: Dict[str, Any] = {"query": query, "vector": None, "limit": limit, "left_out": {}}
-        if self.label not in {m.label for m in fresh}:
-            prepared["left_out"] = {
-                self.label: left_out.get(self.label, "not a registered embedding model")
-            }
-            return prepared
-        try:
-            vector = await services.question_numbers(self.model_id, self.revision, query)
-        except services.pending_error as pending:
-            prepared["left_out"] = {self.label: f"question numbers not supplied: {pending}"}
-            return prepared
-        prepared["vector"] = self._validate_vector(vector)
-        return prepared
+        vectors, left_out = await self._need_services().question_vectors("derived", query)
+        return {"vectors": vectors, "left_out": left_out, "limit": limit}
 
     def retrieve(
         self, native_handle: duckdb.DuckDBPyConnection, scope: Any, prepared_query: Dict[str, Any]
     ) -> Any:
-        """Rank the memories the scope's visibility permits with the model's numbers; expired ones are left out.
+        """Rank the memories the scope's visibility permits, once per model, from that model's own numbers.
 
-        Returns the owner's TierRankings-shaped object: {label: hits} under
-        the one model Mem0's own table holds, or the model left out with its
-        reason. The rest of the contract is unchanged:
-
-        The search is limited to the producers the visibility names ("own": the
-        principal; "granted": the granted actors; "pool": no producer limit).
-        Every hit names the captured event it came from and is re-checked against
-        the visibility; an unknown mode or a hit it does not permit raises
-        instead of being returned.
+        Each ranking joins one model's numbers table of derived pieces to the live
+        memories (same event, same text fingerprint) and orders them by cosine
+        distance (lower is nearer); Mem0's own vector table is not searched, so a
+        further model joins without touching it. The search is limited to the
+        producers the visibility names; expired memories are left out. Every hit
+        names the captured event it came from and is re-checked against the
+        visibility; an unknown mode or a hit it does not permit raises instead of
+        being returned. It never writes and never makes a number.
         """
         visibility = scope.visibility
+        condition: str
+        params: List[Any]
         if visibility.mode == "own":
-            filters: Dict[str, Any] = {"actor_agent_id": scope.agent_id}
+            condition, params = (
+                "json_extract_string(v.payload, '$.actor_agent_id') = ?",
+                [scope.agent_id],
+            )
         elif visibility.mode == "granted":
-            filters = {"actor_agent_id": {"in": sorted(visibility.actor_agent_ids)}}
+            actors = sorted(visibility.actor_agent_ids)
+            if not actors:
+                return self._rankings({}, dict(prepared_query["left_out"]))
+            condition = "json_extract_string(v.payload, '$.actor_agent_id') IN (SELECT unnest(?))"
+            params = [actors]
         elif visibility.mode == "pool":
-            filters = {}
+            condition, params = "TRUE", []
         else:
             raise ValueError(f"Unsupported visibility mode: {visibility.mode!r}")
-        if prepared_query["vector"] is None:
-            return self._rankings({}, prepared_query["left_out"])
-        memory = self._memory_for(native_handle)
-        self._require_matching_index(memory)
-        found = memory.vector_store.search(
-            query=prepared_query["query"],
-            vectors=prepared_query["vector"],
-            top_k=prepared_query["limit"],
-            filters=filters,
-        )
-        hits = []
-        for item in found:
-            payload = item.payload or {}
-            if not visibility.permits(payload.get("actor_agent_id"), scope.agent_id):
-                raise ValueError("Mem0 returned a memory outside the requested visibility")
-            if _payload_is_expired(payload):
-                continue
-            hits.append(
-                {
-                    "item_id": item.id,
-                    "id": item.id,
-                    "event_id": payload.get("event_id"),
-                    "actor_agent_id": payload.get("actor_agent_id"),
-                    "memory": payload.get("data"),
-                    "score": item.score,
-                    "source_artifact_id": payload.get("source_artifact_id"),
-                    "source_revision": payload.get("source_revision"),
-                }
-            )
-        return self._rankings({self.label: hits}, {})
+        table = self._memory_for(native_handle).vector_store.collection_name
+        rankings: Dict[str, List[Dict[str, Any]]] = {}
+        for label, (model, vector) in prepared_query["vectors"].items():
+            rows = native_handle.execute(
+                f"SELECT v.id, v.payload, "
+                f"array_cosine_distance(n.numbers, CAST(? AS FLOAT[{model.width}])) AS distance "
+                f"FROM {model.numbers_table} n JOIN memory_pieces p ON p.piece_id = n.piece_id "
+                f"JOIN {table} v ON json_extract_string(v.payload, '$.event_id') = p.event_id "
+                "AND sha256(json_extract_string(v.payload, '$.data')) = p.text_fingerprint "
+                "LEFT JOIN memory_piece_retirements x ON x.piece_id = p.piece_id "
+                "LEFT JOIN memory_removals r ON r.target_event_id = p.event_id "
+                "WHERE NOT n.stale AND p.source = 'derived' AND x.piece_id IS NULL "
+                f"AND r.target_event_id IS NULL AND {condition} ORDER BY distance, v.id",
+                [vector, *params],
+            ).fetchall()
+            hits = []
+            for memory_id, raw, distance in rows:
+                payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                if not visibility.permits(payload.get("actor_agent_id"), scope.agent_id):
+                    raise ValueError("Mem0 returned a memory outside the requested visibility")
+                if _payload_is_expired(payload):
+                    continue
+                hits.append(
+                    {
+                        "item_id": memory_id,
+                        "id": memory_id,
+                        "event_id": payload.get("event_id"),
+                        "actor_agent_id": payload.get("actor_agent_id"),
+                        "memory": payload.get("data"),
+                        "distance": distance,
+                        "source_artifact_id": payload.get("source_artifact_id"),
+                        "source_revision": payload.get("source_revision"),
+                    }
+                )
+            rankings[label] = hits[: prepared_query["limit"]]
+        return self._rankings(rankings, dict(prepared_query["left_out"]))
 
     @staticmethod
     def _rankings(rankings: Dict[str, List[Dict[str, Any]]], left_out: Dict[str, str]) -> Any:
