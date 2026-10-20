@@ -1774,6 +1774,7 @@ dependencies = [
     { name = "duckdb-engine" },
     { name = "duckdb-sqlalchemy-async" },
     { name = "pydantic" },
+    { name = "pyyaml" },
     { name = "sqlalchemy" },
 ]
 
@@ -1783,6 +1784,7 @@ requires-dist = [
     { name = "duckdb-engine", specifier = "==0.17.0" },
     { name = "duckdb-sqlalchemy-async", editable = "packages/duckdb_sqlalchemy_async" },
     { name = "pydantic", specifier = "==2.14.1" },
+    { name = "pyyaml", specifier = "==6.0.3" },
     { name = "sqlalchemy", specifier = "==2.0.39" },
 ]
 
