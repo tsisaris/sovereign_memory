@@ -1,0 +1,4 @@
+# Project interpreter-layer creation declaration (SA_93; ARGON Part 3 B-0).
+# Prefix owner: environment in .copier-answers.yml, expanded by the laptop owner.
+# Create with micromamba -p the declared prefix, -c defaults --override-channels.
+python==3.12.15

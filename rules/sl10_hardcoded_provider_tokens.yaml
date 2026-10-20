@@ -1,0 +1,19 @@
+rules:
+  - id: sl10-hardcoded-provider-token
+    languages:
+      - python
+    severity: WARNING
+    message: >-
+      SL_10 forbids committing provider credentials in source. Read the value
+      from the declared environment or credential store instead.
+    metadata:
+      requirement: SL_10 / Law 14 — no hardcoded secrets in code
+      source: Custom rule authored for the authoritative sovereign_rules project.
+    patterns:
+      - pattern: $KEY = "$VALUE"
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i).*(api[_-]?key|access[_-]?key|secret|password|token).*
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_-]{35}|sk-[A-Za-z0-9]{24,})$
