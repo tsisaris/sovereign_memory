@@ -1,0 +1,56 @@
+# The one list of checks. pre-commit (MIT licence) runs exactly this list on
+# the laptop before every commit, on GitHub for every pull request, and on
+# Jules's machine before it submits.
+#
+# Every hook runs a checker that is ALREADY INSTALLED, at the version pinned
+# in pyproject.toml's "dev" group: on GitHub and on Jules's machine `uv sync`
+# installs them; on the laptop they come from the sovereign_tools micromamba
+# environment, at the same versions. pre-commit itself installs nothing.
+#
+# Read-only mirror folders and local/ are never graded.
+exclude: ^(data/sovereign/|local/)
+
+repos:
+  - repo: local
+    hooks:
+      # Cosmetic fixes, applied by programs, never by a model.
+      - id: format
+        name: format (spacing, quotes, final newline)
+        entry: ruff format
+        language: system
+        types: [python]
+      - id: sort-imports
+        name: sort imports
+        entry: ruff check --select I --fix
+        language: system
+        types: [python]
+      # The gating rule classes declared in pyproject.toml. Nothing is fixed
+      # here: a real defect is fixed by a person or by Jules, never blindly.
+      - id: ruff
+        name: ruff gating rules
+        entry: ruff check
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy gating classes
+        entry: mypy
+        language: system
+        types: [python]
+        # One batch at a time: parallel batches share one mypy cache, and on
+        # GitHub that once ended in "INTERNAL ERROR" (measured 2026-10-06).
+        require_serial: true
+      - id: pyright
+        name: pyright undefined variables
+        entry: pyright
+        language: system
+        types: [python]
+      - id: pylint
+        name: pylint undefined names
+        entry: pylint --disable=all --enable=E0602 --score=n
+        language: system
+        types: [python]
+      - id: bandit
+        name: bandit shell injection
+        entry: bandit -q -t B602
+        language: system
+        types: [python]
