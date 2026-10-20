@@ -427,10 +427,16 @@ class OwnerService:
 
         Reads a 4-byte big-endian length, then that many bytes of JSON. Every
         refusal or failure is sent back as an error reply; none is reported as success.
+        A client that closes before sending the whole request gets no reply and
+        leaves no work behind; this is logged, not raised.
         """
         try:
-            length_bytes = await reader.readexactly(4)
-            if not length_bytes:
+            try:
+                length_bytes = await reader.readexactly(4)
+                if not length_bytes:
+                    return
+            except asyncio.IncompleteReadError:
+                logger.warning("A client closed its connection before sending a whole request")
                 return
 
             payload_len = int.from_bytes(length_bytes, byteorder="big")
@@ -440,7 +446,11 @@ class OwnerService:
                 )
                 return
 
-            data = await reader.readexactly(payload_len)
+            try:
+                data = await reader.readexactly(payload_len)
+            except asyncio.IncompleteReadError:
+                logger.warning("A client closed its connection before sending a whole request")
+                return
 
             try:
                 payload = json.loads(data.decode("utf-8"))
@@ -695,7 +705,8 @@ class OwnerService:
         The question and the events must be given, every event must be live and
         visible to the principal, and the case id derives from its content so
         asking again queues one case. Raises PermissionError when an event is not
-        visible and ValueError for a malformed request.
+        visible and ValueError for a malformed request or when the deployment
+        declared no [ranking] settings (the held-back share comes from them).
         """
         question, events = request.get("question"), request.get("events")
         memory_kind = request.get("memory_kind")
@@ -708,6 +719,11 @@ class OwnerService:
             or memory_kind not in TIERS
         ):
             raise ValueError("review_select needs question, events and a memory_kind")
+        if self.settings is None:
+            raise ValueError(
+                "review_select needs the declared [ranking] settings (the held-back share), "
+                "and this deployment declared none"
+            )
         visibility = await self.retrieval.policy.resolve(principal)
         producers = await OwnerCore(self.lifetime_conn).live_producers(events)
         if not all(
