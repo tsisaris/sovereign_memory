@@ -427,10 +427,16 @@ class OwnerService:
 
         Reads a 4-byte big-endian length, then that many bytes of JSON. Every
         refusal or failure is sent back as an error reply; none is reported as success.
+        A client that closes before sending the whole request gets no reply and
+        leaves no work behind; this is logged, not raised.
         """
         try:
-            length_bytes = await reader.readexactly(4)
-            if not length_bytes:
+            try:
+                length_bytes = await reader.readexactly(4)
+                if not length_bytes:
+                    return
+            except asyncio.IncompleteReadError:
+                logger.warning("A client closed its connection before sending a whole request")
                 return
 
             payload_len = int.from_bytes(length_bytes, byteorder="big")
@@ -440,7 +446,11 @@ class OwnerService:
                 )
                 return
 
-            data = await reader.readexactly(payload_len)
+            try:
+                data = await reader.readexactly(payload_len)
+            except asyncio.IncompleteReadError:
+                logger.warning("A client closed its connection before sending a whole request")
+                return
 
             try:
                 payload = json.loads(data.decode("utf-8"))
