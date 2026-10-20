@@ -705,7 +705,8 @@ class OwnerService:
         The question and the events must be given, every event must be live and
         visible to the principal, and the case id derives from its content so
         asking again queues one case. Raises PermissionError when an event is not
-        visible and ValueError for a malformed request.
+        visible and ValueError for a malformed request or when the deployment
+        declared no [ranking] settings (the held-back share comes from them).
         """
         question, events = request.get("question"), request.get("events")
         memory_kind = request.get("memory_kind")
@@ -718,6 +719,11 @@ class OwnerService:
             or memory_kind not in TIERS
         ):
             raise ValueError("review_select needs question, events and a memory_kind")
+        if self.settings is None:
+            raise ValueError(
+                "review_select needs the declared [ranking] settings (the held-back share), "
+                "and this deployment declared none"
+            )
         visibility = await self.retrieval.policy.resolve(principal)
         producers = await OwnerCore(self.lifetime_conn).live_producers(events)
         if not all(
