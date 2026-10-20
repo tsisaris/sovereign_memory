@@ -775,7 +775,6 @@ exclude: |
     packages/cognee_duckdb/cognee/modules/data/processing/document_types/__init__\.py|
     packages/cognee_duckdb/cognee/modules/data/processing/document_types/exceptions/__init__\.py|
     packages/cognee_duckdb/cognee/modules/data/processing/document_types/exceptions/exceptions\.py|
-    packages/cognee_duckdb/cognee/modules/data/processing/has_new_chunks\.py|
     packages/cognee_duckdb/cognee/modules/engine/__init__\.py|
     packages/cognee_duckdb/cognee/modules/engine/models/ColumnValue\.py|
     packages/cognee_duckdb/cognee/modules/engine/models/DltColumn\.py|
@@ -1030,7 +1029,6 @@ exclude: |
     packages/cognee_duckdb/cognee/modules/pipelines/methods/get_pipeline_run_by_dataset\.py|
     packages/cognee_duckdb/cognee/modules/pipelines/methods/get_pipeline_runs_by_dataset\.py|
     packages/cognee_duckdb/cognee/modules/pipelines/models/DataItemStatus\.py|
-    packages/cognee_duckdb/cognee/modules/pipelines/models/Pipeline\.py|
     packages/cognee_duckdb/cognee/modules/pipelines/models/PipelineContext\.py|
     packages/cognee_duckdb/cognee/modules/pipelines/models/PipelineRun\.py|
     packages/cognee_duckdb/cognee/modules/pipelines/models/PipelineRunInfo\.py|

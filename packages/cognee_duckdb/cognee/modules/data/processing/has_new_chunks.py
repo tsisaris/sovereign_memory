@@ -1,10 +1,20 @@
+"""Tell whether any chunk of a document is missing from, or changed in, the vector collection.
+
+Goes in: the chunks of one document and the collection name; comes out: whether any chunk is
+new or has different text. It never writes to the collection.
+"""
+
 from cognee.infrastructure.databases.vector import get_vector_engine_async
-from cognee.modules.chunking import DocumentChunk
+from cognee.modules.chunking.models import DocumentChunk
 
 
-async def has_new_chunks(
-    data_chunks: list[DocumentChunk], collection_name: str
-) -> list[DocumentChunk]:
+async def has_new_chunks(data_chunks: list[DocumentChunk], collection_name: str) -> bool:
+    """Say whether at least one chunk is new or has changed text compared with the collection.
+
+    Goes in: the chunks of one document and the name of the vector collection to compare with;
+    comes out: True when the collection is missing, holds none of the chunks, or holds a chunk
+    whose text differs, otherwise False. It never writes to the collection.
+    """
     vector_engine = await get_vector_engine_async()
 
     if not await vector_engine.has_collection(collection_name):
