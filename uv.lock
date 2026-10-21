@@ -5,6 +5,13 @@ resolution-markers = [
     "python_full_version >= '3.13'",
     "python_full_version < '3.13'",
 ]
+conflicts = [[
+    { package = "sovereign-memory", group = "advisory" },
+    { package = "sovereign-memory", group = "dev" },
+], [
+    { package = "graphiti-duckdb", extra = "mcp-server" },
+    { package = "sovereign-memory", group = "advisory" },
+]]
 
 [manifest]
 members = [
@@ -46,7 +53,7 @@ dependencies = [
     { name = "frozenlist" },
     { name = "multidict" },
     { name = "propcache" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
     { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6c/4c/bdccd81e9ee225b69c60e7766c9a5b05364f118f4d383713b89a682d772d/aiohttp-3.14.5.tar.gz", hash = "sha256:5558a7f5a05af9ecf744af91e5baefc436f93c9333e656c27ec253f9a6bbe178", size = 8078052, upload-time = "2026-10-11T01:05:12.408Z" }
@@ -110,7 +117,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "frozenlist" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
@@ -455,7 +462,7 @@ name = "cffi"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy'" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/ef/008a1939e372c06329a3fce4279c02f328488f3526744906eeec3da7ad5f/cffi-2.1.1.tar.gz", hash = "sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be", size = 530807, upload-time = "2026-08-03T21:21:18.939Z" }
 wheels = [
@@ -563,7 +570,7 @@ name = "click"
 version = "8.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/76/d4/81420972a676e8ffea40450d8c8c92943e7218a78fe9b64359836cc9876b/click-8.4.2.tar.gz", hash = "sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6", size = 338000, upload-time = "2026-06-24T17:45:15.148Z" }
 wheels = [
@@ -758,7 +765,7 @@ name = "cryptography"
 version = "50.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "platform_python_implementation != 'PyPy'" },
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9d/af/182eb91b0df3fe75c4d9f26fe70684569566745f6ba7e5c9c73a862c5252/cryptography-50.0.2.tar.gz", hash = "sha256:7b46165bb56eb4704e2eaaf86f3c940d19154535d9b0ca7d6d590b04060e00d5", size = 880623, upload-time = "2026-09-30T15:30:04.884Z" }
 wheels = [
@@ -809,10 +816,10 @@ version = "0.85.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
-    { name = "black", marker = "sys_platform != 'emscripten'" },
+    { name = "black", marker = "sys_platform != 'emscripten' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
     { name = "genson" },
     { name = "inflect" },
-    { name = "isort", marker = "sys_platform != 'emscripten'" },
+    { name = "isort", marker = "sys_platform != 'emscripten' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
     { name = "jinja2" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -911,13 +918,13 @@ dependencies = [
     { name = "giturlparse" },
     { name = "humanize" },
     { name = "jsonpath-ng" },
-    { name = "orjson", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'emscripten'" },
+    { name = "orjson", marker = "(platform_python_implementation != 'PyPy' and sys_platform != 'emscripten') or (platform_python_implementation == 'PyPy' and extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (platform_python_implementation == 'PyPy' and extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev') or (sys_platform == 'emscripten' and extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (sys_platform == 'emscripten' and extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
     { name = "packaging" },
     { name = "pathvalidate" },
     { name = "pendulum" },
     { name = "pluggy" },
     { name = "pytz" },
-    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "pywin32", marker = "sys_platform == 'win32' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
     { name = "pyyaml" },
     { name = "requests" },
     { name = "requirements-parser" },
@@ -930,7 +937,7 @@ dependencies = [
     { name = "tomlkit" },
     { name = "typing-extensions" },
     { name = "tzdata" },
-    { name = "win-precise-time", marker = "python_full_version < '3.13' and os_name == 'nt'" },
+    { name = "win-precise-time", marker = "(python_full_version < '3.13' and os_name == 'nt') or (python_full_version >= '3.13' and extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (python_full_version >= '3.13' and extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev') or (os_name != 'nt' and extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (os_name != 'nt' and extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/93/a8/fab4e86b8c9a6f7c04c5ecdb9a7d18297b6ecf6c92e13115eed033714ee7/dlt-1.30.0.tar.gz", hash = "sha256:46157b4c75aabde40c8b12af005e27d51ddde693ebbc2d338682ee0b19527d5b", size = 1155778, upload-time = "2026-08-11T13:21:57.707Z" }
 wheels = [
@@ -1369,18 +1376,29 @@ dependencies = [
     { name = "tenacity" },
 ]
 
+[package.optional-dependencies]
+mcp-server = [
+    { name = "mcp", version = "2.2.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "pyyaml" },
+    { name = "starlette" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "duckdb", specifier = "==1.5.6" },
     { name = "duckdb-sqlalchemy-async", editable = "packages/duckdb_sqlalchemy_async" },
+    { name = "mcp", marker = "extra == 'mcp-server'", specifier = "==2.2.0" },
     { name = "neo4j", specifier = "==6.4.1" },
     { name = "numpy", specifier = "==2.5.4" },
     { name = "openai", specifier = "==2.54.0" },
     { name = "posthog", specifier = "==7.71.0" },
     { name = "pydantic", specifier = "==2.14.1" },
     { name = "python-dotenv", specifier = "==1.2.4" },
+    { name = "pyyaml", marker = "extra == 'mcp-server'", specifier = "==6.0.3" },
+    { name = "starlette", marker = "extra == 'mcp-server'", specifier = "==1.8.0" },
     { name = "tenacity", specifier = "==9.2.1" },
 ]
+provides-extras = ["mcp-server"]
 
 [[package]]
 name = "greenlet"
@@ -1483,6 +1501,19 @@ wheels = [
 ]
 
 [[package]]
+name = "httpcore2"
+version = "2.15.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "h11" },
+    { name = "truststore" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c2/a9/11bc39967bb9dfaab0981ab4d49f519818acbee662a7e76d06813319c838/httpcore2-2.15.1.tar.gz", hash = "sha256:a94b6b3e6260e1a3f035915408d3dcd7dc8e844c2b544b642e227cf98a747af0", size = 69859, upload-time = "2026-10-19T20:14:23.824Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0d/9b/e2b556e26fbc67716ab1dfc18832eb6fe196d88363f7094cb1da3d7c0d3e/httpcore2-2.15.1-py3-none-any.whl", hash = "sha256:730f603058c260a3288378217b464713350c23e3b8fe8bba753701054032d98a", size = 85055, upload-time = "2026-10-19T20:14:21.363Z" },
+]
+
+[[package]]
 name = "httpx"
 version = "0.28.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1512,13 +1543,39 @@ wheels = [
 ]
 
 [[package]]
+name = "httpx2"
+version = "2.15.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio", marker = "sys_platform != 'emscripten'" },
+    { name = "httpcore2", marker = "sys_platform != 'emscripten'" },
+    { name = "httpx2-jsfetch", marker = "sys_platform == 'emscripten'" },
+    { name = "idna" },
+    { name = "truststore", marker = "sys_platform != 'emscripten'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7f/85/07978f4afd168d6b408fa75c1dc13e3010653a81e182aa1b6d89ab94d9c6/httpx2-2.15.1.tar.gz", hash = "sha256:ff75485308fbe441e75b1218546e4e78d884df41e1a9741c1f79335ed8fcfef7", size = 101673, upload-time = "2026-10-19T20:14:24.587Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/bf/56068f774620330c8330e4b4915fae889a5b2d4b52667b3b7c8f66c4a9ad/httpx2-2.15.1-py3-none-any.whl", hash = "sha256:75841cd83d16b417f7d6da8f2089ce8120806efdbf96af37d46c5129c49015be", size = 96411, upload-time = "2026-10-19T20:14:22.789Z" },
+]
+
+[[package]]
+name = "httpx2-jsfetch"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cd/c4/0e5636363151a2a1795e0a77617168b9ca438e1748ec05fc9b5687f93d64/httpx2_jsfetch-1.0.tar.gz", hash = "sha256:70a0e3eabfef7cce5ad9c629f7d01ca05e418f586646f4ddf14782e4c1454c60", size = 6872, upload-time = "2026-08-07T00:13:07.492Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/43/832f631d32e4f1211caa2ba368317739fe71f0b8530e4c9d15dc454bac2a/httpx2_jsfetch-1.0-py3-none-any.whl", hash = "sha256:cb916b707601e69a07721aabc8f3f6659be3a6893bc1ff5c6f9e02241df2da32", size = 6382, upload-time = "2026-08-07T00:13:06.567Z" },
+]
+
+[[package]]
 name = "huggingface-hub"
 version = "0.36.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
     { name = "fsspec" },
-    { name = "hf-xet", marker = "platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'" },
+    { name = "hf-xet", marker = "platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
     { name = "packaging" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -1535,7 +1592,7 @@ name = "humanfriendly"
 version = "10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyreadline3", marker = "sys_platform == 'win32'" },
+    { name = "pyreadline3", marker = "sys_platform == 'win32' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cc/3f/2c29224acb2e2df4d2046e4c73ee2662023c58ff5b113c4c1adac0886c43/humanfriendly-10.0.tar.gz", hash = "sha256:6b0b831ce8f15f7300721aa49829fc4e83921a9a301cc7f606be6686a2288ddc", size = 360702, upload-time = "2021-09-17T21:40:43.31Z" }
 wheels = [
@@ -1881,8 +1938,8 @@ name = "loguru"
 version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "win32-setctime", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
+    { name = "win32-setctime", marker = "sys_platform == 'win32' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3a/05/a1dae3dffd1116099471c643b8924f5aa6524411dc6c63fdae648c4f1aca/loguru-0.7.3.tar.gz", hash = "sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6", size = 63559, upload-time = "2024-12-06T11:20:56.608Z" }
 wheels = [
@@ -2032,6 +2089,10 @@ wheels = [
 name = "mcp"
 version = "1.23.3"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.13'",
+    "python_full_version < '3.13'",
+]
 dependencies = [
     { name = "anyio" },
     { name = "httpx" },
@@ -2039,7 +2100,7 @@ dependencies = [
     { name = "jsonschema" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
-    { name = "pyjwt", extra = ["crypto"] },
+    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'group-16-sovereign-memory-advisory'" },
     { name = "python-multipart" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "sse-starlette" },
@@ -2051,6 +2112,48 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a7/a4/d06a303f45997e266f2c228081abe299bbcba216cb806128e2e49095d25f/mcp-1.23.3.tar.gz", hash = "sha256:b3b0da2cc949950ce1259c7bfc1b081905a51916fcd7c8182125b85e70825201", size = 600697, upload-time = "2025-12-09T16:04:37.351Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/32/c6/13c1a26b47b3f3a3b480783001ada4268917c9f42d78a079c336da2e75e5/mcp-1.23.3-py3-none-any.whl", hash = "sha256:32768af4b46a1b4f7df34e2bfdf5c6011e7b63d7f1b0e321d0fdef4cd6082031", size = 231570, upload-time = "2025-12-09T16:04:35.56Z" },
+]
+
+[[package]]
+name = "mcp"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.13'",
+    "python_full_version < '3.13'",
+]
+dependencies = [
+    { name = "anyio" },
+    { name = "httpx2" },
+    { name = "jsonschema" },
+    { name = "mcp-types" },
+    { name = "opentelemetry-api" },
+    { name = "pydantic" },
+    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'extra-15-graphiti-duckdb-mcp-server' or extra != 'group-16-sovereign-memory-advisory' or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
+    { name = "python-multipart" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "sse-starlette" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+    { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/76/31/ac54fb0fdd5b37de704486e288bba4fbbb463f24cfcfedbede407b854513/mcp-2.2.0.tar.gz", hash = "sha256:2dc37ecb1974becdcebdbf7561e7c15a07dbbf20ba21ba16c3593b3038b3afbd", size = 4084129, upload-time = "2026-09-07T16:06:23.439Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1b/ff/8e7eade68b8a28f7da0ed1085544341b51f9c935dbf6b95c76b7edfea6a0/mcp-2.2.0-py3-none-any.whl", hash = "sha256:bde982589473a060ae145e3406e9a5333fe538c97229ba841f5a7f92be004f81", size = 365656, upload-time = "2026-09-07T16:06:19.711Z" },
+]
+
+[[package]]
+name = "mcp-types"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ae/91/762d7755d971aff8a28d75f7961656148edf27875c8026e6385aaab08ae7/mcp_types-2.2.0.tar.gz", hash = "sha256:d3ed53703ddd10d9c6399f29d322bb66f3f67ab41348ac8556ba23e07fedefad", size = 65892, upload-time = "2026-09-07T16:06:25.187Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/d7/6ffba5d8cd5dd9b8a19478875c50e04945314ba5074e84d749283f27f62d/mcp_types-2.2.0-py3-none-any.whl", hash = "sha256:ea476b73ee86709ab5abc9452385ed36cc05907e582355622e294595c9a04f13", size = 69106, upload-time = "2026-09-07T16:06:21.461Z" },
 ]
 
 [[package]]
@@ -2947,7 +3050,7 @@ name = "pympler"
 version = "1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "pywin32", marker = "sys_platform == 'win32' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/dd/37/c384631908029676d8e7213dd956bb686af303a80db7afbc9be36bc49495/pympler-1.1.tar.gz", hash = "sha256:1eaa867cb8992c218430f1708fdaccda53df064144d1c5656b1e6f1ee6000424", size = 179954, upload-time = "2024-06-28T19:56:06.563Z" }
 wheels = [
@@ -3175,7 +3278,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "rpds-py" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/f5/df4e9027acead3ecc63e50fe1e36aca1523e1719559c499951bb4b53188f/referencing-0.37.0.tar.gz", hash = "sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8", size = 78036, upload-time = "2025-10-13T15:30:48.871Z" }
 wheels = [
@@ -3420,7 +3523,7 @@ dependencies = [
     { name = "exceptiongroup" },
     { name = "glom" },
     { name = "jsonschema" },
-    { name = "mcp" },
+    { name = "mcp", version = "1.23.3", source = { registry = "https://pypi.org/simple" } },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-instrumentation-requests" },
@@ -3428,7 +3531,7 @@ dependencies = [
     { name = "opentelemetry-sdk" },
     { name = "packaging" },
     { name = "peewee" },
-    { name = "pyjwt", extra = ["crypto"] },
+    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'group-16-sovereign-memory-advisory'" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "requests" },
     { name = "rich" },
@@ -3574,7 +3677,7 @@ dev = [
     { name = "coverage" },
     { name = "deptry" },
     { name = "duckdb-sqlalchemy-async" },
-    { name = "graphiti-duckdb" },
+    { name = "graphiti-duckdb", extra = ["mcp-server"], marker = "(extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra != 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev') or (extra != 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-dev')" },
     { name = "letta-memory-model" },
     { name = "mem0-duckdb" },
     { name = "mypy" },
@@ -3608,7 +3711,7 @@ dev = [
     { name = "coverage", specifier = "==7.15.4" },
     { name = "deptry", specifier = "==0.25.1" },
     { name = "duckdb-sqlalchemy-async", editable = "packages/duckdb_sqlalchemy_async" },
-    { name = "graphiti-duckdb", editable = "packages/graphiti_duckdb" },
+    { name = "graphiti-duckdb", extras = ["mcp-server"], editable = "packages/graphiti_duckdb" },
     { name = "letta-memory-model", editable = "packages/letta_memory_model" },
     { name = "mem0-duckdb", editable = "packages/mem0_duckdb" },
     { name = "mypy", specifier = "==2.3.0" },
@@ -3649,7 +3752,7 @@ name = "sqlalchemy"
 version = "2.0.39"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "greenlet", marker = "platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64'" },
+    { name = "greenlet", marker = "platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/00/8e/e77fcaa67f8b9f504b4764570191e291524575ddbfe78a90fc656d671fdc/sqlalchemy-2.0.39.tar.gz", hash = "sha256:5d2d1fe548def3267b4c70a8568f108d1fed7cbbeccb9cc166e05af2abc25c22", size = 9644602, upload-time = "2025-03-11T18:27:09.744Z" }
@@ -3706,7 +3809,7 @@ version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e9/0c/6efb252d091ecccd7d62048ae11f0ea35cd75a4fbaeea5e30f9c3bf91d10/starlette-1.8.0.tar.gz", hash = "sha256:1565dc0b35d5737a271ed1e0e04e949f4e81198799f216d2667b0a0fb9cf9522", size = 2730457, upload-time = "2026-10-13T07:54:39.53Z" }
 wheels = [
@@ -3845,7 +3948,7 @@ name = "tqdm"
 version = "4.70.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0d/ea/b2a5bd54b28a324dae8211928b2d730b6547500342c7e6c6dea08bd0a485/tqdm-4.70.1.tar.gz", hash = "sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4", size = 171846, upload-time = "2026-09-11T07:25:16.601Z" }
 wheels = [
@@ -3859,6 +3962,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/2c/2e/a7fbfe268c8a3b32546930c0297c101d65a4a14c304ad5790a9f478f0e4e/traitlets-5.16.1.tar.gz", hash = "sha256:ed900c2b631aa3a112811139fa97b8d2c3bad5e989656bba4b7e52c7852c18c1", size = 166137, upload-time = "2026-08-03T08:32:36.848Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ad/66/0d785f0bc5e4315a96c989bb476d0fc07ea4f85132550c7b156ca2035d52/traitlets-5.16.1-py3-none-any.whl", hash = "sha256:f775618166caa0396c8e337099240f2bd3e5e917d203b2e6fbe21a58d3cb1f6b", size = 86211, upload-time = "2026-08-03T08:32:34.48Z" },
+]
+
+[[package]]
+name = "truststore"
+version = "0.10.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/9f/c5201d42a484c061e528825fc8e2d565f5abd50a4ced6fb7d29c4ec99b2b/truststore-0.10.5.tar.gz", hash = "sha256:30d36967ccaded5cbb38d602c433f53600036c79d502f4533a49b60a03bbefcd", size = 28091, upload-time = "2026-10-12T22:27:31.808Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/51/e9/3a7820be2bb0fe53b6bc9c3be26d3d1158004e4c3ab953aa6840b955b1e9/truststore-0.10.5-py3-none-any.whl", hash = "sha256:9aaaedaefaf06d8b206278cf8b5012bc897f485a874503501e12d776df78951c", size = 19017, upload-time = "2026-10-12T22:27:30.377Z" },
 ]
 
 [[package]]
@@ -3879,7 +3991,7 @@ version = "0.27.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
     { name = "rich" },
     { name = "shellingham" },
 ]
@@ -3923,7 +4035,7 @@ name = "tzlocal"
 version = "5.4.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
+    { name = "tzdata", marker = "sys_platform == 'win32' or (extra == 'extra-15-graphiti-duckdb-mcp-server' and extra == 'group-16-sovereign-memory-advisory') or (extra == 'group-16-sovereign-memory-advisory' and extra == 'group-16-sovereign-memory-dev')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/81/5b/879b2f932adfa7a053c360d50bc896c977fa6426109185f7c12ebdd0cb9d/tzlocal-5.4.4.tar.gz", hash = "sha256:8dbb8660838688a7b6ba4fed31d18dedf842afb4d47ca050d6d891c2c15f3be4", size = 31170, upload-time = "2026-06-29T08:03:40.026Z" }
 wheels = [
