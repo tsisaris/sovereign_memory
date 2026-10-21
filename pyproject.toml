@@ -33,6 +33,19 @@ cache-keys = [
     { file = "pyproject.toml" },
     { file = "src/sovereign_memory/**/*" },
 ]
+# The advisory group's semgrep needs mcp 1.23.3; the Graphiti MCP server needs mcp 2.2.0.
+# The two groups are never installed together (the workflow syncs "dev" and, in a separate
+# job, "--only-group advisory"), so each resolves on its own.
+conflicts = [
+    [
+        { group = "advisory" },
+        { group = "dev" },
+    ],
+    [
+        { group = "advisory" },
+        { package = "graphiti-duckdb", extra = "mcp-server" },
+    ],
+]
 
 [tool.uv.sources]
 cognee = { workspace = true }
@@ -53,7 +66,7 @@ dev = [
     "cognee==1.6.5",
     "mem0_duckdb==0.1.0",
     "letta_memory_model==0.1.0",
-    "graphiti-duckdb==0.1.0",
+    "graphiti-duckdb[mcp-server]==0.1.0",
     "sovereign-memory-owner==0.1.0",
     "pre-commit==4.6.2",
     "ruff==0.16.2",

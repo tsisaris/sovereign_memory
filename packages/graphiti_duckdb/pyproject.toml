@@ -23,6 +23,16 @@ dependencies = [
     "duckdb_sqlalchemy_async==0.1.0",
 ]
 
+[project.optional-dependencies]
+# The MCP server (mcp_server.py), pinned to the version Graphiti's own mcp_server/uv.lock names.
+# An extra rather than a base dependency, so the advisory group's semgrep (mcp 1.23.3) can
+# resolve on its own; the root project's "dev" group asks for this extra.
+mcp-server = [
+    "mcp==2.2.0",
+    "pyyaml==6.0.3",
+    "starlette==1.8.0",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/graphiti_core", "src/graphiti_duckdb"]
 

@@ -46,6 +46,7 @@ class RuntimeConfig:
     ranking: dict[str, Any] | None
     models: tuple[dict[str, Any], ...]
     personalization: "MemoryConfig | None"
+    supplier: dict[str, Any] | None
 
 
 def _take(
@@ -132,6 +133,18 @@ def _models(rows: Any) -> tuple[dict[str, Any], ...]:
     return tuple(result)
 
 
+def _supplier(table: Any) -> dict[str, Any]:
+    """Read the [supplier] table: where agent_corpus answers, who memory says it is, the time limit.
+
+    Every key is required and none has a default; the time limit must be a positive number.
+    """
+    table = dict(_take(table, "supplier", ("base_url", "requester_agent_id", "timeout_seconds")))
+    _text(table, "supplier", "base_url")
+    _text(table, "supplier", "requester_agent_id")
+    _positive(table, "supplier", "timeout_seconds", False)
+    return table
+
+
 def _personalization(table: Any) -> "MemoryConfig":
     """Read the Mem0 table: llm, embedder and vector_store are required, the vector store is DuckDB."""
     where = "tiers.personalization"
@@ -200,7 +213,9 @@ def _personalization(table: Any) -> "MemoryConfig":
 
 def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
     """Validate parsed TOML and return the RuntimeConfig; relative paths resolve against base."""
-    data = _take(data, "file", ("service", "tiers"), ("visibility", "ranking", "models"))
+    data = _take(
+        data, "file", ("service", "tiers"), ("visibility", "ranking", "models", "supplier")
+    )
     service = _take(
         data["service"],
         "service",
@@ -245,6 +260,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         )
     ranking = _ranking(data["ranking"]) if "ranking" in data else None
     models = _models(data.get("models", []))
+    supplier = _supplier(data["supplier"]) if "supplier" in data else None
 
     # Keep a socket symlink visible to the service's lstat-based refusal.
     socket_file = (base / _text(service, "service", "socket_path")).absolute()
@@ -272,6 +288,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         ranking=ranking,
         models=models,
         personalization=memory,
+        supplier=supplier,
     )
 
 
