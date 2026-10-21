@@ -1,0 +1,1 @@
+"""DuckDB Adapter Package."""

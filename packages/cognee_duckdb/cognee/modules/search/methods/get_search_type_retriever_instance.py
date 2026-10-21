@@ -1,0 +1,483 @@
+import os
+from collections.abc import Callable
+
+from cognee.base_config import get_base_config
+from cognee.context_global_variables import session_user
+from cognee.modules.engine.models.node_set import NodeSet
+from cognee.modules.retrieval.agentic_retriever import AgenticRetriever
+from cognee.modules.retrieval.base_retriever import BaseRetriever
+from cognee.modules.retrieval.bm25_retriever import BM25ChunksRetriever
+from cognee.modules.retrieval.broad_retriever import (
+    BROAD_BATCH_MB,
+    BROAD_CONTEXT_TOKENS,
+    BROAD_READING_TOKENS,
+    BROAD_STORE_MB,
+    BroadRetriever,
+)
+
+# Retrievers
+from cognee.modules.retrieval.chunks_retriever import ChunksRetriever
+from cognee.modules.retrieval.code_retriever import CodeRetriever
+from cognee.modules.retrieval.coding_rules_retriever import CodingRulesRetriever
+from cognee.modules.retrieval.completion_retriever import CompletionRetriever
+from cognee.modules.retrieval.cypher_search_retriever import CypherSearchRetriever
+from cognee.modules.retrieval.exceptions.exceptions import QueryValidationError
+from cognee.modules.retrieval.graph_completion_context_extension_retriever import (
+    GraphCompletionContextExtensionRetriever,
+)
+from cognee.modules.retrieval.graph_completion_cot_retriever import GraphCompletionCotRetriever
+from cognee.modules.retrieval.graph_completion_decomposition_retriever import (
+    GraphCompletionDecompositionRetriever,
+)
+from cognee.modules.retrieval.graph_completion_retriever import GraphCompletionRetriever
+from cognee.modules.retrieval.graph_report_retriever import GraphReportRetriever
+from cognee.modules.retrieval.graph_summary_completion_retriever import (
+    GraphSummaryCompletionRetriever,
+)
+from cognee.modules.retrieval.hybrid_retriever import DEFAULT_HYBRID_LANE_TOP_K, HybridRetriever
+from cognee.modules.retrieval.natural_language_retriever import NaturalLanguageRetriever
+from cognee.modules.retrieval.skills_retriever import SkillsRetriever
+from cognee.modules.retrieval.summaries_retriever import SummariesRetriever
+from cognee.modules.retrieval.temporal_hybrid_retriever import TemporalHybridRetriever
+from cognee.modules.search.exceptions import SearchTypeDisabledError, UnsupportedSearchTypeError
+from cognee.modules.search.operations import select_search_type
+from cognee.modules.search.types import SearchType
+from cognee.modules.search.types.SearchType import DEPRECATED_SEARCH_TYPES
+from cognee.shared.logging_utils import get_logger
+
+logger = get_logger()
+
+CYPHER_SEARCH_TYPES = (SearchType.CYPHER, SearchType.NATURAL_LANGUAGE)
+
+# Returned to the caller: says what to change, without detailing the risk.
+CYPHER_DISABLED_MESSAGE = "{search_type} search is disabled by default for security reasons."
+CYPHER_DISABLED_REMEDIATION = (
+    "Set the environment variable ALLOW_CYPHER_QUERY=true, and only do so when every user "
+    "of this deployment is trusted."
+)
+
+# Logged on the server only.
+CYPHER_DISABLED_LOG_MESSAGE = (
+    "Rejected a {search_type} search because ALLOW_CYPHER_QUERY is not enabled. Raw Cypher "
+    "lets any user with read access to a dataset run arbitrary queries against the graph "
+    "database, up to remote code execution on the server. Set ALLOW_CYPHER_QUERY=true only "
+    "when every user of this deployment is trusted."
+)
+
+
+def cypher_queries_allowed() -> bool:
+    """Raw Cypher (CYPHER, NATURAL_LANGUAGE) is opt-in through ALLOW_CYPHER_QUERY=true."""
+    return os.getenv("ALLOW_CYPHER_QUERY", "false").strip().lower() in ("true", "1", "yes")
+
+
+def _hybrid_lane_top_k(config: dict, key: str, search_top_k: int | None) -> int | None:
+    """Search top_k feeds hybrid's chunk/entity/fact lanes, capped so default context stays small.
+
+    An explicit retriever_specific_config value is not capped.
+    None is left unset so the retriever can apply its own default.
+    """
+    if key in config:
+        return config[key]
+    if search_top_k is None:
+        return None
+    return min(search_top_k, DEFAULT_HYBRID_LANE_TOP_K)
+
+
+async def get_search_type_retriever_instance(
+    query_type: SearchType,
+    query_text: str,
+    **kwargs,
+) -> BaseRetriever:
+    """
+    Factory method to get the appropriate retriever instance based on the search type.
+
+    Args:
+        query_type: SearchType enum indicating the type of search.
+        query_text: query string.
+        retriever_specific_config: Retriever specific configuration dictionary.
+        **kwargs: General keyword arguments for retriever initialization.
+
+    Returns:
+
+    """
+    # A deprecated type is resolved, with its warning, by search() / recall();
+    # this covers callers that reach the factory directly.
+    query_type = DEPRECATED_SEARCH_TYPES.get(query_type, query_type)
+    # Transform retriever specific config if empty to avoid None checks later
+    retriever_specific_config = kwargs.get("retriever_specific_config")
+    if retriever_specific_config is None:
+        retriever_specific_config = {}
+
+    # Extract common defaults with fallback values from kwargs
+    top_k = kwargs.get("top_k", 15)
+    if top_k is not None and top_k <= 0:
+        raise QueryValidationError(message="top_k must be a positive integer.")
+    system_prompt_path = kwargs.get("system_prompt_path", "answer_simple_question.txt")
+    system_prompt = kwargs.get("system_prompt")
+    node_type = kwargs.get("node_type", NodeSet)
+    node_name = kwargs.get("node_name")
+    node_name_filter_operator = kwargs.get("node_name_filter_operator", "OR")
+    wide_search_top_k = kwargs.get("wide_search_top_k")
+    triplet_distance_penalty = kwargs.get("triplet_distance_penalty")
+    feedback_influence = kwargs.get(
+        "feedback_influence", get_base_config().default_feedback_influence
+    )
+    session_id = kwargs.get("session_id")
+    neighborhood_depth = kwargs.get("neighborhood_depth")
+    neighborhood_seed_top_k = kwargs.get("neighborhood_seed_top_k")
+    include_references = kwargs.get("include_references", False)
+    dataset = kwargs.get("dataset")
+
+    # Registry mapping search types to their corresponding retriever classes and input parameters
+    search_core_registry: dict[SearchType, tuple[BaseRetriever, dict]] = {
+        SearchType.CODE: (
+            CodeRetriever,
+            {"config": retriever_specific_config},
+        ),
+        SearchType.SUMMARIES: (SummariesRetriever, {"top_k": top_k, "session_id": session_id}),
+        SearchType.SKILLS: (
+            SkillsRetriever,
+            {
+                "top_k": top_k,
+                # SKILLS is single-dataset by invariant; SkillsRetriever raises
+                # QueryValidationError when no dataset reaches the factory.
+                "dataset_id": dataset.id if dataset is not None else None,
+                "session_id": session_id,
+            },
+        ),
+        SearchType.CHUNKS: (
+            ChunksRetriever,
+            {
+                "top_k": top_k,
+                "node_name": node_name,
+                "node_name_filter_operator": node_name_filter_operator,
+            },
+        ),
+        # No top_k: BROAD reads the whole dataset (SDK-324).
+        SearchType.BROAD: (
+            BroadRetriever,
+            {
+                "system_prompt_path": "broad_answer.txt",
+                "system_prompt": system_prompt,
+                "session_id": session_id,
+                "response_model": retriever_specific_config.get("response_model", str),
+                "context_tokens": retriever_specific_config.get(
+                    "context_tokens", BROAD_CONTEXT_TOKENS
+                ),
+                "reading_tokens": retriever_specific_config.get(
+                    "reading_tokens", BROAD_READING_TOKENS
+                ),
+                "batch_mb": retriever_specific_config.get("batch_mb", BROAD_BATCH_MB),
+                "store_mb": retriever_specific_config.get("store_mb", BROAD_STORE_MB),
+            },
+        ),
+        SearchType.RAG_COMPLETION: (
+            CompletionRetriever,
+            {
+                "system_prompt_path": system_prompt_path,
+                "top_k": top_k,
+                "system_prompt": system_prompt,
+                "session_id": session_id,
+                "response_model": retriever_specific_config.get("response_model", str),
+                "include_references": include_references,
+                "node_name": node_name,
+                "node_name_filter_operator": node_name_filter_operator,
+                "wide_search_top_k": wide_search_top_k,
+            },
+        ),
+        SearchType.HYBRID_COMPLETION: (
+            HybridRetriever,
+            {
+                "chunks_top_k": _hybrid_lane_top_k(
+                    retriever_specific_config, "chunks_top_k", top_k
+                ),
+                "entities_top_k": _hybrid_lane_top_k(
+                    retriever_specific_config, "entities_top_k", top_k
+                ),
+                "max_edges_per_entity": retriever_specific_config.get("max_edges_per_entity", 10),
+                "node_name": node_name,
+                "node_name_filter_operator": node_name_filter_operator,
+                "system_prompt_path": system_prompt_path,
+                "system_prompt": system_prompt,
+                "session_id": session_id,
+                "response_model": retriever_specific_config.get("response_model", str),
+                "include_global_context_index": retriever_specific_config.get(
+                    "include_global_context_index", False
+                ),
+                "global_context_index_top_k": retriever_specific_config.get(
+                    "global_context_index_top_k", 3
+                ),
+                "text_summaries_top_k": retriever_specific_config.get("text_summaries_top_k"),
+                "use_importance_weight": retriever_specific_config.get(
+                    "use_importance_weight", True
+                ),
+                "use_truth_weight": retriever_specific_config.get("use_truth_weight", False),
+                "facts_top_k": _hybrid_lane_top_k(retriever_specific_config, "facts_top_k", top_k),
+                "include_references": include_references,
+                "include_external_metadata": retriever_specific_config.get(
+                    "include_external_metadata", False
+                ),
+                "external_metadata_keys": retriever_specific_config.get("external_metadata_keys"),
+            },
+        ),
+        SearchType.GRAPH_COMPLETION: (
+            GraphCompletionRetriever,
+            {
+                "system_prompt_path": system_prompt_path,
+                "top_k": top_k,
+                "node_type": node_type,
+                "node_name": node_name,
+                "node_name_filter_operator": node_name_filter_operator,
+                "system_prompt": system_prompt,
+                "wide_search_top_k": wide_search_top_k,
+                "triplet_distance_penalty": triplet_distance_penalty,
+                "feedback_influence": feedback_influence,
+                "session_id": session_id,
+                "response_model": retriever_specific_config.get("response_model", str),
+                "neighborhood_depth": neighborhood_depth,
+                "neighborhood_seed_top_k": neighborhood_seed_top_k,
+                "include_global_context_index": retriever_specific_config.get(
+                    "include_global_context_index", False
+                ),
+                "global_context_index_top_k": retriever_specific_config.get(
+                    "global_context_index_top_k", 3
+                ),
+                "include_references": include_references,
+            },
+        ),
+        SearchType.GRAPH_COMPLETION_DECOMPOSITION: (
+            GraphCompletionDecompositionRetriever,
+            {
+                "system_prompt_path": system_prompt_path,
+                "top_k": top_k,
+                "node_type": node_type,
+                "node_name": node_name,
+                "node_name_filter_operator": node_name_filter_operator,
+                "system_prompt": system_prompt,
+                "wide_search_top_k": wide_search_top_k,
+                "triplet_distance_penalty": triplet_distance_penalty,
+                "feedback_influence": feedback_influence,
+                "session_id": session_id,
+                "response_model": retriever_specific_config.get("response_model", str),
+                "neighborhood_depth": neighborhood_depth,
+                "neighborhood_seed_top_k": neighborhood_seed_top_k,
+                "decomposition_mode": retriever_specific_config.get(
+                    "decomposition_mode", "answer_per_subquery"
+                ),
+                "include_references": include_references,
+            },
+        ),
+        SearchType.GRAPH_COMPLETION_COT: (
+            GraphCompletionCotRetriever,
+            {
+                "system_prompt_path": system_prompt_path,
+                "top_k": top_k,
+                "node_type": node_type,
+                "node_name": node_name,
+                "node_name_filter_operator": node_name_filter_operator,
+                "system_prompt": system_prompt,
+                "wide_search_top_k": wide_search_top_k,
+                "triplet_distance_penalty": triplet_distance_penalty,
+                "feedback_influence": feedback_influence,
+                "max_iter": retriever_specific_config.get("max_iter", 4),
+                "validation_system_prompt_path": retriever_specific_config.get(
+                    "validation_system_prompt_path", "cot_validation_system_prompt.txt"
+                ),
+                "validation_user_prompt_path": retriever_specific_config.get(
+                    "validation_user_prompt_path", "cot_validation_user_prompt.txt"
+                ),
+                "followup_system_prompt_path": retriever_specific_config.get(
+                    "followup_system_prompt_path", "cot_followup_system_prompt.txt"
+                ),
+                "followup_user_prompt_path": retriever_specific_config.get(
+                    "followup_user_prompt_path", "cot_followup_user_prompt.txt"
+                ),
+                "session_id": session_id,
+                "response_model": retriever_specific_config.get("response_model", str),
+                "neighborhood_depth": neighborhood_depth,
+                "neighborhood_seed_top_k": neighborhood_seed_top_k,
+                "include_references": include_references,
+            },
+        ),
+        SearchType.GRAPH_COMPLETION_CONTEXT_EXTENSION: (
+            GraphCompletionContextExtensionRetriever,
+            {
+                "system_prompt_path": system_prompt_path,
+                "top_k": top_k,
+                "node_type": node_type,
+                "node_name": node_name,
+                "node_name_filter_operator": node_name_filter_operator,
+                "system_prompt": system_prompt,
+                "wide_search_top_k": wide_search_top_k,
+                "triplet_distance_penalty": triplet_distance_penalty,
+                "feedback_influence": feedback_influence,
+                "context_extension_rounds": retriever_specific_config.get(
+                    "context_extension_rounds", 4
+                ),
+                "session_id": session_id,
+                "response_model": retriever_specific_config.get("response_model", str),
+                "neighborhood_depth": neighborhood_depth,
+                "neighborhood_seed_top_k": neighborhood_seed_top_k,
+                "include_references": include_references,
+            },
+        ),
+        SearchType.GRAPH_SUMMARY_COMPLETION: (
+            GraphSummaryCompletionRetriever,
+            {
+                "system_prompt_path": system_prompt_path,
+                "top_k": top_k,
+                "node_type": node_type,
+                "node_name": node_name,
+                "node_name_filter_operator": node_name_filter_operator,
+                "system_prompt": system_prompt,
+                "wide_search_top_k": wide_search_top_k,
+                "triplet_distance_penalty": triplet_distance_penalty,
+                "feedback_influence": feedback_influence,
+                "session_id": session_id,
+                "summarize_prompt_path": retriever_specific_config.get(
+                    "summarize_prompt_path", "summarize_search_results.txt"
+                ),
+                "include_references": include_references,
+            },
+        ),
+        SearchType.CYPHER: (
+            CypherSearchRetriever,
+            {
+                "user_prompt_path": retriever_specific_config.get(
+                    "user_prompt_path", "context_for_question.txt"
+                ),
+                "system_prompt_path": retriever_specific_config.get(
+                    "system_prompt_path", "answer_simple_question.txt"
+                ),
+                "session_id": session_id,
+            },
+        ),
+        SearchType.NATURAL_LANGUAGE: (
+            NaturalLanguageRetriever,
+            {
+                "session_id": session_id,
+                "system_prompt_path": retriever_specific_config.get(
+                    "system_prompt_path", "natural_language_retriever_system.txt"
+                ),
+                "max_attempts": retriever_specific_config.get("max_attempts", 3),
+            },
+        ),
+        SearchType.TEMPORAL: (
+            TemporalHybridRetriever,
+            {
+                # Hybrid runs with a larger candidate set (4x top_k unless configured) so
+                # the temporal filter has something left after it drops off-window chunks.
+                "candidate_top_k": retriever_specific_config.get("candidate_top_k"),
+                "top_k": top_k,
+                "max_edges_per_entity": retriever_specific_config.get("max_edges_per_entity", 10),
+                "node_name": node_name,
+                "node_name_filter_operator": node_name_filter_operator,
+                "system_prompt_path": system_prompt_path,
+                "system_prompt": system_prompt,
+                "session_id": session_id,
+                "response_model": retriever_specific_config.get("response_model", str),
+                "use_importance_weight": retriever_specific_config.get(
+                    "use_importance_weight", True
+                ),
+                "use_truth_weight": retriever_specific_config.get("use_truth_weight", False),
+                "include_references": include_references,
+                "include_external_metadata": retriever_specific_config.get(
+                    "include_external_metadata", False
+                ),
+                # Same option HYBRID_COMPLETION forwards: without it the inherited
+                # projection sees an empty key list and strips the metadata the
+                # caller asked for as soon as the question names a date.
+                "external_metadata_keys": retriever_specific_config.get("external_metadata_keys"),
+            },
+        ),
+        SearchType.CHUNKS_LEXICAL: (BM25ChunksRetriever, {"top_k": top_k}),
+        SearchType.GRAPH_REPORT: (GraphReportRetriever, {"top_n": top_k}),
+        SearchType.CODING_RULES: (
+            CodingRulesRetriever,
+            {"rules_nodeset_name": node_name},
+        ),
+    }
+
+    # Build AgenticRetriever only when explicitly requested. Other graph-completion
+    # variants keep their existing retrievers even when retriever-specific config
+    # contains skill/tool-looking keys.
+    has_skills = bool(retriever_specific_config.get("skills"))
+    has_tools = retriever_specific_config.get("tools") is not None
+    if query_type is not SearchType.AGENTIC_COMPLETION and (has_skills or has_tools):
+        raise UnsupportedSearchTypeError(
+            "skills/tools are supported only with SearchType.AGENTIC_COMPLETION"
+        )
+
+    if query_type is SearchType.AGENTIC_COMPLETION:
+        dataset_id = dataset.id if dataset is not None else None
+        user = kwargs.get("user")
+        try:
+            user = user or session_user.get()
+        except LookupError:
+            pass
+
+        return AgenticRetriever(
+            skills=retriever_specific_config.get("skills"),
+            tools=retriever_specific_config.get("tools"),
+            user=user,
+            dataset=dataset,
+            dataset_id=dataset_id,
+            max_iter=retriever_specific_config.get("max_iter", 6),
+            agentic_system_prompt_path=retriever_specific_config.get(
+                "agentic_system_prompt_path", "agentic_system.txt"
+            ),
+            agentic_user_prompt_path=retriever_specific_config.get(
+                "agentic_user_prompt_path", "agentic_user.txt"
+            ),
+            system_prompt_path=system_prompt_path,
+            system_prompt=system_prompt,
+            top_k=top_k,
+            node_type=node_type,
+            node_name=node_name,
+            node_name_filter_operator=node_name_filter_operator,
+            wide_search_top_k=wide_search_top_k,
+            triplet_distance_penalty=triplet_distance_penalty,
+            feedback_influence=feedback_influence,
+            session_id=session_id,
+            response_model=retriever_specific_config.get("response_model", str),
+            neighborhood_depth=neighborhood_depth,
+            neighborhood_seed_top_k=neighborhood_seed_top_k,
+            include_references=include_references,
+        )
+
+    # If the query type is FEELING_LUCKY, select the search type intelligently
+    if query_type is SearchType.FEELING_LUCKY:
+        query_type = await select_search_type(query_text)
+
+    if query_type in CYPHER_SEARCH_TYPES and not cypher_queries_allowed():
+        logger.warning(CYPHER_DISABLED_LOG_MESSAGE.format(search_type=query_type.value))
+        raise SearchTypeDisabledError(
+            query_type.value,
+            message=CYPHER_DISABLED_MESSAGE.format(search_type=query_type.value),
+            remediation=CYPHER_DISABLED_REMEDIATION,
+            log=False,
+        )
+
+    from cognee.modules.retrieval.registered_community_retrievers import (
+        registered_community_retrievers,
+    )
+
+    if query_type in registered_community_retrievers:
+        retriever = registered_community_retrievers.get(query_type)
+
+        if not retriever:
+            raise UnsupportedSearchTypeError(str(query_type))
+        # TODO: Fix community retrievers on the community side so they get all input parameters properly
+        retriever_instance = retriever(**kwargs)
+    else:
+        retriever_info = search_core_registry.get(query_type)
+        # Check if retriever info is found for the given query type
+        if not retriever_info:
+            raise UnsupportedSearchTypeError(str(query_type))
+
+        # If it exists unpack the retriever class and its initialization arguments
+        retriever_cls, retriever_args = retriever_info
+
+        retriever_instance = retriever_cls(**retriever_args)
+
+    return retriever_instance

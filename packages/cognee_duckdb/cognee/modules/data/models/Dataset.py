@@ -1,0 +1,59 @@
+"""Map dataset identity, ownership, permissions and dataset-scoped data references."""
+
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, List
+from uuid import uuid4
+
+from sqlalchemy import Column, DateTime, Text, Uuid
+from sqlalchemy.orm import Mapped, relationship
+
+from cognee.infrastructure.databases.relational import Base
+
+if TYPE_CHECKING:
+    from .Data import Data
+
+
+class Dataset(Base):
+    """Keep dataset metadata and read-only membership over scoped data rows."""
+
+    __tablename__ = "datasets"
+
+    id = Column(Uuid, primary_key=True, default=uuid4)
+
+    name = Column(Text)
+
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
+
+    owner_id = Column(Uuid, index=True)
+    tenant_id = Column(Uuid, index=True, nullable=True)
+
+    acls = relationship("ACL", back_populates="dataset", cascade="all, delete-orphan")
+    configuration = relationship(
+        "DatasetConfiguration",
+        back_populates="dataset",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+    # Data rows are dataset-scoped (Data.dataset_id); this is a read-only view
+    # over that column — membership no longer has its own table. Writes go
+    # through Data.dataset_id directly.
+    data: Mapped[List["Data"]] = relationship(
+        "Data",
+        primaryjoin="Dataset.id == foreign(Data.dataset_id)",
+        lazy="noload",
+        viewonly=True,
+    )
+
+    def to_json(self) -> dict:
+        """Serialize this dataset's stored metadata and currently loaded data records."""
+        return {
+            "id": str(self.id),
+            "name": self.name,
+            "createdAt": self.created_at.isoformat(),
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+            "ownerId": str(self.owner_id),
+            "tenantId": str(self.tenant_id),
+            "data": [data.to_json() for data in self.data],
+        }

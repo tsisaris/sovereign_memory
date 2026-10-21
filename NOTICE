@@ -1,0 +1,11 @@
+sovereign_memory
+Copyright 2026
+
+This product includes software developed by:
+- Cognee (version 1.6.5), licensed under Apache-2.0
+- graphiti-core (version 0.31.1), licensed under Apache-2.0
+- mem0ai (version 2.2.1 and 1.0.11), licensed under Apache-2.0
+- letta (version 0.16.8), licensed under Apache-2.0
+- duckdb (version 1.5.6), licensed under MIT
+- duckdb_engine (version 0.17.0), licensed under MIT
+- cognee-community-hybrid-adapter-duckdb (version 0.2.0), licensed under Apache-2.0

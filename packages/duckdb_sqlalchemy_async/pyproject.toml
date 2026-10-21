@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "duckdb_sqlalchemy_async"
+version = "0.1.0"
+description = "Asynchronous SQLAlchemy dialect for DuckDB."
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb==1.5.6",
+    "duckdb-engine==0.17.0",
+    "sqlalchemy==2.0.39",
+    "alembic==1.13.3"
+]
+
+[project.entry-points."sqlalchemy.dialects"]
+"duckdb.aio" = "duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_dialect:DuckDBAsyncDialect"
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "duckdb_sqlalchemy_async/**/*.py" },
+]

@@ -1,0 +1,125 @@
+"""Declare storage operations and the default batch-search implementation."""
+
+from abc import ABC, abstractmethod
+from typing import Any, List
+
+
+class VectorStoreBase(ABC):
+    """Describe vector persistence and search without selecting a storage engine."""
+
+    @abstractmethod
+    def create_col(self, *args: Any, **kwargs: Any):
+        """Create a new collection.
+
+        Implementations take different arguments (a name, a vector size and a distance, or only
+        the settings given at construction), so the abstract signature accepts any.
+        """
+        pass
+
+    @abstractmethod
+    def insert(self, *args: Any, **kwargs: Any):
+        """Insert vectors into a collection.
+
+        The usual call is insert(vectors, payloads=None, ids=None); some implementations add
+        arguments, so the abstract signature accepts any.
+        """
+        pass
+
+    @abstractmethod
+    def search(self, query, vectors, top_k=5, filters=None):
+        """Search for similar vectors.
+
+        All implementations must return similarity scores where higher values
+        indicate greater similarity (range [0, 1] preferred). Implementations
+        using distance metrics must convert to similarity before returning:
+        - Cosine distance: score = max(0.0, 1.0 - distance)
+        - L2 distance: score = 1.0 / (1.0 + distance)
+        - Inner product: score = value (already higher = better)
+        """
+        pass
+
+    @abstractmethod
+    def delete(self, vector_id):
+        """Delete a vector by ID."""
+        pass
+
+    @abstractmethod
+    def update(self, vector_id, vector=None, payload=None):
+        """Update a vector and its payload."""
+        pass
+
+    @abstractmethod
+    def get(self, vector_id):
+        """Retrieve a vector by ID."""
+        pass
+
+    @abstractmethod
+    def list_cols(self):
+        """List all collections."""
+        pass
+
+    @abstractmethod
+    def delete_col(self):
+        """Delete a collection."""
+        pass
+
+    @abstractmethod
+    def col_info(self, *args: Any, **kwargs: Any):
+        """Get information about a collection.
+
+        Some implementations take a collection name, so the abstract signature accepts any.
+        """
+        pass
+
+    @abstractmethod
+    def list(self, filters=None, top_k=None):
+        """List all memories."""
+        pass
+
+    @abstractmethod
+    def reset(self):
+        """Reset by delete the collection and recreate it."""
+        pass
+
+    def keyword_search(self, query: str, top_k: int = 5, filters: dict = None):
+        """Keyword/BM25 full-text search. Returns None if not supported by this store.
+
+        Override in subclasses that support native keyword/BM25 search.
+        Returns results in the same format as search() -- list of objects with
+        id, score, and payload attributes.
+
+        Args:
+            query: The search query text (should be lemmatized for best results).
+            top_k: Maximum number of results to return.
+            filters: Optional metadata filters (same format as search filters).
+
+        Returns:
+            List of search results with id, score, payload, or None if not supported.
+        """
+        return None
+
+    def search_batch(
+        self,
+        queries: List[str],
+        vectors_list: List[List[float]],
+        top_k: int = 1,
+        filters: dict = None,
+    ):
+        """Batch search for multiple queries at once.
+
+        Default implementation calls search() sequentially. Override in subclasses
+        with native batch support (e.g., Qdrant query_batch_points).
+
+        Args:
+            queries: List of query texts.
+            vectors_list: List of query vectors (one per query).
+            top_k: Maximum results per query.
+            filters: Optional metadata filters applied to all queries.
+
+        Returns:
+            List of result lists, one per query.
+        """
+        return [
+            self.search(q, v, top_k=top_k, filters=filters)
+            for q, v in zip(queries, vectors_list, strict=True)
+        ]

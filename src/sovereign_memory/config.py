@@ -1,0 +1,308 @@
+"""Deployment configuration of the Sovereign Memory Owner runtime, read and checked early.
+
+The runtime takes every deployment choice from one TOML file: where the socket
+and database live, request and shutdown bounds, who shares the memory pool, and
+which tier engines to run, the models to register (as rows of data), and the
+four tunable search settings. Nothing here has a default for a model, a bound or
+a tuning number: a missing or unknown key, a wrong type or a tier that cannot be
+built is a ConfigurationError that names the key, and the service never starts on
+a half-valid file. It reads only the file and environment variable names the file
+points to; it never opens the database, calls a model or touches the network.
+"""
+
+import math
+import os
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    from mem0.configs.base import MemoryConfig
+
+TIER_KEYS = ("episodic", "temporal", "relational", "personalization")
+
+
+class ConfigurationError(ValueError):
+    """The configuration file is missing, unreadable or invalid; the message names the key."""
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    """Everything the runtime needs, validated; the tier fields are None when not configured."""
+
+    socket_path: Path
+    database_path: Path
+    max_request_bytes: int
+    drain_timeout_seconds: float
+    maintenance_interval_seconds: float
+    pool_scope_labels: frozenset[str]
+    episodic_organization: str | None
+    temporal_enabled: bool
+    relational_database_name: str | None
+    relational_embedding_model: tuple[str, str] | None
+    ranking: dict[str, Any] | None
+    models: tuple[dict[str, Any], ...]
+    personalization: "MemoryConfig | None"
+    supplier: dict[str, Any] | None
+
+
+def _take(
+    table: Any, where: str, required: tuple[str, ...], optional: tuple[str, ...] = ()
+) -> dict:
+    """Return table as a dict after checking it has every required key and no unknown one."""
+    if not isinstance(table, dict):
+        raise ConfigurationError(f"[{where}] must be a table")
+    missing = [key for key in required if key not in table]
+    if missing:
+        raise ConfigurationError(f"[{where}] is missing: {', '.join(missing)}")
+    unknown = sorted(set(table) - set(required) - set(optional))
+    if unknown:
+        raise ConfigurationError(f"[{where}] has unknown keys: {', '.join(unknown)}")
+    return table
+
+
+def _text(table: dict, where: str, key: str) -> str:
+    """Return a non-empty string value or raise ConfigurationError naming the key."""
+    value = table[key]
+    if not isinstance(value, str) or not value:
+        raise ConfigurationError(f"{where}.{key} must be a non-empty string")
+    return value
+
+
+def _positive(table: dict, where: str, key: str, integer: bool) -> float:
+    """Return a finite positive number (an integer when asked) or raise ConfigurationError."""
+    value = table[key]
+    kinds = int if integer else (int, float)
+    if isinstance(value, bool) or not isinstance(value, kinds) or value <= 0:
+        raise ConfigurationError(
+            f"{where}.{key} must be a positive {'integer' if integer else 'number'}"
+        )
+    try:
+        finite = math.isfinite(value)
+    except OverflowError as error:
+        raise ConfigurationError(f"{where}.{key} is too large for a runtime bound") from error
+    if not finite:
+        raise ConfigurationError(f"{where}.{key} must be finite")
+    return value
+
+
+def _embedding_model(table: Any, where: str) -> tuple[str, str]:
+    """Read which registered model revision Cognee's own embedder object is bound to.
+
+    The table names a model id and a revision only; the model itself is a row in the
+    registry, never code, and the embedder answers from received numbers.
+    """
+    table = _take(table, where, ("model_id", "revision"))
+    return _text(table, where, "model_id"), _text(table, where, "revision")
+
+
+def _ranking(table: Any) -> dict[str, Any]:
+    """Read the four search settings table; every setting is required and none has a default.
+
+    Types and ranges are checked by the Owner when it is built, which raises a
+    named error; here the shape (exactly these four keys) is enforced.
+    """
+    return dict(
+        _take(
+            table,
+            "ranking",
+            ("comparison_score", "held_back_share", "smallest_held_back_set", "merging_constant"),
+        )
+    )
+
+
+def _models(rows: Any) -> tuple[dict[str, Any], ...]:
+    """Read the [[models]] rows to register at start: id, revision, width, kind, supplier collection and recipe."""
+    if not isinstance(rows, list):
+        raise ConfigurationError("[[models]] must be an array of tables")
+    result = []
+    for index, row in enumerate(rows):
+        where = f"models[{index}]"
+        row = _take(
+            row,
+            where,
+            ("model_id", "revision", "width", "kind", "supplier_collection", "supplier_recipe"),
+        )
+        _positive(row, where, "width", True)
+        for key in ("model_id", "revision", "kind", "supplier_collection", "supplier_recipe"):
+            _text(row, where, key)
+        result.append(dict(row))
+    return tuple(result)
+
+
+def _supplier(table: Any) -> dict[str, Any]:
+    """Read the [supplier] table: where agent_corpus answers, who memory says it is, the time limit.
+
+    Every key is required and none has a default; the time limit must be a positive number.
+    """
+    table = dict(_take(table, "supplier", ("base_url", "requester_agent_id", "timeout_seconds")))
+    _text(table, "supplier", "base_url")
+    _text(table, "supplier", "requester_agent_id")
+    _positive(table, "supplier", "timeout_seconds", False)
+    return table
+
+
+def _personalization(table: Any) -> "MemoryConfig":
+    """Read the Mem0 table: llm, embedder and vector_store are required, the vector store is DuckDB."""
+    where = "tiers.personalization"
+    table = _take(table, where, ("memory",))
+    memory = _take(
+        table["memory"],
+        f"{where}.memory",
+        ("llm", "embedder", "vector_store", "enable_update_delete_branches"),
+        ("custom_fact_extraction_prompt", "custom_update_memory_prompt", "custom_instructions"),
+    )
+    for engine in ("llm", "embedder"):
+        engine_path = f"{where}.memory.{engine}"
+        required = (
+            ("provider", "config", "revision") if engine == "embedder" else ("provider", "config")
+        )
+        settings = _take(memory[engine], engine_path, required)
+        _text(settings, engine_path, "provider")
+        if engine == "embedder":
+            _text(settings, engine_path, "revision")
+        if not isinstance(settings["config"], dict):
+            raise ConfigurationError(f"{engine_path}.config must be a table")
+        if "model" not in settings["config"]:
+            raise ConfigurationError(f"{engine_path}.config is missing: model")
+        _text(settings["config"], f"{engine_path}.config", "model")
+    vector_path = f"{where}.memory.vector_store"
+    vector = _take(memory["vector_store"], vector_path, ("provider", "config"))
+    if _text(vector, vector_path, "provider") != "duckdb":
+        raise ConfigurationError(f"{vector_path}.provider must be duckdb")
+    vector_config = vector["config"]
+    if not isinstance(vector_config, dict):
+        raise ConfigurationError(f"{vector_path}.config must be a table")
+    if "embedding_model_dims" not in vector_config:
+        raise ConfigurationError(f"{vector_path}.config is missing: embedding_model_dims")
+    _positive(vector_config, f"{vector_path}.config", "embedding_model_dims", True)
+    from mem0.configs.base import MemoryConfig
+
+    try:
+        config = MemoryConfig.model_validate(memory)
+    except ValidationError as error:
+        raise ConfigurationError(f"{where}.memory is invalid: {error}") from error
+    if config.vector_store.provider != "duckdb":
+        raise ConfigurationError(f"{where}.memory.vector_store.provider must be duckdb")
+    if not config.enable_update_delete_branches:
+        raise ConfigurationError(
+            f"{where}.memory.enable_update_delete_branches must be true: the tier "
+            "refuses Mem0's ADD-only pipeline"
+        )
+    if config.embedder.provider != "received_numbers":
+        raise ConfigurationError(
+            f"{where}.memory.embedder.provider must be received_numbers: "
+            "memory never makes numbers, so no model-calling embedder is accepted"
+        )
+    options = config.embedder.config
+    received = options.get("received_numbers")
+    if (
+        not isinstance(received, dict)
+        or received.get("revision") != config.embedder.revision
+        or type(options.get("embedding_dims")) is not int
+        or options["embedding_dims"] != config.vector_store.config.embedding_model_dims
+    ):
+        raise ConfigurationError(
+            f"{where}.memory.embedder must match the declared revision and vector-store dimensions"
+        )
+    return config
+
+
+def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
+    """Validate parsed TOML and return the RuntimeConfig; relative paths resolve against base."""
+    data = _take(
+        data, "file", ("service", "tiers"), ("visibility", "ranking", "models", "supplier")
+    )
+    service = _take(
+        data["service"],
+        "service",
+        (
+            "socket_path",
+            "database_path",
+            "max_request_bytes",
+            "drain_timeout_seconds",
+            "maintenance_interval_seconds",
+        ),
+    )
+    visibility = _take(data.get("visibility", {}), "visibility", (), ("pool_scope_labels",))
+    labels = visibility.get("pool_scope_labels", [])
+    if not isinstance(labels, list) or not all(isinstance(x, str) and x for x in labels):
+        raise ConfigurationError("visibility.pool_scope_labels must be a list of non-empty strings")
+    tiers = _take(data["tiers"], "tiers", (), TIER_KEYS)
+    if not tiers:
+        raise ConfigurationError("[tiers] configures no tier; configure at least one")
+
+    organization = None
+    if "episodic" in tiers:
+        episodic = _take(tiers["episodic"], "tiers.episodic", ("organization_id",))
+        organization = _text(episodic, "tiers.episodic", "organization_id")
+    if "temporal" in tiers:
+        _take(tiers["temporal"], "tiers.temporal", ())
+    database_name, embedding_model = None, None
+    if "relational" in tiers:
+        relational = _take(
+            tiers["relational"], "tiers.relational", ("database_name",), ("embedding_model",)
+        )
+        database_name = _text(relational, "tiers.relational", "database_name")
+        if "embedding_model" in relational:
+            embedding_model = _embedding_model(
+                relational["embedding_model"], "tiers.relational.embedding_model"
+            )
+    memory = _personalization(tiers["personalization"]) if "personalization" in tiers else None
+    ranks_by_models = "relational" in tiers or "personalization" in tiers
+    if ranks_by_models and "ranking" not in data:
+        raise ConfigurationError(
+            "[ranking] is required when a tier ranks by models' numbers: declare "
+            "comparison_score, held_back_share, smallest_held_back_set and merging_constant"
+        )
+    ranking = _ranking(data["ranking"]) if "ranking" in data else None
+    models = _models(data.get("models", []))
+    supplier = _supplier(data["supplier"]) if "supplier" in data else None
+
+    # Keep a socket symlink visible to the service's lstat-based refusal.
+    socket_file = (base / _text(service, "service", "socket_path")).absolute()
+    database_file = (base / _text(service, "service", "database_path")).resolve()
+    if socket_file.resolve() == database_file or (
+        socket_file.exists()
+        and database_file.exists()
+        and os.path.samefile(socket_file, database_file)
+    ):
+        raise ConfigurationError("service.socket_path and service.database_path name the same file")
+
+    return RuntimeConfig(
+        socket_path=socket_file,
+        database_path=database_file,
+        max_request_bytes=int(_positive(service, "service", "max_request_bytes", True)),
+        drain_timeout_seconds=float(_positive(service, "service", "drain_timeout_seconds", False)),
+        maintenance_interval_seconds=float(
+            _positive(service, "service", "maintenance_interval_seconds", False)
+        ),
+        pool_scope_labels=frozenset(labels),
+        episodic_organization=organization,
+        temporal_enabled="temporal" in tiers,
+        relational_database_name=database_name,
+        relational_embedding_model=embedding_model,
+        ranking=ranking,
+        models=models,
+        personalization=memory,
+        supplier=supplier,
+    )
+
+
+def load(config_path: str | os.PathLike[str]) -> RuntimeConfig:
+    """Read and validate the TOML file at config_path.
+
+    Raises ConfigurationError for a missing file, invalid TOML or any invalid key.
+    """
+    path = Path(config_path).resolve()
+    try:
+        with open(path, "rb") as handle:
+            data = tomllib.load(handle)
+    except OSError as error:
+        raise ConfigurationError(f"Cannot read configuration {path}: {error}") from error
+    except tomllib.TOMLDecodeError as error:
+        raise ConfigurationError(f"Configuration {path} is not valid TOML: {error}") from error
+    return parse(data, path.parent)

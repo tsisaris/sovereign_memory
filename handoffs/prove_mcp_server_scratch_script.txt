@@ -1,0 +1,121 @@
+"""Scratch proof (not committed): the Graphiti MCP server run for real through an in-process MCP client."""
+
+import asyncio
+import json
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from graphiti_core.edges import EntityEdge, EpisodicEdge
+from graphiti_core.nodes import EntityNode, EpisodeType, EpisodicNode
+from mcp import Client
+
+from graphiti_duckdb.mcp_config import GraphitiConfig
+from graphiti_duckdb.mcp_server import GraphitiMcpServer, GraphitiService
+
+YAML = """
+server:
+  transport: http
+  host: 127.0.0.1
+  port: 8123
+  semaphore_limit: ${LIMIT:3}
+database:
+  path: {db}
+graphiti:
+  group_id: main
+  user_id: proof
+  entity_types:
+    - name: Person
+      description: a person
+    - name: Gadget
+      description: a gadget made up for this run
+"""
+
+
+def show(label, result):
+    """Print one tool answer in one line."""
+    data = result.structured_content if result.structured_content is not None else [c.text for c in result.content]
+    print(label, "->", json.dumps(data, default=str)[:400])
+
+
+async def main() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        db = str(Path(tmp) / "graph.duckdb")
+        cfg_path = Path(tmp) / "settings.yaml"
+        cfg_path.write_text(YAML.replace("{db}", db))
+        config = GraphitiConfig.from_yaml(cfg_path)
+        print("1 settings read:", config.server.model_dump(), config.graphiti.group_id)
+        for bad in ("server:\n  transport: http\n", "server:\n  transport: carrier-pigeon\n  host: h\n  port: 1\n  semaphore_limit: 1\ndatabase:\n  path: x\ngraphiti:\n  group_id: g\n  user_id: u\n"):
+            bad_path = Path(tmp) / "bad.yaml"
+            bad_path.write_text(bad)
+            try:
+                GraphitiConfig.from_yaml(bad_path)
+                print("2 bad settings NOT REFUSED")
+            except (ValueError, FileNotFoundError) as error:
+                print("2 bad settings refused:", str(error).splitlines()[0][:90])
+        try:
+            GraphitiConfig.from_yaml(Path(tmp) / "missing.yaml")
+        except FileNotFoundError as error:
+            print("3 missing file refused:", error)
+
+        service = GraphitiService(config)
+        server = GraphitiMcpServer(config, service)
+        await server.start()
+        client = await service.get_client()
+        driver = client.driver
+
+        now = datetime.now(timezone.utc)
+        ada = EntityNode(name="Ada", group_id="main", labels=["Entity", "Person"], created_at=now, summary="a mathematician", name_embedding=[0.1, 0.2, 0.3])
+        gadget = EntityNode(name="Engine", group_id="main", labels=["Entity"], created_at=now, summary="a machine", name_embedding=[0.3, 0.2, 0.1])
+        await ada.save(driver)
+        await gadget.save(driver)
+        fact = EntityEdge(name="DESIGNED", fact="Ada designed the Engine", group_id="main", source_node_uuid=ada.uuid, target_node_uuid=gadget.uuid, created_at=now, valid_at=now, fact_embedding=[0.2, 0.2, 0.2], episodes=[])
+        episode = EpisodicNode(name="notes", group_id="main", source=EpisodeType.text, source_description="proof", content="Ada designed the Engine.", created_at=now, valid_at=now, entity_edges=[fact.uuid])
+        await episode.save(driver)
+        fact.episodes = [episode.uuid]
+        await fact.save(driver)
+        await EpisodicEdge(source_node_uuid=episode.uuid, target_node_uuid=ada.uuid, group_id="main", created_at=now).save(driver)
+        await EpisodicEdge(source_node_uuid=episode.uuid, target_node_uuid=gadget.uuid, group_id="main", created_at=now).save(driver)
+        print("4 seeded 2 entities, 1 fact, 1 episode directly through the graph classes")
+
+        async with Client(server.mcp) as mcp_client:
+            tools = sorted(tool.name for tool in (await mcp_client.list_tools()).tools)
+            print("5 tools listed:", len(tools), tools)
+            show("6 get_status", await mcp_client.call_tool("get_status", {}))
+            show("7 get_episodes (default group)", await mcp_client.call_tool("get_episodes", {}))
+            show("8 get_episodes (other group)", await mcp_client.call_tool("get_episodes", {"group_ids": "nobody"}))
+            show("9 get_entity_edge", await mcp_client.call_tool("get_entity_edge", {"uuid": fact.uuid}))
+            show("10 get_entity_edge unknown uuid", await mcp_client.call_tool("get_entity_edge", {"uuid": "nope"}))
+            show("11 get_episode_entities", await mcp_client.call_tool("get_episode_entities", {"episode_uuids": [episode.uuid]}))
+            show("12 get_episode_entities empty list", await mcp_client.call_tool("get_episode_entities", {"episode_uuids": []}))
+            show("13 search_nodes without an embedder", await mcp_client.call_tool("search_nodes", {"query": "Ada"}))
+            show("14 search_memory_facts bad max_facts", await mcp_client.call_tool("search_memory_facts", {"query": "x", "max_facts": 0}))
+            show("15 search_memory_facts bad date", await mcp_client.call_tool("search_memory_facts", {"query": "x", "valid_at_after": "yesterday-ish"}))
+            show("16 search_memory_facts without an embedder", await mcp_client.call_tool("search_memory_facts", {"query": "x"}))
+            show("17 add_triplet without an embedder", await mcp_client.call_tool("add_triplet", {"source_node_name": "A", "edge_name": "R", "fact": "A relates to B", "target_node_name": "B"}))
+            show("18 summarize_saga unknown saga", await mcp_client.call_tool("summarize_saga", {"saga_name": "none"}))
+            show("19 build_communities without a model", await mcp_client.call_tool("build_communities", {}))
+            show("20 add_memory bad time", await mcp_client.call_tool("add_memory", {"name": "n", "episode_body": "b", "reference_time": "not a time"}))
+            show("21 add_memory queued", await mcp_client.call_tool("add_memory", {"name": "queued note", "episode_body": "Grace likes compilers.", "source": "text"}))
+            await server.queue.wait_until_idle("main")
+            show("22 add_memory failed in background (no model) -> episodes still", await mcp_client.call_tool("get_episodes", {}))
+            show("23 delete_entity_edge", await mcp_client.call_tool("delete_entity_edge", {"uuid": fact.uuid}))
+            show("24 get_entity_edge after delete", await mcp_client.call_tool("get_entity_edge", {"uuid": fact.uuid}))
+            show("25 delete_episode (cascade)", await mcp_client.call_tool("delete_episode", {"uuid": episode.uuid}))
+            show("26 get_episodes after delete", await mcp_client.call_tool("get_episodes", {}))
+            show("27 clear_graph other group", await mcp_client.call_tool("clear_graph", {"group_ids": "nobody"}))
+            show("28 ada still there after other-group clear", await mcp_client.call_tool("get_episode_entities", {"episode_uuids": ["x"]}))
+            show("29 clear_graph blank group falls back to default", await mcp_client.call_tool("clear_graph", {"group_ids": ""}))
+            rows = driver.conn.execute("select count(*) from graphiti.graph_node").fetchone()
+            print("30 graph nodes left after clearing default group:", rows)
+
+        await server.stop()
+        reopened = GraphitiService(config)
+        again = await reopened.get_client()
+        print("31 reopened the same file after a restart, nodes:", again.driver.conn.execute("select count(*) from graphiti.graph_node").fetchone())
+        await reopened.close()
+        health = await server.health_check(None)
+        print("32 health:", health.body)
+
+
+asyncio.run(main())

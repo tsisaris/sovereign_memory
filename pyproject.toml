@@ -3,18 +3,71 @@
 # already made in sovereign/pyproject.toml and portable/analyser_roster.json;
 # change them in the template, never here, and every project follows.
 
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
 [project]
 name = "sovereign_memory"
 version = "0.1.0"
 description = "One large, connected, seamless local memory system on DuckDB: every useful kind of memory welded into one suite that works with DuckDB, a true superset of Letta, Zep/Graphiti, Cognee and Mem0, modular so new kinds of memory can be added as they appear, free and open for everyone to use and maintain."
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.14"
 # The packages this project's code needs, as name==version, one per line.
-dependencies = []
+dependencies = [
+    "duckdb==1.5.6",
+    "sqlalchemy==2.0.39",
+    "pydantic==2.14.1",
+    "mem0_duckdb==0.1.0",
+    "sovereign-memory-owner==0.1.0",
+]
+
+[project.scripts]
+sovereign-memory = "sovereign_memory.runtime:main"
+
+# The runtime in src/sovereign_memory installs as the package sovereign_memory.
+[tool.hatch.build.targets.wheel]
+packages = ["src/sovereign_memory"]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "src/sovereign_memory/**/*" },
+]
+# The advisory group's semgrep needs mcp 1.23.3; the Graphiti MCP server needs mcp 2.2.0.
+# The two groups are never installed together (the workflow syncs "dev" and, in a separate
+# job, "--only-group advisory"), so each resolves on its own.
+conflicts = [
+    [
+        { group = "advisory" },
+        { group = "dev" },
+    ],
+    [
+        { group = "advisory" },
+        { package = "graphiti-duckdb", extra = "mcp-server" },
+    ],
+]
+
+[tool.uv.sources]
+cognee = { workspace = true }
+mem0_duckdb = { workspace = true }
+letta_memory_model = { workspace = true }
+graphiti-duckdb = { workspace = true }
+duckdb_sqlalchemy_async = { workspace = true }
+sovereign-memory-owner = { workspace = true }
+
+[tool.uv.workspace]
+members = ["packages/*"]
 
 [dependency-groups]
 # The gating checkers, pinned to the versions the laptop's sovereign_tools
 # environment holds, so the laptop, GitHub and Jules give the same verdict.
 dev = [
+    "duckdb_sqlalchemy_async==0.1.0",
+    "cognee==1.6.5",
+    "mem0_duckdb==0.1.0",
+    "letta_memory_model==0.1.0",
+    "graphiti-duckdb[mcp-server]==0.1.0",
+    "sovereign-memory-owner==0.1.0",
     "pre-commit==4.6.2",
     "ruff==0.16.2",
     "mypy==2.3.0",
@@ -24,6 +77,7 @@ dev = [
     "deptry==0.25.1",
     "pytest==9.1.1",
     "coverage==7.15.4",
+    "pytest-asyncio==1.4.0",
 ]
 # Reported, never blocking.
 advisory = [
@@ -52,7 +106,7 @@ select = [
 ]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 ignore_missing_imports = true
 check_untyped_defs = true
 # Classes ruled ADVISORY in sovereign/pyproject.toml (no birth case yet).
@@ -66,7 +120,7 @@ disable_error_code = [
 exclude = ["^data/sovereign/", "^local/"]
 
 [tool.pyright]
-pythonVersion = "3.10"
+pythonVersion = "3.12"
 # Gating class: reportUndefinedVariable (UC-5). Nothing else gates.
 typeCheckingMode = "off"
 reportUndefinedVariable = "error"
@@ -87,7 +141,7 @@ exclude = [".venv", ".git", "data/sovereign", "local"]
 
 # The advisory checkers are run by name, never imported; naming their modules
 # stops deptry guessing, and the GitHub check fails on any line where it guesses.
-package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "semgrep" }
+package_module_name_map = { vulture = "vulture", radon = "radon", semgrep = "semgrep", mem0_duckdb = "mem0", sovereign-memory-owner = "service" }
 
 [tool.deptry.per_rule_ignores]
 # The test runner is declared as a development package and imported by tests.

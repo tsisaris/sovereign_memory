@@ -1,0 +1,357 @@
+"""Create (and cache) the vector engine for the configured provider, with the embedding engine and options it needs.
+
+Goes in: the vector settings; comes out: a vector engine. It builds the engine object but runs no
+query itself.
+"""
+
+import importlib.util
+import inspect
+import os
+from numbers import Number
+from typing import Any
+
+from cognee.infrastructure.databases.dataset_queue.pinning import dataset_queue_pin_predicate
+from cognee.infrastructure.databases.utils.closing_lru_cache import closing_lru_cache
+from cognee.infrastructure.databases.utils.engine_cache_ops import EngineCacheOps
+from cognee.shared.logging_utils import get_logger
+from cognee.shared.lru_cache import DATABASE_MAX_LRU_CACHE_SIZE
+
+from .embeddings import EmbeddingGateway, get_embedding_engine
+from .supported_databases import supported_databases
+
+logger = get_logger("VectorEngine")
+
+
+def _get_create_vector_engine_optional_defaults() -> dict:
+    """Return default values for optional create_vector_engine parameters."""
+    signature = inspect.signature(create_vector_engine)
+    return {
+        name: parameter.default
+        for name, parameter in signature.parameters.items()
+        if parameter.default is not inspect.Parameter.empty
+    }
+
+
+def _normalize_optional_create_vector_engine_params(params: dict) -> dict:
+    """
+    Normalize optional create_vector_engine parameters:
+    - replace None with the function defaults
+    - convert numeric vector_db_port values to string.
+    """
+    defaults = _get_create_vector_engine_optional_defaults()
+    normalized = dict(params)
+
+    for key, default_value in defaults.items():
+        if normalized.get(key) is None:
+            normalized[key] = default_value
+
+    if isinstance(normalized.get("vector_db_port"), Number) and not isinstance(
+        normalized["vector_db_port"], bool
+    ):
+        normalized["vector_db_port"] = str(normalized["vector_db_port"])
+
+    if not normalized.get("vector_dataset_database_handler"):
+        # We use lancedb as the default, otherwise it is expected that the user defined VECTOR_DATASET_DATABASE_HANDLER
+        normalized["vector_dataset_database_handler"] = os.getenv(
+            "VECTOR_DATASET_DATABASE_HANDLER", "duckdb_vector"
+        )
+
+    return normalized
+
+
+def create_vector_engine(
+    vector_db_provider: str,
+    vector_db_url: str,
+    vector_db_name: str,
+    vector_db_port: str = "",
+    vector_db_key: str = "",
+    vector_dataset_database_handler: str = "",
+    vector_db_username: str = "",
+    vector_db_password: str = "",
+    vector_db_host: str = "",
+    vector_db_subprocess_enabled: bool = True,
+    vector_db_schema: str = "",
+):
+    """
+    Wrapper function to call create vector engine with caching.
+    For a detailed description, see _create_vector_engine.
+    """
+
+    normalized_optional_params = _normalize_optional_create_vector_engine_params(locals())
+    vector_db_port = normalized_optional_params["vector_db_port"]
+    vector_db_key = normalized_optional_params["vector_db_key"]
+    vector_dataset_database_handler = normalized_optional_params["vector_dataset_database_handler"]
+    vector_db_username = normalized_optional_params["vector_db_username"]
+    vector_db_password = normalized_optional_params["vector_db_password"]
+    vector_db_host = normalized_optional_params["vector_db_host"]
+    # ``vector_db_subprocess_enabled`` also went through normalization;
+    # reassign so callers passing ``None`` see the function-default applied
+    # instead of having ``None`` flow into the cache key + factory.
+    vector_db_subprocess_enabled = normalized_optional_params["vector_db_subprocess_enabled"]
+    vector_db_schema = normalized_optional_params["vector_db_schema"]
+
+    return _create_vector_engine(
+        vector_db_provider,
+        vector_db_url,
+        vector_db_name,
+        vector_db_port,
+        vector_db_key,
+        vector_dataset_database_handler,
+        vector_db_username,
+        vector_db_password,
+        vector_db_host,
+        vector_db_subprocess_enabled,
+        vector_db_schema,
+    )
+
+
+def _vector_engine_key_args(kwargs) -> tuple:
+    """Positional cache-key args for a ``create_vector_engine`` config dict,
+    normalized the way ``create_vector_engine`` normalizes them so the key
+    matches. The single place this knowledge lives — every cache operation
+    on ``vector_engine_cache`` routes through it."""
+    normalized = _normalize_optional_create_vector_engine_params(kwargs)
+    return (
+        kwargs.get("vector_db_provider", ""),
+        kwargs.get("vector_db_url", ""),
+        kwargs.get("vector_db_name", ""),
+        normalized["vector_db_port"],
+        normalized["vector_db_key"],
+        normalized["vector_dataset_database_handler"],
+        normalized["vector_db_username"],
+        normalized["vector_db_password"],
+        normalized["vector_db_host"],
+        normalized["vector_db_subprocess_enabled"],
+        normalized["vector_db_schema"],
+    )
+
+
+@closing_lru_cache(
+    maxsize=DATABASE_MAX_LRU_CACHE_SIZE,
+    pinned_predicate=dataset_queue_pin_predicate("vector_db_name"),
+)
+def _create_vector_engine(
+    vector_db_provider: str,
+    vector_db_url: str,
+    vector_db_name: str,
+    vector_db_port: str,
+    vector_db_key: str,
+    vector_dataset_database_handler: str,
+    vector_db_username: str,
+    vector_db_password: str,
+    vector_db_host: str,
+    vector_db_subprocess_enabled: bool,
+    vector_db_schema: str = "",
+):
+    """
+    Create a vector database engine based on the specified provider.
+
+    This function initializes and returns a database adapter for vector storage, depending
+    on the provided vector database provider. The function checks for required credentials
+    for each provider, raising an EnvironmentError if any are missing, or ImportError if the
+    provider's package is not installed.
+
+    Built-in providers include: pgvector, LanceDB, and neptune_analytics. Additional
+    providers (e.g. ChromaDB, Qdrant, Weaviate, Milvus) are available as community
+    adapters that register themselves via ``use_vector_adapter`` — see
+    https://github.com/topoteretes/cognee-community.
+
+    Parameters:
+    -----------
+
+        - vector_db_url (str): The URL for the vector database instance.
+        - vector_db_port (str): The port for the vector database instance. Required for some
+          providers.
+        - vector_db_name (str): The name of the vector database instance.
+        - vector_db_key (str): The API key or access token for the vector database instance.
+        - vector_db_provider (str): The name of the vector database provider to use (e.g.,
+          'pgvector').
+
+    Returns:
+    --------
+
+        An instance of the corresponding database adapter class for the specified provider.
+    """
+    if vector_db_provider == "duckdb" and vector_db_provider not in supported_databases:
+        from cognee_community_hybrid_adapter_duckdb.duckdb_adapter import DuckDBAdapter
+
+        from .use_vector_adapter import use_vector_adapter
+
+        use_vector_adapter("duckdb", DuckDBAdapter)
+
+    embedding_engine = EmbeddingGateway(get_embedding_engine())
+
+    if vector_db_provider in supported_databases:
+        adapter = supported_databases[vector_db_provider]
+
+        # Forward the connection details the wrapper already accepts so registered
+        # community adapters can reach a store on a non-default host/port or one that
+        # needs credentials. Adapters that don't need them accept **kwargs and ignore
+        # the extras, so this stays backwards-compatible.
+        return adapter(
+            url=vector_db_url,
+            api_key=vector_db_key,
+            embedding_engine=embedding_engine,
+            database_name=vector_db_name,
+            vector_db_host=vector_db_host,
+            vector_db_port=vector_db_port,
+            vector_db_username=vector_db_username,
+            vector_db_password=vector_db_password,
+        )
+
+    if vector_db_provider.lower() == "pgvector":
+        from cognee.context_global_variables import backend_access_control_enabled
+
+        if backend_access_control_enabled():
+            if not (
+                vector_db_host and vector_db_port and vector_db_username and vector_db_password
+            ):
+                raise OSError("Missing required pgvector credentials.")
+
+            connection_string: str = (
+                f"postgresql+asyncpg://{vector_db_username}:{vector_db_password}"
+                f"@{vector_db_host}:{vector_db_port}/{vector_db_name}"
+            )
+        else:
+            if (
+                vector_db_port
+                and vector_db_username
+                and vector_db_password
+                and vector_db_host
+                and vector_db_name
+            ):
+                connection_string = (
+                    f"postgresql+asyncpg://{vector_db_username}:{vector_db_password}"
+                    f"@{vector_db_host}:{vector_db_port}/{vector_db_name}"
+                )
+            else:
+                from cognee.infrastructure.databases.relational import get_relational_config
+
+                logger.warning(
+                    "PGVector credentials are not fully configured; "
+                    "falling back to the relational database configuration. "
+                    "Set VECTOR_DB_HOST/PORT/USERNAME/PASSWORD/NAME explicitly "
+                    "to avoid this fallback."
+                )
+
+                # Get configuration for postgres database
+                relational_config = get_relational_config()
+                db_username = relational_config.db_username
+                db_password = relational_config.db_password
+                db_host = relational_config.db_host
+                db_port = relational_config.db_port
+                db_name = relational_config.db_name
+
+                if not (db_host and db_port and db_name and db_username and db_password):
+                    raise OSError("Missing required pgvector credentials!")
+
+                connection_string = (
+                    f"postgresql+asyncpg://{db_username}:{db_password}"
+                    f"@{db_host}:{db_port}/{db_name}"
+                )
+
+        try:
+            from .pgvector.PGVectorAdapter import PGVectorAdapter
+        except ImportError:
+            raise ImportError(
+                "PostgreSQL dependencies are not installed. Please install with 'pip install cognee\"[postgres]\"' or 'pip install cognee\"[postgres-binary]\"' to use PGVector functionality."
+            )
+
+        # PGVectorAdapter is named through a variable typed Any: the type checker counts the interface
+        # methods that only carry a docstring as abstract, but at run time they are ordinary methods.
+        pgvector_class: Any = PGVectorAdapter
+        return pgvector_class(
+            connection_string,
+            vector_db_key,
+            embedding_engine,
+            schema=vector_db_schema,
+        )
+
+    elif vector_db_provider.lower() == "neptune_analytics":
+        if importlib.util.find_spec("langchain_aws") is None:
+            raise ImportError(
+                "langchain_aws is not installed. Please install it with 'pip install langchain_aws'"
+            )
+
+        if not vector_db_url:
+            raise OSError("Missing Neptune endpoint.")
+
+        from cognee.infrastructure.databases.hybrid.neptune_analytics.NeptuneAnalyticsAdapter import (
+            NEPTUNE_ANALYTICS_ENDPOINT_URL,
+            NeptuneAnalyticsAdapter,
+        )
+
+        if not vector_db_url.startswith(NEPTUNE_ANALYTICS_ENDPOINT_URL):
+            raise ValueError(
+                f"Neptune endpoint must have the format '{NEPTUNE_ANALYTICS_ENDPOINT_URL}<GRAPH_ID>'"
+            )
+
+        graph_identifier = vector_db_url.replace(NEPTUNE_ANALYTICS_ENDPOINT_URL, "")
+
+        # NeptuneAnalyticsAdapter is named through a variable typed Any: the type checker counts the interface
+        # methods that only carry a docstring as abstract, but at run time they are ordinary methods.
+        neptune_class: Any = NeptuneAnalyticsAdapter
+        return neptune_class(
+            graph_id=graph_identifier,
+            embedding_engine=embedding_engine,
+        )
+
+    elif vector_db_provider.lower() == "lancedb":
+        from .lancedb.LanceDBAdapter import LanceDBAdapter
+
+        if vector_db_subprocess_enabled:
+            return LanceDBAdapter.create_subprocess(
+                url=vector_db_url,
+                api_key=vector_db_key,
+                embedding_engine=embedding_engine,
+            )
+
+        # LanceDBAdapter is named through a variable typed Any: the type checker counts the interface
+        # methods that only carry a docstring as abstract, but at run time they are ordinary methods.
+        lancedb_class: Any = LanceDBAdapter
+        return lancedb_class(
+            url=vector_db_url,
+            api_key=vector_db_key,
+            embedding_engine=embedding_engine,
+        )
+
+    elif vector_db_provider.lower() == "turso":
+        from cognee.infrastructure.databases.turso import require_turso
+
+        # Probe the driver itself: the adapter module imports it lazily, so
+        # importing the module alone would not catch a missing turso extra.
+        require_turso()
+
+        from .turso.TursoVectorAdapter import TursoVectorAdapter
+
+        # TursoVectorAdapter is named through a variable typed Any: the type checker counts the interface
+        # methods that only carry a docstring as abstract, but at run time they are ordinary methods.
+        turso_class: Any = TursoVectorAdapter
+        return turso_class(
+            url=vector_db_url,
+            api_key=vector_db_key,
+            embedding_engine=embedding_engine,
+            database_name=vector_db_name,
+        )
+
+    else:
+        raise OSError(
+            f"Unsupported vector database provider: {vector_db_provider}. "
+            f"Supported providers are: {', '.join(list(supported_databases.keys()) + ['LanceDB', 'PGVector', 'neptune_analytics', 'Turso'])}"
+        )
+
+
+# Public cache-management API for vector engines: ``vector_engine_cache.evict``
+# / ``.touch`` / ``.is_cached`` / ``.evict_for_database`` /
+# ``.aevict_for_database``.
+#
+# Dependency injection: EngineCacheOps holds the shared procedure (which cache
+# method implements which operation), and this call supplies the three
+# vector-specific dependencies — which cache to operate on (the decorated
+# factory), how a config dict becomes that cache's exact key (the key
+# builder), and which key field holds the per-dataset database name (for the
+# by-database evictions). The graph module builds its own instance from the
+# same class, so the procedure exists once and cannot drift between engines.
+vector_engine_cache = EngineCacheOps(
+    _create_vector_engine, _vector_engine_key_args, "vector_db_name"
+)
