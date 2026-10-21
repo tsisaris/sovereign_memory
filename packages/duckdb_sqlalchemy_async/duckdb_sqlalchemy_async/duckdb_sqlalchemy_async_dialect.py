@@ -1,13 +1,7 @@
 """Adapt the buffered asynchronous DuckDB bridge to SQLAlchemy's async engine."""
 
-import json
-
 from duckdb_engine import Dialect as DuckDBDialect
-from sqlalchemy import text
 from sqlalchemy.connectors.asyncio import AsyncAdapt_dbapi_connection, AsyncAdapt_dbapi_cursor
-from sqlalchemy.engine.default import DefaultDialect
-from sqlalchemy.engine.reflection import ObjectKind, ObjectScope
-from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 from sqlalchemy.util.concurrency import await_only
 

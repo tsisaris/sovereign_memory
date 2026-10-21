@@ -1,0 +1,13 @@
+diff a/packages/cognee_duckdb/cognee/cognee_duckdb_relational.py b/packages/cognee_duckdb/cognee/cognee_duckdb_relational.py	(rejected hunks)
+@@ -4,8 +4,10 @@ import asyncio
+ import gc
+ import logging
+ from os import path
++from pathlib import Path
+ 
+-from sqlalchemy import MetaData, inspect, text
++from sqlalchemy import inspect, text
++from sqlalchemy.engine import make_url
+ 
+ from cognee.infrastructure.databases.relational.sqlalchemy.SqlAlchemyAdapter import (
+     SQLAlchemyAdapter,

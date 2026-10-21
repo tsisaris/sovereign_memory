@@ -43,7 +43,7 @@ class CollectionNotFoundError(CogneeCollectionNotFoundError):
     pass
 
 
-class DuckDBDataPoint(DataPoint):
+class DuckDBDataPoint(DataPoint):  # type: ignore[misc]
     """DuckDB data point schema for vector index entries.
 
     Attributes:
@@ -467,16 +467,14 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
             # Use DuckDB's native array_distance function for efficient vector search
             # Convert query vector to DuckDB array format with proper dimension
-            vector_dimension = len(query_vector)
-            if vector_dimension == 0:
-                raise ValueError("A query vector must have at least one dimension")
-            vector_parameter = f"CAST($1 AS FLOAT[{vector_dimension}])"
+            vector_dimension = self.embedding_engine.get_vector_size()
+            vector_str = f"[{','.join(map(str, query_vector))}]::FLOAT[{vector_dimension}]"
 
             # Execute vector similarity search using cosine similarity
 
             select_fields = [
                 "id",
-                f"array_cosine_distance(vector, {vector_parameter}) as distance",
+                f"array_cosine_distance(vector, {vector_str}) as distance",
             ]
             if with_vector:
                 select_fields.append("vector")
@@ -486,7 +484,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             # Optionally filter on the "belongs_to_set" payload field by node_name.
             # belongs_to_set is stored inside the JSON payload as a list of names.
             where_clause = ""
-            query_params: list[Any] = [query_vector]
+            query_params: list[Any] = []
             if node_name:
                 # Extract belongs_to_set from the JSON payload as a list of strings.
                 belongs_expr = "CAST(json_extract_string(payload, '$.belongs_to_set') AS VARCHAR[])"
@@ -850,7 +848,8 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
     async def add_nodes(
         self,
-        nodes: list[DataPoint] | list[tuple[str, dict[str, Any]]],
+        nodes: list[DataPoint] | list[str],
+        properties: list[dict[str, Any]] | None = None,
         source_ref_key: str | None = None,
         pipeline_run_id: str | None = None,
     ) -> None:
@@ -860,7 +859,7 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
 
         queries = []
 
-        for node in nodes:
+        for i, node in enumerate(nodes):
             if isinstance(node, tuple):
                 props = {**(node[1] or {}), "id": node[0]}
             elif hasattr(node, "model_dump"):
@@ -875,6 +874,9 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
             node_type = props.get(
                 "type", node.__class__.__name__ if hasattr(node, "__class__") else None
             )
+
+            if properties and i < len(properties) and properties[i]:
+                props.update(properties[i])
 
             core_keys = {"id", "name", "type"}
             extra = {k: v for k, v in props.items() if k not in core_keys}
@@ -945,16 +947,12 @@ class DuckDBAdapter(VectorDBInterface, GraphDBInterface):
         pipeline_run_id: str | None = None,
     ) -> None:
         """Documentation."""
-        if isinstance(node, str):
-            await self.add_nodes(
-                [(node, properties or {})],
-                source_ref_key=source_ref_key,
-                pipeline_run_id=pipeline_run_id,
-            )
-        else:
-            await self.add_nodes(
-                [node], source_ref_key=source_ref_key, pipeline_run_id=pipeline_run_id
-            )
+        await self.add_nodes(
+            [node],
+            [properties] if properties else None,
+            source_ref_key,
+            pipeline_run_id,
+        )
 
     async def delete_node(self, node_id: str) -> None:
         """Documentation."""

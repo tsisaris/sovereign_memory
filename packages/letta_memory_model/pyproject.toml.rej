@@ -1,0 +1,8 @@
+diff a/packages/letta_memory_model/pyproject.toml b/packages/letta_memory_model/pyproject.toml	(rejected hunks)
+@@ -13,3 +15,6 @@ dependencies = [
+     "duckdb-engine==0.17.0",
+     "pydantic==2.14.1"
+ ]
++
++[tool.hatch.build.targets.wheel]
++packages = ["letta_memory_model"]

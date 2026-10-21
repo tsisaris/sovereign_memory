@@ -1,0 +1,10 @@
+diff a/packages/mem0_duckdb/src/mem0/vector_stores/configs.py b/packages/mem0_duckdb/src/mem0/vector_stores/configs.py	(rejected hunks)
+@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, model_validator
+ class VectorStoreConfig(BaseModel):
+     provider: str = Field(
+         description="Provider of the vector store (e.g., 'qdrant', 'chroma', 'upstash_vector')",
+-        default="qdrant",
++        default="duckdb",
+     )
+     config: Optional[Dict] = Field(
+         description="Configuration for the specific vector store", default=None

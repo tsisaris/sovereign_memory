@@ -1,3 +1,5 @@
+import duckdb_sqlalchemy_async_alembic
+
 """Startup migration orchestration.
 
 Two stages, in order:
@@ -30,9 +32,6 @@ import importlib.resources as pkg_resources
 import logging
 import os
 import threading
-from importlib import import_module
-
-import_module("duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_alembic")
 
 logger = logging.getLogger(__name__)
 
@@ -245,12 +244,12 @@ async def _relational_schema_exists() -> bool:
 
     engine = get_relational_engine()
 
-    # Brand-new local database: the file is not there yet
+    # Brand-new local SQLite database: the file is not there yet
     # (create_database() creates the directory and file). S3-backed SQLite is
     # excluded — its engine connects to a local temp file that always exists,
     # and a fresh S3 database reports empty through the inspection below.
     if (
-        engine.engine.dialect.name in ("duckdb", "sqlite")
+        engine.engine.dialect.name == "sqlite"
         and engine.db_path
         and "s3://" not in engine.db_path
         and not os.path.exists(engine.db_path)

@@ -1,0 +1,27 @@
+diff a/pyproject.toml b/pyproject.toml	(rejected hunks)
+@@ -7,16 +7,24 @@
+ name = "sovereign_memory"
+ version = "0.1.0"
+ description = "One large, connected, seamless local memory system on DuckDB: every useful kind of memory welded into one suite that works with DuckDB, a true superset of Letta, Zep/Graphiti, Cognee and Mem0, modular so new kinds of memory can be added as they appear, free and open for everyone to use and maintain."
+-requires-python = ">=3.12"
++requires-python = ">=3.12,<3.14"
+ # The packages this project's code needs, as name==version, one per line.
+ dependencies = [
+     "duckdb==1.5.6",
+     "duckdb-engine==0.17.0",
+     "sqlalchemy==2.0.39",
+     "alembic==1.13.3",
++    "cognee==1.6.5",
++    "mem0_duckdb==0.1.0",
++    "letta_memory_model==0.1.0",
++    "graphiti-duckdb==0.1.0",
+ ]
+ 
+ [tool.uv.sources]
++cognee = { workspace = true }
++mem0_duckdb = { workspace = true }
++letta_memory_model = { workspace = true }
++graphiti-duckdb = { workspace = true }
+ duckdb_sqlalchemy_async = { workspace = true }
+ 
+ [tool.uv.workspace]

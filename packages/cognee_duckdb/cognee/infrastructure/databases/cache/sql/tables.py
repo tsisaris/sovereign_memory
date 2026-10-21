@@ -15,7 +15,6 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
-    Sequence,
     Table,
     Text,
     TypeDecorator,
@@ -62,12 +61,12 @@ class StringKey(TypeDecorator):
 
 
 def _payload_type():
-    """Use native JSON on DuckDB and SQLite, and JSONB on Postgres."""
-    return JSONB().with_variant(JSON(), "sqlite", "duckdb")
+    """JSONB on Postgres, generic JSON on SQLite."""
+    return JSONB().with_variant(JSON(), "sqlite")
 
 
 def _seq_type():
-    """Use BIGINT sequence keys with SQLite-compatible integer storage."""
+    """BIGINT identity on Postgres, INTEGER autoincrement on SQLite."""
     return BigInteger().with_variant(Integer(), "sqlite")
 
 
@@ -75,7 +74,7 @@ def _seq_type():
 cache_qa_entries = Table(
     "cache_qa_entries",
     cache_metadata,
-    Column("seq", _seq_type(), Sequence("cache_qa_entries_seq"), primary_key=True),
+    Column("seq", _seq_type(), primary_key=True, autoincrement=True),
     Column("user_id", StringKey(), nullable=False),
     Column("session_id", StringKey(), nullable=False),
     Column("qa_id", StringKey(), nullable=False),
@@ -94,13 +93,15 @@ Index(
 Index(
     "idx_cache_qa_expires",
     cache_qa_entries.c.expires_at,
+    postgresql_where=cache_qa_entries.c.expires_at.isnot(None),
+    sqlite_where=cache_qa_entries.c.expires_at.isnot(None),
 )
 
 # Agent traces: append-only.
 cache_trace_entries = Table(
     "cache_trace_entries",
     cache_metadata,
-    Column("seq", _seq_type(), Sequence("cache_trace_entries_seq"), primary_key=True),
+    Column("seq", _seq_type(), primary_key=True, autoincrement=True),
     Column("user_id", StringKey(), nullable=False),
     Column("session_id", StringKey(), nullable=False),
     Column("payload", _payload_type(), nullable=False),
@@ -117,6 +118,8 @@ Index(
 Index(
     "idx_cache_trace_expires",
     cache_trace_entries.c.expires_at,
+    postgresql_where=cache_trace_entries.c.expires_at.isnot(None),
+    sqlite_where=cache_trace_entries.c.expires_at.isnot(None),
 )
 
 # Session-context entries: kind-discriminated ("context"/"feedback").
@@ -126,7 +129,7 @@ Index(
 cache_session_context = Table(
     "cache_session_context",
     cache_metadata,
-    Column("seq", _seq_type(), Sequence("cache_session_context_seq"), primary_key=True),
+    Column("seq", _seq_type(), primary_key=True, autoincrement=True),
     Column("user_id", StringKey(), nullable=False),
     Column("session_id", StringKey(), nullable=False),
     Column("entry_id", StringKey(), nullable=False),
@@ -158,13 +161,15 @@ Index(
 Index(
     "idx_cache_session_context_expires",
     cache_session_context.c.expires_at,
+    postgresql_where=cache_session_context.c.expires_at.isnot(None),
+    sqlite_where=cache_session_context.c.expires_at.isnot(None),
 )
 
 # Usage logs (Redis key {log_key}:{user_id} analogue).
 cache_usage_logs = Table(
     "cache_usage_logs",
     cache_metadata,
-    Column("seq", _seq_type(), Sequence("cache_usage_logs_seq"), primary_key=True),
+    Column("seq", _seq_type(), primary_key=True, autoincrement=True),
     Column("log_key", StringKey(), nullable=False),
     Column("user_id", StringKey(), nullable=False),
     Column("payload", _payload_type(), nullable=False),

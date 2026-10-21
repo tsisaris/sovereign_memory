@@ -25,10 +25,6 @@ from cognee.infrastructure.databases.graph.graph_db_interface import (
     GraphDBInterface,
     temporal_anchors_from_rows,
 )
-from cognee.infrastructure.databases.graph.tuning_defaults import (
-    DEFAULT_KUZU_BUFFER_POOL_SIZE,
-    DEFAULT_KUZU_MAX_DB_SIZE,
-)
 from cognee.infrastructure.databases.provenance import (
     EdgeDeleteData,
     EdgeIdentity,
@@ -70,6 +66,9 @@ logger = get_logger()
 # progress is safe. Does not change how many data points the pipeline batches.
 _WRITE_CHUNK_SIZE = 2000
 
+
+DEFAULT_KUZU_BUFFER_POOL_SIZE = 1 << 35  # 32 GB (must be a power of 2 for Kuzu)
+DEFAULT_KUZU_MAX_DB_SIZE = 1 << 35  # 32 GB (must be a power of 2 for Kuzu)
 
 # Graph provenance (COG-5522 Part 1). These four fields live in declared scalar
 # STRING columns on both Node and EDGE — never inside the JSON `properties` blob

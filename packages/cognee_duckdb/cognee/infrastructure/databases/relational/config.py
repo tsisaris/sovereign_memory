@@ -24,7 +24,7 @@ class RelationalConfig(BaseSettings):
     db_port: str | None = None  # "5432"
     db_username: str | None = None  # "cognee"
     db_password: str | None = None  # "cognee"
-    db_provider: str = "duckdb"
+    db_provider: str = "sqlite"
     database_connect_args: str | None = None
     pool_args: str | None = None
     # Turso settings. Only read when db_provider == "turso", which is a local

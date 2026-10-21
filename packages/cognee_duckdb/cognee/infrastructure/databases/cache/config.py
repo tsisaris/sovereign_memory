@@ -55,9 +55,7 @@ class CacheConfig(BaseSettings):
       its context updates reach this turn's answer -- at the cost of two calls in a row.
     """
 
-    cache_backend: Literal["duckdb", "redis", "fs", "tapes", "sqlite", "turso", "postgres"] = (
-        "duckdb"
-    )
+    cache_backend: Literal["redis", "fs", "tapes", "sqlite", "turso", "postgres"] = "sqlite"
     cache_db_url: str | None = None
     cache_purge_interval_seconds: int = 900
     caching: bool = True

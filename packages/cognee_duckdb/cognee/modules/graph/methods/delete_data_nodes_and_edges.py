@@ -12,26 +12,20 @@ from cognee.infrastructure.databases.vector.get_vector_engine import get_vector_
 from cognee.modules.data.methods.get_authorized_dataset import get_authorized_dataset
 from cognee.modules.graph.legacy.has_edges_in_legacy_ledger import has_edges_in_legacy_ledger
 from cognee.modules.graph.legacy.has_nodes_in_legacy_ledger import has_nodes_in_legacy_ledger
-from cognee.modules.graph.methods.delete_data_related_edges import delete_data_related_edges
-from cognee.modules.graph.methods.delete_data_related_nodes import delete_data_related_nodes
+from cognee.modules.graph.methods import (
+    delete_data_related_edges,
+    delete_data_related_nodes,
+    get_data_related_edges,
+    get_data_related_nodes,
+    get_global_data_related_edges,
+    get_global_data_related_nodes,
+    get_orphaned_nodeset_labels_for_dataset,
+    get_shared_slugs_losing_dataset_anchor,
+)
 from cognee.modules.graph.methods.delete_from_graph_and_vector import (
     delete_from_graph_and_vector,
 )
 from cognee.modules.graph.methods.deleted_graph_elements import DeletedGraphElements
-from cognee.modules.graph.methods.get_data_related_edges import (
-    get_data_related_edges,
-    get_global_data_related_edges,
-)
-from cognee.modules.graph.methods.get_data_related_nodes import (
-    get_data_related_nodes,
-    get_global_data_related_nodes,
-)
-from cognee.modules.graph.methods.get_orphaned_nodeset_labels_for_dataset import (
-    get_orphaned_nodeset_labels_for_dataset,
-)
-from cognee.modules.graph.methods.get_shared_slugs_losing_dataset_anchor import (
-    get_shared_slugs_losing_dataset_anchor,
-)
 from cognee.modules.graph.methods.try_delete_data_by_graph_provenance import (
     try_delete_data_by_graph_provenance,
 )

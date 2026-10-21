@@ -132,11 +132,11 @@ class DuckDBManager:
                         )
 
                     self.connection.execute("DROP TABLE history_old")
-                    if owns_transaction:
+                    if not in_txn:
                         self.connection.execute("COMMIT")
                     logger.info("History table migration completed successfully.")
                 except Exception as e:
-                    if owns_transaction:
+                    if not in_txn:
                         self.connection.execute("ROLLBACK")
                     raise e
             except Exception as e:
@@ -200,7 +200,6 @@ class DuckDBManager:
         actor_id: Optional[str] = None,
         role: Optional[str] = None,
     ) -> None:
-        """Store one event without committing a caller-owned transaction."""
         with self._lock:
             try:
                 self.connection.execute(
@@ -263,10 +262,10 @@ class DuckDBManager:
                         """,
                         rows,
                     )
-                    if owns_transaction:
+                    if not in_txn:
                         self.connection.execute("COMMIT")
                 except Exception as e:
-                    if owns_transaction:
+                    if not in_txn:
                         self.connection.execute("ROLLBACK")
                     raise e
             except Exception as e:
@@ -274,7 +273,6 @@ class DuckDBManager:
                 raise
 
     def get_history(self, memory_id: str) -> List[Dict[str, Any]]:
-        """Return the stored events for one memory in timestamp order."""
         with self._lock:
             cur = self.connection.execute(
                 """
@@ -359,7 +357,6 @@ class DuckDBManager:
                 raise
 
     def get_last_messages(self, session_scope: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Return the requested session's latest stored messages in chronological order."""
         with self._lock:
             cur = self.connection.execute(
                 """
@@ -389,7 +386,6 @@ class DuckDBManager:
         ]
 
     def reset(self) -> None:
-        """Drop history and messages in this connection's current namespace."""
         if not self.connection:
             raise RuntimeError("Cannot reset a closed DuckDBManager")
         with self._lock:
@@ -401,11 +397,9 @@ class DuckDBManager:
                 raise
 
     def close(self) -> None:
-        """Close only a connection created by this manager, preserving caller ownership."""
         if self.connection and self._owns_connection:
             self.connection.close()
             self.connection = None
 
     def __del__(self):
-        """Release an owned connection when this manager is collected."""
         self.close()

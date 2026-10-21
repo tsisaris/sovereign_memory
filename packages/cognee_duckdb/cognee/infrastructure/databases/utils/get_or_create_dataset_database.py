@@ -15,6 +15,7 @@ from cognee.infrastructure.databases.utils.ensure_embedding_model_matches import
     embedding_model_record,
 )
 from cognee.infrastructure.databases.vector import get_vectordb_config
+from cognee.modules.data.methods import get_unique_dataset_id
 from cognee.modules.migrations.migration import head_revision
 from cognee.modules.migrations.registry import MIGRATIONS
 from cognee.modules.users.models import DatasetDatabase, User
@@ -97,10 +98,6 @@ async def get_or_create_dataset_database(
         databases and is stamped as the row's owner_id.
     """
     db_engine = get_relational_engine()
-
-    # Dataset helpers import the database context, which imports this module.
-    # Resolve the maintained helper only when provisioning actually runs.
-    from cognee.modules.data.methods import get_unique_dataset_id
 
     dataset_id = await get_unique_dataset_id(dataset_id, owner)
 

@@ -12,20 +12,18 @@ from cognee.infrastructure.databases.unified import get_unified_engine
 from cognee.modules.data.methods.get_authorized_dataset import get_authorized_dataset
 from cognee.modules.graph.legacy.has_edges_in_legacy_ledger import has_edges_in_legacy_ledger
 from cognee.modules.graph.legacy.has_nodes_in_legacy_ledger import has_nodes_in_legacy_ledger
-from cognee.modules.graph.methods.delete_dataset_related_edges import delete_dataset_related_edges
-from cognee.modules.graph.methods.delete_dataset_related_nodes import delete_dataset_related_nodes
+from cognee.modules.graph.methods import (
+    delete_dataset_related_edges,
+    delete_dataset_related_nodes,
+    get_dataset_related_edges,
+    get_dataset_related_nodes,
+    get_global_dataset_related_edges,
+    get_global_dataset_related_nodes,
+)
 from cognee.modules.graph.methods.delete_from_graph_and_vector import (
     delete_from_graph_and_vector,
 )
 from cognee.modules.graph.methods.deleted_graph_elements import DeletedGraphElements
-from cognee.modules.graph.methods.get_dataset_related_edges import (
-    get_dataset_related_edges,
-    get_global_dataset_related_edges,
-)
-from cognee.modules.graph.methods.get_dataset_related_nodes import (
-    get_dataset_related_nodes,
-    get_global_dataset_related_nodes,
-)
 from cognee.modules.users.methods.get_user import get_user
 
 
