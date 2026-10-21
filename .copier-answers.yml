@@ -2,7 +2,7 @@
 _commit: 4f10dcf
 _src_path: https://github.com/tsisaris/portable_system.git
 code_dir: src
-environment: sovereign_tools
+environment: sovereign_memory
 line_length: 100
 mirror_dirs:
 - data/sovereign
