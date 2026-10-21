@@ -6,6 +6,10 @@ Written for a fresh window that knows nothing. Branch: `local/permissions-init-f
 
 One local memory service on one DuckDB file that is a superset of Letta, Zep/Graphiti, Cognee and Mem0: one Owner service, four memory kinds, and the requirements of 2026-10-19: R1 swappable models, R2 every model's numbers side by side, R3 per-model rankings merged by a recorded combiner (reciprocal rank fusion, k=60, to start), R4 permanent ground truth plus a review screen, R5 numbers come only from agent_corpus (memory never calls agent_embedding), R6 all 32 old capabilities stand. The plan is `docs/sovereign_memory_plan.md`; the ledger of 32 capabilities is `docs/capability_ledger.md`. Both are edited directly (no patch files, ever; git history is the record). Never remove a capability.
 
+## PAUSED by the Claude chat, 2026-10-21
+
+Where I stopped: after the gate merged pull requests 17, 19 and 20 (`main` at `d13750a`). Nothing was running from this window and nothing was uncommitted. Nothing deleted. To do when the chat sends a new goal: the open items 3 to 6 below (agent_corpus proof, language-model timing, "unproven" ledger rows, nothing under `~/sovereign`), plus Shawn's call on the stray GitHub branch `save/wt-20261021T164612Z`. I did not start anything else.
+
 ## Update, later on 2026-10-21: pull request 17 is merged
 
 Shawn's instruction: push the exception file as its own pull request, fold in anything missing from the three patch files, run every check, let the gate merge on green. Done, in this order:
