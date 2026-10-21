@@ -19,8 +19,8 @@ defaults:
 jobs:
   gating:
     name: gating checks
-    Noneruns-on: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && 'self-hosted' || 'ubuntu-latest' }}
-Nonecontainer: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && fromJSON('{"image":"catthehacker/ubuntu:full-24.04","options":"--user 1000:1000","env":{"XDG_CONFIG_HOME":"/github/home/.config","XDG_CACHE_HOME":"/github/home/.cache"}}') || null }}
+    runs-on: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && 'self-hosted' || 'ubuntu-latest' }}
+    container: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && fromJSON('{"image":"catthehacker/ubuntu:full-24.04","options":"--user 1000:1000","env":{"XDG_CONFIG_HOME":"/github/home/.config","XDG_CACHE_HOME":"/github/home/.cache"}}') || null }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.2.0
@@ -56,8 +56,8 @@ Nonecontainer: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && fromJSON('{"image":"cat
 
   advisory:
     name: advisory checks (reported, never blocking)
-    Noneruns-on: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && 'self-hosted' || 'ubuntu-latest' }}
-Nonecontainer: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && fromJSON('{"image":"catthehacker/ubuntu:full-24.04","options":"--user 1000:1000","env":{"XDG_CONFIG_HOME":"/github/home/.config","XDG_CACHE_HOME":"/github/home/.cache"}}') || null }}
+    runs-on: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && 'self-hosted' || 'ubuntu-latest' }}
+    container: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && fromJSON('{"image":"catthehacker/ubuntu:full-24.04","options":"--user 1000:1000","env":{"XDG_CONFIG_HOME":"/github/home/.config","XDG_CACHE_HOME":"/github/home/.cache"}}') || null }}
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7.0.1
