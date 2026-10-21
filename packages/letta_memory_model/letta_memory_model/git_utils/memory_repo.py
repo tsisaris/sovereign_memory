@@ -351,9 +351,7 @@ def memory_block_label_from_markdown_path(path: str) -> str | None:
 
 def _run_git(args: List[str], cwd: str, check: bool = True) -> subprocess.CompletedProcess:
     """Run one git command in a folder; raise CalledProcessError on failure when check is set."""
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
-    )
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(
             result.returncode, ["git", *args], result.stdout, result.stderr
