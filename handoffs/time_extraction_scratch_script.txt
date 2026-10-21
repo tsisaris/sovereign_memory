@@ -1,0 +1,94 @@
+"""Scratch measurement (not committed): time one structured extraction from a memory event on an Ollama model."""
+
+import json
+import sys
+import time
+import urllib.request
+
+import jsonschema
+
+MODEL = sys.argv[1]
+EVENT = (
+    "Shawn decided on 2026-10-19 that every model is a swappable part of the memory service. "
+    "Numbers for search come only from agent_corpus, never from a direct call to agent_embedding. "
+    "The per-model rankings are merged by reciprocal rank fusion with a constant of 60, and Shawn's "
+    "own judgments are kept permanently as ground truth for a review screen. Sonnet 5.5 builds the "
+    "work on the laptop while Claude Cloud is paused until November 1."
+)
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "entities": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}, "type": {"type": "string"}},
+                "required": ["name", "type"],
+            },
+        },
+        "facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "relation": {"type": "string"},
+                    "target": {"type": "string"},
+                    "fact": {"type": "string"},
+                },
+                "required": ["source", "relation", "target", "fact"],
+            },
+        },
+    },
+    "required": ["entities", "facts"],
+}
+PROMPT = (
+    "Extract the entities and the facts (source entity, relation, target entity, one-sentence fact) "
+    "from this memory event. Use only what the text says.\n\nEVENT:\n" + EVENT
+)
+body = json.dumps(
+    {
+        "model": MODEL,
+        "stream": False,
+        "think": False,
+        "format": SCHEMA,
+        "messages": [{"role": "user", "content": PROMPT}],
+    }
+).encode()
+request = urllib.request.Request(
+    "http://127.0.0.1:11434/api/chat", data=body, headers={"Content-Type": "application/json"}
+)
+started = time.monotonic()
+with urllib.request.urlopen(request, timeout=3000) as reply:
+    answer = json.loads(reply.read())
+wall = time.monotonic() - started
+content = answer["message"]["content"]
+try:
+    parsed = json.loads(content)
+    jsonschema.validate(parsed, SCHEMA)
+    valid, problem = True, None
+except (ValueError, jsonschema.ValidationError) as error:
+    parsed, valid, problem = None, False, str(error)[:200]
+seconds = lambda key: round(answer.get(key, 0) / 1e9, 2)
+print(
+    json.dumps(
+        {
+            "model": MODEL,
+            "wall_seconds": round(wall, 1),
+            "load_seconds": seconds("load_duration"),
+            "prompt_tokens": answer.get("prompt_eval_count"),
+            "prompt_seconds": seconds("prompt_eval_duration"),
+            "output_tokens": answer.get("eval_count"),
+            "output_seconds": seconds("eval_duration"),
+            "output_tokens_per_second": round(
+                answer.get("eval_count", 0) / max(answer.get("eval_duration", 1) / 1e9, 1e-9), 2
+            ),
+            "valid_structured_answer": valid,
+            "problem": problem,
+            "entities": None if parsed is None else len(parsed["entities"]),
+            "facts": None if parsed is None else len(parsed["facts"]),
+        }
+    )
+)
+if parsed is not None:
+    print(json.dumps(parsed, indent=1)[:1800])

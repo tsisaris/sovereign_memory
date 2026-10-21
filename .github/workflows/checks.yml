@@ -12,10 +12,15 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   gating:
     name: gating checks
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && 'self-hosted' || 'ubuntu-latest' }}
+    container: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && fromJSON('{"image":"catthehacker/ubuntu:full-24.04","options":"--user 1000:1000","env":{"XDG_CONFIG_HOME":"/github/home/.config","XDG_CACHE_HOME":"/github/home/.cache"}}') || null }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.2.0
@@ -51,7 +56,8 @@ jobs:
 
   advisory:
     name: advisory checks (reported, never blocking)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && 'self-hosted' || 'ubuntu-latest' }}
+    container: ${{ vars.LAPTOP_RUNNER_HEARTBEAT != '' && fromJSON('{"image":"catthehacker/ubuntu:full-24.04","options":"--user 1000:1000","env":{"XDG_CONFIG_HOME":"/github/home/.config","XDG_CACHE_HOME":"/github/home/.cache"}}') || null }}
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7.0.1

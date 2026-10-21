@@ -1,0 +1,71 @@
+# Handoff, 2026-10-21, sovereign_memory
+
+Written for a fresh window that knows nothing. Branch: `local/permissions-init-fully-checked-20261020`. Python 3.12 environment: `~/micromamba/envs/sovereign_memory` (use `export PATH=$HOME/micromamba/envs/sovereign_memory/bin:$PATH`). Never use `confirm-stop`. Heredocs are banned by the hook; write files only with the file-writing tool. Use `/usr/bin/grep` and `/usr/bin/find`. Shawn is not an engineer: plain words, answer first, options with cost and a recommendation.
+
+## What this project is
+
+One local memory service on one DuckDB file that is a superset of Letta, Zep/Graphiti, Cognee and Mem0: one Owner service, four memory kinds, and the requirements of 2026-10-19: R1 swappable models, R2 every model's numbers side by side, R3 per-model rankings merged by a recorded combiner (reciprocal rank fusion, k=60, to start), R4 permanent ground truth plus a review screen, R5 numbers come only from agent_corpus (memory never calls agent_embedding), R6 all 32 old capabilities stand. The plan is `docs/sovereign_memory_plan.md`; the ledger of 32 capabilities is `docs/capability_ledger.md`. Both are edited directly (no patch files, ever; git history is the record). Never remove a capability.
+
+## What this window did (all on the branch above; remote matches local at the head)
+
+Commits, oldest first, with what they hold:
+- `21cca86`, `6da7643`: two Cognee defects fixed (`has_new_chunks.py` import, `Pipeline.py` relationship) and four files taken off the checker's exclusion list in `.pre-commit-config.yaml`.
+- `5540cbe`: Letta `memory_apply_patch` and memory tools that add, remove and relabel blocks.
+- `8fca475`: Letta `conversation_search`, `archival_memory_insert`, `archival_memory_search` as store tools.
+- `73c2075`: fix for the Letta store on a database file named `letta.duckdb` (catalog-name clash, schema translate map).
+- `0353dd9`: optional recency decay in search (`decay_time_constant_seconds`, no default, off unless declared). The exponential form is this project's own: no source publishes the formula or constant (only Mem0 Platform's bounds 0.3 to 1.5 and clamp 0 to 1 are published). The ledger and plan say so.
+- `f5c97b2`: Zep CE v1.0.2 users, sessions, messages, memory, translated from the Go store into `packages/graphiti_duckdb/src/graphiti_duckdb/zep_ce_store.py` (43 checks run on a real file).
+- `c65ef27`: Letta git-backed memory repository port (`letta_memory_model/git_utils/memory_repo.py`); PyYAML added.
+- `b2dff2a`: plan section "Why the project runs on Python 3.12" (numpy 2.5.4, networkx 3.7, Deprecated 3.0.0 force 3.12; upstream floors are 3.10 for Graphiti, Cognee, Mem0 and 3.11 for Letta) and a ledger update.
+- `e632a80`: Graphiti MCP server port: `mcp_server.py` plus `mcp_config.py`, `mcp_responses.py`, `mcp_type_config.py`, `mcp_type_registry.py`, `mcp_queue_service.py` in `packages/graphiti_duckdb/src/graphiti_duckdb/`. Thirteen tools on the one DuckDB file; mcp 2.2.0 (the version Graphiti's own lock names) is the `graphiti-duckdb` extra `mcp-server`, asked for by the dev group; `[tool.uv] conflicts` in `pyproject.toml` keeps the advisory group (semgrep needs mcp 1.23.3) apart. Runs without a model for the tools that need none.
+- `febc0b2`: ledger row for the MCP server.
+- `062924e`: `packages/sovereign_memory_owner/service/memory_supplier_http.py`, memory's client for agent_corpus's three doors, selected by a `[supplier]` table (base_url, requester_agent_id, timeout_seconds, no defaults) added to `src/sovereign_memory/config.py` and wired in `runtime.py`. NOT yet run against a live agent_corpus.
+- `a504372`: plan section on the local language model (the 27B load error and Ollama release notes).
+- `9287567`: merge of `main` (the two laptop-runner commits #16 and #18) into the branch.
+- The handoff commit that holds this file (see the last line printed by the window that wrote it).
+
+Other work, not code: ledger rows updated for rows 6, 7, 8, 10, 17, 18, 32; Cognee/Letta/Graphiti/Zep originals were downloaded to a scratch folder and have been deleted.
+
+## Measured current state
+
+- Pull request #17 (https://github.com/tsisaris/sovereign_memory/pull/17), "Laptop-built work: Cognee repairs, Letta tools, optional decay": base `main` (retargeted by REST from `amend/swappable-models-20261019`; `gh pr edit` fails on a GitHub projects-deprecation error, so use `gh api -X PATCH repos/tsisaris/sovereign_memory/pulls/17 -f base=main`), head `9287567`, merge state CLEAN, gating checks SUCCESS, advisory checks SUCCESS, 3,517 files changed against `main`. NOT merged.
+- The gate is `~/portable/projects/portable_system/src/bring_home.py` (run with `~/micromamba/envs/sovereign_tools/bin/python3 -E -s`), merges only into `main`. Its `--dry-run tsisaris/sovereign_memory` on head `9287567` refused #17 with exactly: "it changes .pre-commit-config.yaml, which AGENTS.md forbids; the J2 packet could not be built: GitHub omitted the diff for docs/late_artifacts/local_integration_20261018_1214.patch and its content could not be read: gh api ... failed (exit 1): stream error: stream ID 1; CANCEL; received from peer". It let `.github/workflows/checks.yml` through under an existing architect ruling. Earlier (before I merged `main` into the branch) it refused with a rebase conflict on `packages/graphiti_duckdb/NOTICE`; that reason is gone. It did not flag the `[tool.uv]` change in `pyproject.toml`, but may once the first reason clears.
+- The gate reads architect exceptions only from `rulings/architect_exceptions.json` on `main`'s tip, never from the pull request's own branch. `main` has no such file (404). The file I wrote is saved here as `handoffs/architect_exceptions_PROPOSED_20261020.json` (two exact-path entries for pull request 17: `.pre-commit-config.yaml` and `pyproject.toml`). Pushing it was refused by the auto-mode permission check ("Instruction Poisoning"); I did not retry or work around it.
+- On the last commit, all seven pre-commit hooks passed (format, sort imports, ruff gating rules, mypy, pyright, pylint, bandit). `deptry src tests`: "Success! No dependency issues found." `pytest -q`: "1 passed, 2 warnings". `uv lock --check`: "Resolved 238 packages". `env-guard check ~/micromamba/envs/sovereign_memory`: "Every package's recorded files are present. Every installed package fits together" (the earlier pip finding is gone: the upgrade-sweep window removed pip).
+- Graphiti MCP server: 32-step run through an in-process MCP client on a real DuckDB file passed (script saved as `handoffs/prove_mcp_server_scratch_script.txt`; rename to .py and run with the project environment, from the repository root). The tools that need no model ran. `search_nodes`, `search_memory_facts`, `add_triplet`, `build_communities`, `summarize_saga` on a real saga and `add_memory`'s background extraction refuse with "no embedder / language model has been supplied", by design.
+- Supplier fingerprint: memory's client computes the corpus form (Unicode NFC, line ends as LF, then SHA-256). On six samples it equals agent_corpus's own `fingerprint_of`; memory's raw-bytes fingerprint equals it on four of six (differs on CRLF and decomposed accents).
+- agent_corpus does NOT boot: its parameter registry (`~/sovereign/registry/sovereign_registry.db`, table `sovereign_parameters`) has 8 of the 30 settings its document declares plus lacks the four service rows `redis_start_command`, `redis_start_cwd`, `redis_start_deadline_seconds`, `health_probe_timeout_seconds`. A normal boot also writes into the real `~/sovereign/agent_registry.json`. agent_embedding (from a scratch copy) boots and answers `/ready` but refuses to make numbers until each model's encoding width is measured (agent_corpus's survey is the intended path). The end-to-end proof for R5 therefore has NOT run.
+- Local language models (Ollama 0.23.3): `luna-qwen27b-q6` (27.3B dense) fails to load: `failed to initialize model: qwen3next: layer 64 missing attn_qkv/attn_gate projections`. Shawn ruled the 27B out (about 1 token per second). `qwen3:8b` (5.2 GB, installed): one structured extraction of a 90-word memory event gave 178 s wall time, 3.39 output tokens per second, valid against the JSON schema, 12 entities and 6 facts (script saved as `handoffs/time_extraction_scratch_script.txt`). The candidate mixture-of-experts model is the official Ollama tag `qwen3.6:35b-a3b` (about 24 GB; `qwen3.6:latest` is the same file; older family `qwen3.5:35b-a3b` is 22 GB; the `qwen3.8` family has only 27B dense tags). Not pulled.
+
+## Open items and questions still waiting, exactly as they stand
+
+1. #17 is not merged. To let the gate through, `rulings/architect_exceptions.json` must reach `main` first, by a small pull request into `main` that the gate merges. I need Shawn (in his own words) to say to push it, or Shawn adds it himself from `handoffs/architect_exceptions_PROPOSED_20261020.json`. Even then the "J2 packet could not be built" (GitHub stream error on a large patch file under `docs/late_artifacts/`) may still stop the gate; report its exact words. No hand merge: the Claude chat withdrew that.
+2. The gate also has decisions waiting on other pull requests (#1, #2, #3, #4, #6); they are not this window's.
+3. R5 end-to-end proof: when the agent_corpus window reports that agent_corpus boots and `GET /saved_numbers/models` answers, run memory's own originals through agent_corpus, store every model's numbers side by side, and run a real search merged by reciprocal rank fusion at k=60, taking numbers only from agent_corpus's doors (`GET /saved_numbers/models`, `GET /saved_numbers`, `POST /question_numbers`), never from agent_embedding. Report any door that behaves differently from its design exactly; do not work around it and do NOT seed agent_corpus's settings yourself. Needs a `[supplier]` table in memory's configuration file. Gaps between the doors and memory's asks are recorded in the plan (no piece text or position, no current-row door, no recompute door, question door answers all models at once and saves each ask).
+4. Language model: time one structured extraction on `qwen3.6:35b-a3b` after the upgrade-sweep window reports Ollama can be upgraded safely and after Shawn's go-ahead; then report tokens per second on the processor, seconds per event and whether the answer was valid, next to the 8B figures above. Do not upgrade Ollama yourself.
+5. Ledger rows still waiting on a language model or on agent_embedding/agent_corpus numbers stay "unproven": Graphiti episode ingestion, fact invalidation, entity resolution/communities/triplets/sagas, Cognee cognify and search types, Cognee temporal search and feedback, Mem0 fact extraction and consolidation, graph memory, procedural memory, Mem0 Platform temporal reasoning, dream consolidation, summaries, Letta consolidation, compaction and dreaming, Zep entity/thread summaries, row 18 context assembly (the original is Graphiti's `search_results_to_context_string`), row 32 live decay numbers. Each ledger cell says what it waits on.
+6. Nothing has been written under `~/sovereign`; the real agent registry is untouched (last changed 2026-09-06).
+
+## Rulings that still apply
+
+- Claude Cloud and Jules are paused until November 1; send nothing to cloud session `session_01XYr1DqiGL5NzwTnFE2Kbwr`. All work is on this laptop. GitHub's free check minutes are used; the checks run on the laptop self-hosted runner.
+- Do not merge to `main` yourself; the gate merges pull requests that pass. No hand merges. Never `--no-verify`. Never `noqa`, `type: ignore`, `nosec` or `pylint: disable`; never weaken a check. No new test code or harnesses. Never touch `~/sovereign/agent_embedding` or `~/portable/projects/agent_embedding` (read only). No background timers. Never run `confirm-stop`. Never run the patch tool's `apply`.
+- Every claim is marked measured (with how), from a named document, or reasoning. A claim contradicted by the system means stop and report. A search returning nothing proves nothing.
+- Decay and context assembly: port exactly what the original source does, citing the file; where the original publishes no constant, ship the feature off by default with the constant as a declared setting without a default. (Done for decay.)
+- Zep CE and Letta features: port by faithful translation from the original source, citing files. Never invent constants (Law 32: operational constants are declared and read at run time).
+- The Claude chat authorised editing the `[tool.uv]` section of `pyproject.toml` (done) and the architect-ruling exception route for exact paths only; the workflow file only if the advisory job must name its group (it did not).
+- Commit trailers: "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>" and "Claude-Session: https://claude.ai/code/session_0159KAXTWYScLdDAgaBptPYJ". Pull request bodies end with "Generated with Claude Code" and the session URL.
+- Shawn's rules: no patch files ever; documents and code edited directly and kept in step; the code may do more than the document but never less; never remove a capability. Language model: option 4 (measure first) was chosen; the installed 27B is ruled out; the candidate is the 35B-A3B mixture-of-experts family.
+
+## What waits on other windows
+
+- agent_corpus window: boot (its missing settings and service rows), then `GET /saved_numbers/models` answering.
+- upgrade-sweep window: Ollama upgrade report (and pip removal, already reported done).
+- portable_system / architect side: acceptance of `rulings/architect_exceptions.json` on `main`; the gate's decisions on #1, #2, #3, #4, #6.
+- Shawn: the typed go-ahead to push the exception file, and the choice of language model once the numbers are in.
+
+## Files left in place on purpose
+
+- `local/` in this project (`check_files.sh`, `goals`, `protect.json`, `retask_1..3_*.txt`, `review`) is never committed and was not deleted, because it holds text not on GitHub.
+- `~/sovereign/local/checkpoint_independent_20261013/baseline_worktree/4896eddd-..._checkpoint-39192c7f25e1941c` is a worktree made by the checkpoint hook, not by this window; left alone.
+- The `qwen3:8b` model (5.2 GB) stays installed in Ollama. Saved here too: `cloud_task_swappable_models_sent_20261019.txt` (the task text sent to the cloud on 2026-10-19), the two measurement scripts as `.txt`.
