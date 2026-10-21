@@ -1,0 +1,16 @@
+[
+  {
+    "paths": [".pre-commit-config.yaml"],
+    "ruling": "Four exact-path exclusion lines (the permissions __init__.py, has_new_chunks.py, Pipeline.py and PipelineTask.py in the vendored Cognee package) are removed from the checker's exclusion list after their two upstream defects were fixed, so those files are now checked. Ruled by the Claude chat for Shawn.",
+    "decided_by": "Shawn, through the Claude chat",
+    "decided_on": "2026-10-20",
+    "pull_request": 17
+  },
+  {
+    "paths": ["pyproject.toml"],
+    "ruling": "One [tool.uv] conflicts declaration keeps the advisory dependency group (semgrep, which needs mcp 1.23.3) apart from the dev group and the graphiti-duckdb extra mcp-server (mcp 2.2.0), so each resolves on its own; the dev group asks for that extra. Ruled by the Claude chat for Shawn.",
+    "decided_by": "Shawn, through the Claude chat",
+    "decided_on": "2026-10-20",
+    "pull_request": 17
+  }
+]
