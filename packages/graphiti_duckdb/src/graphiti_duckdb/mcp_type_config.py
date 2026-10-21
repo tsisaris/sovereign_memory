@@ -67,7 +67,9 @@ def build_entity_types(
     for config in entity_type_configs:
         registered = ENTITY_TYPES.get(config.name)
         result[config.name] = (
-            registered if registered is not None else _doc_only_model(config.name, config.description)
+            registered
+            if registered is not None
+            else _doc_only_model(config.name, config.description)
         )
     return result
 
@@ -86,7 +88,9 @@ def build_edge_types(
     for config in edge_type_configs:
         registered = EDGE_TYPES.get(config.name)
         result[config.name] = (
-            registered if registered is not None else _doc_only_model(config.name, config.description)
+            registered
+            if registered is not None
+            else _doc_only_model(config.name, config.description)
         )
     return result
 

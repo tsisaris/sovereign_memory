@@ -11,7 +11,15 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
+import duckdb
+from graphiti_core.errors import GraphitiError
+
 logger = logging.getLogger(__name__)
+
+# What a job or tool call may fail with: Graphiti's own errors, a refusing model stand-in
+# (a RuntimeError), bad values, missing keys, file trouble and DuckDB errors. Anything else is
+# a bug and is allowed to stop the program.
+JOB_ERRORS = (GraphitiError, ValueError, RuntimeError, LookupError, OSError, duckdb.Error)
 
 
 class QueueService:
@@ -54,7 +62,7 @@ class QueueService:
                 process_func = await self._episode_queues[group_id].get()
                 try:
                     await process_func()
-                except Exception as error:
+                except JOB_ERRORS as error:
                     logger.error(
                         "Error processing queued episode for group_id %s: %s", group_id, error
                     )
@@ -144,7 +152,7 @@ class QueueService:
                     uuid=uuid,
                 )
                 logger.info("Successfully processed episode %s for group %s", uuid, group_id)
-            except Exception as error:
+            except JOB_ERRORS as error:
                 logger.error("Failed to process episode %s for group %s: %s", uuid, group_id, error)
                 raise
 
