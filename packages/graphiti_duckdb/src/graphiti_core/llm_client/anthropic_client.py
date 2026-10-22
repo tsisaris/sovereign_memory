@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ValidationError
 
 from ..prompts.models import Message
+from .cache import OwnerConnection
 from .client import LLMClient
 from .config import DEFAULT_MAX_TOKENS, LLMConfig, ModelSize
 from .errors import RateLimitError, RefusalError

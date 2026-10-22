@@ -26,7 +26,6 @@ from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel
 
 from ..prompts.models import Message
-from .cache import OwnerConnection
 from .client import LLMClient, get_extraction_language_instruction
 from .config import DEFAULT_MAX_TOKENS, LLMConfig, ModelSize
 from .errors import EmptyResponseError, RateLimitError
@@ -65,7 +64,6 @@ class OpenAIGenericClient(LLMClient):
         client: typing.Any = None,
         max_tokens: int = 16384,
         structured_output_mode: StructuredOutputMode = "json_schema",
-        cache_connection: OwnerConnection | None = None,
     ):
         """
         Initialize the OpenAIGenericClient with the provided configuration, cache setting, and client.
@@ -90,7 +88,7 @@ class OpenAIGenericClient(LLMClient):
         if config is None:
             config = LLMConfig()
 
-        super().__init__(config, cache, cache_connection)
+        super().__init__(config, cache)
 
         # Override max_tokens to support higher limits for local models
         self.max_tokens = max_tokens

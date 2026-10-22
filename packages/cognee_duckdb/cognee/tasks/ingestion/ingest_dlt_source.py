@@ -52,7 +52,7 @@ async def ingest_dlt_source(
     Ingests a dlt (re)source by running the dlt pipeline on it.
     Returns a list of DltRowData, one per row in the ingested tables.
 
-    Supports both SQLite and PostgreSQL as the dlt destination, based on
+    Supports both DuckDB and PostgreSQL as the dlt destination, based on
     the cognee relational config.
 
     Parameters:
@@ -94,7 +94,7 @@ async def ingest_dlt_source(
     if destination is None:
         raise UnsupportedDBProviderError(
             message=f"Unsupported db_provider for DLT ingestion: {relational_config.db_provider}. "
-            "Only 'sqlite' and 'postgres' are supported."
+            "Only 'duckdb' and 'postgres' are supported."
         )
 
     # Build run kwargs based on disposition
@@ -223,6 +223,9 @@ async def _extract_dlt_schema(
         dlt_sqlite_db_name = f"{dlt_db_name}__{dataset_name}"
         db_path = relational_config.db_path
         db_name = dlt_sqlite_db_name
+    elif relational_config.db_provider == "duckdb":
+        db_path = relational_config.db_path
+        db_name = dlt_db_name
     else:
         db_path = None
         db_name = dlt_db_name
@@ -340,6 +343,8 @@ async def _read_rows_from_tables(
         dlt_sqlite_db_name = f"{dlt_db_name}__{dataset_name}"
         db_path = os.path.join(relational_config.db_path, dlt_sqlite_db_name)
         async_url = f"sqlite+aiosqlite:///{db_path}"
+    elif relational_config.db_provider == "duckdb":
+        async_url = f"duckdb+aio:///{os.path.join(relational_config.db_path, dlt_db_name)}"
     else:
         async_url = URL.create(
             "postgresql+asyncpg",
