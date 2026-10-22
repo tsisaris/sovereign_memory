@@ -15,10 +15,10 @@ def _resolve_cache_db_url(backend: str, cache_db_url: str | None) -> str:
     """
     Resolve the SQLAlchemy async URL for the SQL cache backends.
 
-    CACHE_DB_URL wins when set. Otherwise "sqlite" and "turso" mirror the relational
-    engine's databases directory (with a dedicated cache.db file; "turso" opens it on
-    the Turso rewrite engine), and "postgres" falls back to the relational DB_*
-    settings when DB_PROVIDER=postgres.
+    CACHE_DB_URL wins when set. Otherwise "duckdb" uses the relational DuckDB file,
+    "turso" mirrors the relational engine's databases directory (a dedicated cache.db
+    file opened on the Turso rewrite engine), "postgres" falls back to the relational
+    DB_* settings when DB_PROVIDER=postgres, and "sqlite" is refused with a plain message.
     """
     if cache_db_url:
         return cache_db_url
@@ -31,7 +31,13 @@ def _resolve_cache_db_url(backend: str, cache_db_url: str | None) -> str:
         os.makedirs(relational_config.db_path, exist_ok=True)
         return f"duckdb+aio:///{relational_config.db_path}/{relational_config.db_name}"
 
-    if backend in ("sqlite", "turso"):
+    if backend == "sqlite":
+        raise CacheConnectionError(
+            "CACHE_BACKEND=sqlite is not supported: this memory system keeps its session "
+            "cache in DuckDB. Set CACHE_BACKEND=duckdb."
+        )
+
+    if backend == "turso":
         db_path = relational_config.db_path
         if "s3://" in db_path:
             raise CacheConnectionError(
@@ -39,17 +45,15 @@ def _resolve_cache_db_url(backend: str, cache_db_url: str | None) -> str:
                 "set CACHE_DB_URL or CACHE_BACKEND=postgres"
             )
         os.makedirs(db_path, exist_ok=True)
-        if backend == "turso":
-            from cognee.infrastructure.databases.turso import require_turso, turso_url
+        from cognee.infrastructure.databases.turso import require_turso, turso_url
 
-            try:
-                require_turso()
-            except ImportError as error:
-                raise CacheConnectionError(
-                    f"CACHE_BACKEND=turso requires the turso extra: {error}"
-                ) from error
-            return turso_url(f"{db_path}/cache.db")
-        return f"sqlite+aiosqlite:///{db_path}/cache.db"
+        try:
+            require_turso()
+        except ImportError as error:
+            raise CacheConnectionError(
+                f"CACHE_BACKEND=turso requires the turso extra: {error}"
+            ) from error
+        return turso_url(f"{db_path}/cache.db")
 
     if relational_config.db_provider == "postgres":
         from sqlalchemy import URL
@@ -198,7 +202,7 @@ def create_cache_engine(
         else:
             raise ValueError(
                 f"Unsupported cache backend: '{config.cache_backend}'. "
-                f"Supported backends are: 'redis', 'fs', 'tapes', 'sqlite', 'turso', 'postgres'"
+                f"Supported backends are: 'redis', 'fs', 'tapes', 'duckdb', 'turso', 'postgres'"
             )
     else:
         return None

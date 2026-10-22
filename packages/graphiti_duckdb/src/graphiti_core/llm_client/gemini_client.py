@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, ClassVar
 from pydantic import BaseModel
 
 from ..prompts.models import Message
+from .cache import OwnerConnection
 from .client import LLMClient, get_extraction_language_instruction
 from .config import LLMConfig, ModelSize
 from .errors import RateLimitError
@@ -99,6 +100,7 @@ class GeminiClient(LLMClient):
         max_tokens: int | None = None,
         thinking_config: types.ThinkingConfig | None = None,
         client: "genai.Client | None" = None,
+        cache_connection: OwnerConnection | None = None,
     ):
         """
         Initialize the GeminiClient with the provided configuration, cache setting, and optional thinking config.
@@ -113,7 +115,7 @@ class GeminiClient(LLMClient):
         if config is None:
             config = LLMConfig()
 
-        super().__init__(config, cache)
+        super().__init__(config, cache, cache_connection)
 
         self.model = config.model
 
@@ -229,15 +231,15 @@ class GeminiClient(LLMClient):
         if array_match:
             try:
                 return json.loads(raw_output[: array_match.end()])
-            except Exception:
-                pass
+            except json.JSONDecodeError as error:
+                logger.debug("Output ending in ] is not valid JSON, no salvage: %s", error)
         # Try to salvage a JSON object
         obj_match = re.search(r"\}\s*$", raw_output)
         if obj_match:
             try:
                 return json.loads(raw_output[: obj_match.end()])
-            except Exception:
-                pass
+            except json.JSONDecodeError as error:
+                logger.debug("Output ending in } is not valid JSON, no salvage: %s", error)
         return None
 
     async def _generate_response(
