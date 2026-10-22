@@ -72,7 +72,7 @@ OPERATIONS = (
     "review_judge",
     "review_select",
 )
-SETTINGS_SOURCE = "declared configuration, table [ranking]"
+SETTINGS_SOURCE = "memory_runtime_settings table, [ranking]"
 SUPPLIER_ABSENT_REASON = (
     "no supplier is connected: agent_corpus has not built the door that hands saved numbers "
     "to another agent or the door for the numbers of a single search question"
