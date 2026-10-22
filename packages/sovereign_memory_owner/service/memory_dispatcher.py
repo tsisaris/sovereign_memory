@@ -23,6 +23,7 @@ from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import AsyncConnecti
 from service.memory_numbers_services import NumbersServices
 from service.memory_owner_core import TIERS, OwnerCore
 from service.memory_processor_seam import MemoryProcessor, OwnerReader, TerminalProcessingError
+from service.memory_supplier import NumbersNotYetSupplied
 
 # Receipt states a processor may report from apply; pending and processing are
 # the owner's own bookkeeping states and are never a processor's answer.
@@ -356,6 +357,11 @@ class MemoryDispatcher:
             except TerminalProcessingError as error:
                 return await self._record_failure(
                     event_id, tier, attempt_id, "terminal_failure", error
+                )
+            except NumbersNotYetSupplied as error:
+                logger.info("Tier %s of %s is waiting on numbers: %s", tier, event_id, error)
+                return await self._record_failure(
+                    event_id, tier, attempt_id, "retryable_failure", error
                 )
             except Exception as error:
                 logger.exception("Preparing %s for tier %s failed", event_id, tier)
