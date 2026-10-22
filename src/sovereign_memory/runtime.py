@@ -7,8 +7,8 @@ retriever; the declared search settings and the models to register go to the Own
 receipts stay pending and its retrieval reports unavailable; nothing is
 simulated. run serves until stopped and runs the owner's scheduled work
 (retrying owed receipts and expiring events) at the configured interval. It
-opens the database only through the OwnerService and never calls a model
-itself.
+opens the database only through the OwnerService (after the brief read-only
+read of the settings table) and never calls a model itself.
 """
 
 import argparse
@@ -29,9 +29,17 @@ from service.memory_supplier_http import CorpusHttpSupplier
 from service.memory_tier_support import event_text
 from service.memory_visibility import RestrictedPolicy, ScopeLabelPolicy
 
-from .config import TIER_KEYS, ConfigurationError, RuntimeConfig, load
+from .config import (
+    LOAD_COMMAND,
+    TIER_KEYS,
+    ConfigurationError,
+    RuntimeConfig,
+    load,
+    load_settings_file,
+)
 
-CONFIG_ENVIRONMENT_VARIABLE = "SOVEREIGN_MEMORY_CONFIG"
+DATABASE_ENVIRONMENT_VARIABLE = "SOVEREIGN_MEMORY_DATABASE"
+OLD_CONFIG_ENVIRONMENT_VARIABLE = "SOVEREIGN_MEMORY_CONFIG"
 logger = logging.getLogger(__name__)
 
 
@@ -205,30 +213,79 @@ async def rebuild(service: OwnerService, tier: str, request_id: str, max_items: 
         await service.stop()
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run the runtime from a configuration file; return the process exit status.
+def load_settings_command(argv: Sequence[str]) -> int:
+    """Store a readable TOML settings file in the memory database and list what was stored.
 
-    The file is the first argument, else the path in SOVEREIGN_MEMORY_CONFIG.
-    An invalid or missing configuration prints the reason and returns 2 before
-    anything starts (the service is built, which validates every engine, but not started).
+    Takes the settings file and the memory database path; prints one line per setting
+    stored and returns 0, or prints the reason and returns 2 and changes nothing.
     """
     parser = argparse.ArgumentParser(
-        description="Run the configured memory Owner or rebuild one embedding tier"
+        prog="python -m sovereign_memory load-settings",
+        description="Validate a settings file and store it in the memory database's settings table",
     )
-    parser.add_argument("config", nargs="?")
+    parser.add_argument("settings_file")
+    parser.add_argument("database")
+    args = parser.parse_args(argv)
+    try:
+        stored = load_settings_file(args.settings_file, args.database)
+    except ConfigurationError as error:
+        print(f"Configuration error: {error}", file=sys.stderr)
+        return 2
+    for path in stored:
+        print(f"stored {path}")
+    print(f"{len(stored)} settings stored in {args.database}")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the runtime on a memory database, or load its settings; return the exit status.
+
+    `load-settings <settings file> <database>` stores settings. Otherwise the memory
+    database is the first argument, else the path in SOVEREIGN_MEMORY_DATABASE, and
+    every other setting is read from its settings table. The old SOVEREIGN_MEMORY_CONFIG
+    variable, and a TOML file given where the database belongs, are refused with a
+    message naming the new way. An invalid or missing setting prints the reason and
+    returns 2 before anything starts (the service is built, which validates every
+    engine, but not started).
+    """
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "load-settings":
+        return load_settings_command(arguments[1:])
+    if os.environ.get(OLD_CONFIG_ENVIRONMENT_VARIABLE):
+        print(
+            f"{OLD_CONFIG_ENVIRONMENT_VARIABLE} is no longer read: settings now live in the "
+            f"memory database. Set {DATABASE_ENVIRONMENT_VARIABLE} to the database file, and "
+            f"load settings with: {LOAD_COMMAND}",
+            file=sys.stderr,
+        )
+        return 2
+    parser = argparse.ArgumentParser(
+        description="Run the memory Owner on a memory database or rebuild one embedding tier"
+    )
+    parser.add_argument("database", nargs="?")
     parser.add_argument("--rebuild-tier", choices=("relational", "personalization"))
     parser.add_argument("--rebuild-id")
     parser.add_argument("--rebuild-limit", type=int)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     if args.rebuild_tier and (
         not args.rebuild_id or args.rebuild_limit is None or args.rebuild_limit <= 0
     ):
         parser.error("rebuilding requires --rebuild-id and a positive --rebuild-limit")
     if not args.rebuild_tier and (args.rebuild_id is not None or args.rebuild_limit is not None):
         parser.error("rebuild options require --rebuild-tier")
-    path = args.config or os.environ.get(CONFIG_ENVIRONMENT_VARIABLE)
+    path = args.database or os.environ.get(DATABASE_ENVIRONMENT_VARIABLE)
     if not path:
-        print(f"Give the configuration file or set {CONFIG_ENVIRONMENT_VARIABLE}", file=sys.stderr)
+        print(
+            f"Give the memory database file or set {DATABASE_ENVIRONMENT_VARIABLE}",
+            file=sys.stderr,
+        )
+        return 2
+    if path.endswith(".toml"):
+        print(
+            f"{path} looks like a settings file, but settings now live in the memory "
+            f"database. Load it with: {LOAD_COMMAND}",
+            file=sys.stderr,
+        )
         return 2
     try:
         config = load(path)

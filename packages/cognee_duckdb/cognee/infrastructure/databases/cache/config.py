@@ -15,14 +15,14 @@ class CacheConfig(BaseSettings):
     Configuration for distributed cache systems (e.g., Redis), used for locking or coordination.
 
     Attributes:
-    - cache_backend: Session cache backend; one of "redis", "fs", "tapes", "sqlite", "turso",
-      "postgres" (default "sqlite"). "sqlite", "turso" and "postgres" use the SQL cache adapter,
+    - cache_backend: Session cache backend; one of "redis", "fs", "tapes", "duckdb", "turso",
+      "postgres" (default "duckdb"; "sqlite" is refused). "duckdb", "turso" and "postgres" use the SQL cache adapter,
       differing only in default connection URL resolution and driver: "turso" is the same
       cache.db layout on the Turso rewrite engine (pyturso, ``pip install cognee"[turso]"``),
       honouring the TURSO_* settings.
     - cache_db_url: SQLAlchemy async URL for the SQL cache backends (env CACHE_DB_URL, e.g.
-      postgresql+asyncpg://cognee:cognee@localhost:5432/cognee_db). When unset, "sqlite" and
-      "turso" use a cache.db file next to the relational database and "postgres" falls back
+      postgresql+asyncpg://cognee:cognee@localhost:5432/cognee_db). When unset, "duckdb" uses
+      the relational DuckDB file, "turso" a cache.db file next to it and "postgres" falls back
       to the relational DB_* settings.
     - cache_purge_interval_seconds: Minimum interval (in seconds) between global TTL purge
       sweeps in the SQL cache backends (default: 900).

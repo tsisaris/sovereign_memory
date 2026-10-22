@@ -1,22 +1,27 @@
-"""Deployment configuration of the Sovereign Memory Owner runtime, read and checked early.
+"""Deployment settings of the Sovereign Memory Owner runtime, kept in the memory DuckDB file.
 
-The runtime takes every deployment choice from one TOML file: where the socket
-and database live, request and shutdown bounds, who shares the memory pool, and
-which tier engines to run, the models to register (as rows of data), and the
-four tunable search settings. Nothing here has a default for a model, a bound or
-a tuning number: a missing or unknown key, a wrong type or a tier that cannot be
-built is a ConfigurationError that names the key, and the service never starts on
-a half-valid file. It reads only the file and environment variable names the file
-points to; it never opens the database, calls a model or touches the network.
+Every deployment choice lives in the table memory_runtime_settings of the memory
+system's own DuckDB file: where the socket is, request and shutdown bounds, who
+shares the memory pool, which tier engines to run, the models to register (as
+rows of data), the search settings and the supplier. Only the path of that file
+is given from outside. Nothing here has a default for a model, a bound or a
+tuning number: a missing or unknown setting, a wrong type or a tier that cannot
+be built is a ConfigurationError that names the setting, and the service never
+starts on half-valid settings. A readable TOML file is turned into table rows
+only by load_settings_file; this module never edits the table any other way,
+calls a model or touches the network.
 """
 
+import json
 import math
 import os
 import tomllib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import duckdb
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
@@ -292,17 +297,164 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
     )
 
 
-def load(config_path: str | os.PathLike[str]) -> RuntimeConfig:
-    """Read and validate the TOML file at config_path.
+SETTINGS_TABLE = "memory_runtime_settings"
+LOAD_COMMAND = "python -m sovereign_memory load-settings <settings file> <memory database>"
 
-    Raises ConfigurationError for a missing file, invalid TOML or any invalid key.
+
+def _flatten(value: Any, prefix: str = "") -> list[tuple[str, Any]]:
+    """Return (dotted path, value) for every leaf of a nested table; lists and empty tables are leaves.
+
+    A key that is empty or holds a dot is refused, naming it, because the dotted path
+    could not be read back unchanged.
     """
-    path = Path(config_path).resolve()
+    if not isinstance(value, dict) or not value:
+        return [(prefix, value)]
+    leaves: list[tuple[str, Any]] = []
+    for key, inner in value.items():
+        if not key or "." in key:
+            raise ConfigurationError(
+                f"setting name {key!r} under {prefix or 'the top level'} must be non-empty "
+                "and hold no dot"
+            )
+        leaves.extend(_flatten(inner, f"{prefix}.{key}" if prefix else key))
+    return leaves
+
+
+def _unflatten(rows: list[tuple[str, str]]) -> dict[str, Any]:
+    """Rebuild the nested tables from (dotted path, JSON text) rows; a path under a leaf is refused."""
+    data: dict[str, Any] = {}
+    for path, text in rows:
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise ConfigurationError(
+                f"setting {path} in {SETTINGS_TABLE} is not valid JSON: {error}"
+            ) from error
+        *parents, last = path.split(".")
+        node = data
+        for key in parents:
+            node = node.setdefault(key, {})
+            if not isinstance(node, dict):
+                raise ConfigurationError(f"setting {path} sits under {key}, which holds a value")
+        if last in node:
+            raise ConfigurationError(f"setting {path} is stored twice or also holds sub-settings")
+        node[last] = value
+    return data
+
+
+def _with_database(data: dict[str, Any], database: Path) -> dict[str, Any]:
+    """Return data with service.database_path set to the file the settings live in.
+
+    The database path is the one thing given from outside, so a settings table that
+    also declares it is refused rather than silently overridden.
+    """
+    service = data.get("service")
+    if not isinstance(service, dict):
+        return data
+    if "database_path" in service:
+        raise ConfigurationError(
+            "service.database_path is not a setting: the memory database is the file the "
+            "settings are stored in, given on the command line"
+        )
+    return {**data, "service": {**service, "database_path": str(database)}}
+
+
+def load(database_path: str | os.PathLike[str]) -> RuntimeConfig:
+    """Read the settings table of the memory DuckDB file at database_path and validate it.
+
+    Relative paths among the settings resolve against the database file's folder.
+    Raises ConfigurationError, naming the problem, for a missing file, a file in use
+    by another process, a missing or empty settings table, or any missing or invalid
+    setting. It only reads, and always closes the file before returning.
+    """
+    path = Path(database_path).resolve()
+    if not path.is_file():
+        raise ConfigurationError(
+            f"Memory database {path} does not exist; create its settings with: {LOAD_COMMAND}"
+        )
     try:
-        with open(path, "rb") as handle:
+        connection = duckdb.connect(str(path), read_only=True)
+    except duckdb.Error as error:
+        raise ConfigurationError(
+            f"Cannot open memory database {path} to read its settings "
+            f"(is the memory service already running on it?): {error}"
+        ) from error
+    try:
+        present = connection.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = ?", [SETTINGS_TABLE]
+        ).fetchone()
+        if present is None:
+            raise ConfigurationError(
+                f"Memory database {path} has no {SETTINGS_TABLE} table; load settings with: "
+                f"{LOAD_COMMAND}"
+            )
+        rows = connection.execute(
+            f"SELECT path, value FROM {SETTINGS_TABLE} ORDER BY path"
+        ).fetchall()
+    except duckdb.Error as error:
+        raise ConfigurationError(f"Cannot read {SETTINGS_TABLE} in {path}: {error}") from error
+    finally:
+        connection.close()
+    if not rows:
+        raise ConfigurationError(
+            f"{SETTINGS_TABLE} in {path} is empty; load settings with: {LOAD_COMMAND}"
+        )
+    return parse(_with_database(_unflatten(rows), path), path.parent)
+
+
+def load_settings_file(
+    settings_file: str | os.PathLike[str], database_path: str | os.PathLike[str]
+) -> list[str]:
+    """Check a readable TOML settings file and store it as the settings table of the memory database.
+
+    The file is validated exactly as the service would validate it before anything is
+    written; then the table is created if absent and all its rows replaced in one
+    transaction, so a failed load leaves the earlier settings untouched. Returns the
+    dotted path of every setting stored. Raises ConfigurationError for an unreadable
+    or invalid file or a database in use. It never edits individual rows and never
+    starts the service.
+    """
+    source = Path(settings_file).resolve()
+    database = Path(database_path).resolve()
+    try:
+        with open(source, "rb") as handle:
             data = tomllib.load(handle)
     except OSError as error:
-        raise ConfigurationError(f"Cannot read configuration {path}: {error}") from error
+        raise ConfigurationError(f"Cannot read settings file {source}: {error}") from error
     except tomllib.TOMLDecodeError as error:
-        raise ConfigurationError(f"Configuration {path} is not valid TOML: {error}") from error
-    return parse(data, path.parent)
+        raise ConfigurationError(f"Settings file {source} is not valid TOML: {error}") from error
+    parse(_with_database(data, database), database.parent)
+    leaves = _flatten(data)
+    rows = []
+    for path, value in leaves:
+        try:
+            rows.append((path, json.dumps(value, allow_nan=False)))
+        except (TypeError, ValueError) as error:
+            raise ConfigurationError(
+                f"setting {path} in {source} cannot be stored as JSON: {error}"
+            ) from error
+    loaded_at = datetime.now(timezone.utc).isoformat()
+    try:
+        connection = duckdb.connect(str(database))
+    except duckdb.Error as error:
+        raise ConfigurationError(
+            f"Cannot open memory database {database} to store settings "
+            f"(stop the memory service first): {error}"
+        ) from error
+    try:
+        connection.execute("BEGIN")
+        connection.execute(
+            f"CREATE TABLE IF NOT EXISTS {SETTINGS_TABLE} (path VARCHAR PRIMARY KEY, "
+            "value VARCHAR NOT NULL, source_file VARCHAR NOT NULL, loaded_at VARCHAR NOT NULL)"
+        )
+        connection.execute(f"DELETE FROM {SETTINGS_TABLE}")
+        connection.executemany(
+            f"INSERT INTO {SETTINGS_TABLE} VALUES (?, ?, ?, ?)",
+            [(path, text, str(source), loaded_at) for path, text in rows],
+        )
+        connection.execute("COMMIT")
+    except duckdb.Error as error:
+        connection.close()
+        raise ConfigurationError(f"Cannot store settings in {database}: {error}") from error
+    connection.close()
+    return [path for path, _ in rows]
