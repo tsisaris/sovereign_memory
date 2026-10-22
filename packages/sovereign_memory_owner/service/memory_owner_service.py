@@ -6,7 +6,8 @@ event and its pending receipts, then process it in the background),
 event the principal produced, then remove its projections) and "status" (an
 event's durable receipts and whether every tier finished). The review screen adds
 "review_list", "review_show", "review_page", "review_judge" and "review_select",
-and "models" lists the model registry with each model's freshness. The principal
+"models" lists the model registry with each model's freshness, and "context" builds
+the context block for a prompt and says what is waiting on numbers or a language model. The principal
 comes from the transport, never from the request body.
 """
 
@@ -26,6 +27,9 @@ from typing import Any, AsyncIterator, Mapping, Sequence
 import duckdb
 from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import AsyncConnection
 from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import connect as duckdb_connect
+from graphiti_core.nodes import EpisodeType, EpisodicNode
+from graphiti_core.search.search_config import SearchResults
+from graphiti_core.search.search_helpers import search_results_to_context_string
 
 from service.memory_combiners import (
     SCORES,
@@ -66,6 +70,7 @@ OPERATIONS = (
     "forget",
     "status",
     "models",
+    "context",
     "review_list",
     "review_show",
     "review_page",
@@ -491,6 +496,8 @@ class OwnerService:
                     response = await self._status(principal, payload)
                 elif operation == "models":
                     response = await self._models()
+                elif operation == "context":
+                    response = await self._context(principal, payload)
                 else:
                     response = await self._review(operation, principal, payload)
             except PermissionError as refusal:
@@ -621,6 +628,79 @@ class OwnerService:
             raise ValueError("Invalid retrieval request: query and limit required")
         answers = await self.retrieval.retrieve(principal, query, limit)
         return {"status": "success", "tiers": answers}
+
+    async def _context(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Answer "what do you know that matters for this" as a context block for a prompt.
+
+        Goes in: a query and a limit, as for retrieve. Comes out: the context string
+        built by Graphiti's own search_results_to_context_string from the episodes and
+        messages the principal may see, followed by a WAITING section that says, per
+        tier, what could not be answered and why ("waiting on numbers", "waiting on a
+        language model" or "not configured"), plus the same lines as a list. Facts,
+        entities and communities are always reported as waiting on a language model,
+        because only Graphiti's extraction makes them. It never invents a result and
+        never reports a tier that could not answer as an empty success. Raises
+        ValueError for a malformed query or limit and PermissionError as retrieve does.
+        """
+        query, limit = request.get("query"), request.get("limit")
+        if not isinstance(query, str) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("Invalid context request: query and limit required")
+        answers = await self.retrieval.retrieve(principal, query, limit)
+        entries = [
+            (tier, hit)
+            for tier in ("temporal", "episodic")
+            for hit in answers[tier].get("hits", [])
+        ]
+        ids = sorted({hit["event_id"] for _, hit in entries})
+
+        def read() -> dict[str, str]:
+            """Read each involved event's recorded time on the owner's worker."""
+            rows = self.lifetime_conn.native.execute(
+                "SELECT event_id, created_at FROM memory_events WHERE event_id IN (SELECT unnest(?))",
+                [ids],
+            ).fetchall()
+            return dict(rows)
+
+        created = await self.lifetime_conn.run(read)
+        episodes = []
+        for tier, hit in entries:
+            stamp = datetime.fromisoformat(hit.get("valid_at") or created[hit["event_id"]])
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            episodes.append(
+                EpisodicNode(
+                    name=hit["event_id"],
+                    group_id=tier,
+                    source=EpisodeType.text,
+                    source_description=f"{tier} memory; {hit['ranking']}",
+                    content=hit.get("content", hit.get("text", "")),
+                    valid_at=stamp,
+                )
+            )
+        waiting = [
+            "FACTS, ENTITIES and COMMUNITIES: waiting on a language model "
+            "(Graphiti extracts them from episodes)"
+        ]
+        for tier, answer in answers.items():
+            if answer["status"] == "ok":
+                continue
+            reason = answer.get("reason", answer["status"])
+            left_out = answer.get("models", {}).get("left_out", {})
+            if left_out:
+                details = "; ".join(f"{model}: {why}" for model, why in left_out.items())
+                waiting.append(f"{tier}: waiting on numbers ({details})")
+            elif "no retriever registered" in reason:
+                waiting.append(f"{tier}: not configured on this service")
+            else:
+                waiting.append(f"{tier}: {reason}")
+        block = search_results_to_context_string(SearchResults(episodes=episodes))
+        lines = "\n".join(f"        - {line}" for line in waiting)
+        return {
+            "status": "success",
+            "context": f"{block}    <WAITING>\n{lines}\n    </WAITING>\n",
+            "waiting": waiting,
+            "episodes": len(episodes),
+        }
 
     async def _models(self) -> dict:
         """Report every registered model with its freshness and reasons, and the numbers still owed.
