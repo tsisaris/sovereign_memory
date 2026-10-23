@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from letta_memory_model.chat import Chat, ContextWindowExceededError
+from letta_memory_model.chat import Chat, ChatError, ContextWindowExceededError
 from letta_memory_model.messages import SUMMARY_ROLE, new_message
 from letta_memory_model.schemas.message import Message
 from letta_memory_model.summarizer.settings import CompactionSettings, get_default_prompt_for_mode
@@ -31,6 +31,9 @@ from letta_memory_model.summarizer.summarize import (
 from letta_memory_model.summarizer.tokens import count_tokens, count_tokens_with_tools
 
 logger = logging.getLogger(__name__)
+# The failures that make Letta fall back to a simpler mode: the model call failed or the
+# sliding window found no place to cut. Any other error is a bug and is raised, not hidden.
+_FALLBACK_ERRORS = (ChatError, ValueError)
 
 
 class SystemPromptTokenExceededError(RuntimeError):
@@ -87,7 +90,9 @@ def package_summary_note(
             and "messages_count_before" in compaction_stats
             and "messages_count_after" in compaction_stats
         ):
-            evicted = compaction_stats["messages_count_before"] - compaction_stats["messages_count_after"]
+            evicted = (
+                compaction_stats["messages_count_before"] - compaction_stats["messages_count_after"]
+            )
             context_message = (
                 f"Note: {evicted} messages from the beginning of the conversation have been "
                 "hidden from view due to memory constraints.\n"
@@ -159,7 +164,7 @@ async def compact_messages(
     if working.mode == "self_compact_all":
         try:
             summary, compacted = await self_summarize_all(messages, chat, working, tools, agent_id)
-        except Exception as error:
+        except _FALLBACK_ERRORS as error:
             notes.append(f"self_compact_all failed: {error}")
             logger.warning(notes[-1])
             try:
@@ -171,7 +176,7 @@ async def compact_messages(
                     messages, chat, fallback, tools, agent_id
                 )
                 mode_used = "self_compact_sliding_window"
-            except Exception as error:
+            except _FALLBACK_ERRORS as error:
                 notes.append(f"self_compact_sliding_window failed: {error}")
                 logger.warning(notes[-1])
                 summary, compacted = await _fallback_to_all(messages, chat, working)
@@ -183,7 +188,7 @@ async def compact_messages(
             )
         except ContextWindowExceededError:
             raise
-        except Exception as error:
+        except _FALLBACK_ERRORS as error:
             notes.append(f"self_compact_sliding_window failed: {error}")
             logger.warning(notes[-1])
             summary, compacted = await _fallback_to_all(messages, chat, working)
@@ -195,7 +200,7 @@ async def compact_messages(
             summary, compacted = await summarize_via_sliding_window(messages, chat, working)
         except ContextWindowExceededError:
             raise
-        except Exception as error:
+        except _FALLBACK_ERRORS as error:
             notes.append(f"sliding_window failed: {error}")
             logger.warning(notes[-1])
             summary, compacted = await _fallback_to_all(messages, chat, working)
@@ -206,7 +211,9 @@ async def compact_messages(
     estimate = count_tokens_with_tools(compacted, tools or [], working)
     if trigger_threshold is not None and estimate >= trigger_threshold:
         if mode_used == "sliding_window":
-            notes.append("still over the threshold after a sliding window; summarized again in all mode")
+            notes.append(
+                "still over the threshold after a sliding window; summarized again in all mode"
+            )
             logger.warning(notes[-1])
             summary, compacted = await summarize_all(compacted, chat, working)
             mode_used = "all"

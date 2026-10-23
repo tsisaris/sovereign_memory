@@ -21,7 +21,10 @@ from letta_memory_model.model_state import (
     get_context_state,
     set_context_state,
 )
-from letta_memory_model.summarizer.compaction import compact_messages, get_compaction_trigger_threshold
+from letta_memory_model.summarizer.compaction import (
+    compact_messages,
+    get_compaction_trigger_threshold,
+)
 from letta_memory_model.summarizer.settings import CompactionSettings
 from letta_memory_model.summarizer.tokens import count_tokens_with_tools
 

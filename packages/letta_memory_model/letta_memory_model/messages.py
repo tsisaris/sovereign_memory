@@ -27,7 +27,9 @@ def message_text(message: Message) -> str:
     if message.text:
         return message.text
     parts = message.content or []
-    return "".join(str(part.get("text", "")) for part in parts if part.get("type", "text") == "text")
+    return "".join(
+        str(part.get("text", "")) for part in parts if part.get("type", "text") == "text"
+    )
 
 
 def truncate_tool_return(content: Optional[str], limit: Optional[int]) -> Optional[str]:
@@ -67,7 +69,9 @@ def to_openai_dicts(
                 }
             )
         elif message.role in ("assistant", APPROVAL_ROLE) and message.tool_calls:
-            result.append({"role": "assistant", "content": text or None, "tool_calls": message.tool_calls})
+            result.append(
+                {"role": "assistant", "content": text or None, "tool_calls": message.tool_calls}
+            )
         elif message.role in ("system", "user", "assistant"):
             result.append({"role": message.role, "content": text})
         elif message.role in (SUMMARY_ROLE, APPROVAL_ROLE):

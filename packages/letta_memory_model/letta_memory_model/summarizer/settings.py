@@ -56,9 +56,7 @@ class CompactionSettings(BaseModel):
     )
     all_word_limit: int = Field(description="Word limit written into the all-mode prompts.")
     sliding_word_limit: int = Field(description="Word limit written into the sliding prompts.")
-    context_window_tokens: int = Field(
-        description="Size of the model's context window in tokens."
-    )
+    context_window_tokens: int = Field(description="Size of the model's context window in tokens.")
     trigger_multiplier: float = Field(
         description="Share of the context window at which compaction starts."
     )

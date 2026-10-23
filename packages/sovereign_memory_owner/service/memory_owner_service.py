@@ -43,6 +43,8 @@ from service.memory_combiners import (
 )
 from service.memory_consolidation import MemoryConsolidator
 from service.memory_dispatcher import SUCCESS_STATUSES, MemoryDispatcher, ProcessorRegistry
+from service.memory_graphiti_episodes import _has_graphiti_schema
+from service.memory_graphiti_search import keyword_search
 from service.memory_ground_truth import (
     export_manifest,
     initialize_ground_truth_schema,
@@ -724,10 +726,31 @@ class OwnerService:
                     valid_at=stamp,
                 )
             )
-        waiting = [
-            "FACTS, ENTITIES and COMMUNITIES: waiting on a language model "
-            "(Graphiti extracts them from episodes)"
-        ]
+        groups = await self._allowed_groups(principal)
+
+        def search_graph(handle: Any) -> tuple[SearchResults, int]:
+            """Search the stored graph by words and count the entities it holds; reads only."""
+            results = keyword_search(
+                handle, None if groups is None else sorted(groups), query, limit
+            )
+            if not _has_graphiti_schema(handle):
+                return results, 0
+            held = handle.execute(
+                "SELECT count(*) FROM graphiti.graph_node WHERE label = 'Entity'"
+            ).fetchone()[0]
+            return results, held
+
+        graph, entity_count = await self.lifetime_conn.run(
+            lambda: search_graph(self.lifetime_conn.native)
+        )
+        waiting = (
+            []
+            if entity_count
+            else [
+                "FACTS, ENTITIES and COMMUNITIES: waiting on a language model "
+                "(Graphiti extracts them from episodes; none has been extracted yet)"
+            ]
+        )
         for tier, answer in answers.items():
             if answer["status"] == "ok":
                 continue
@@ -740,7 +763,14 @@ class OwnerService:
                 waiting.append(f"{tier}: not configured on this service")
             else:
                 waiting.append(f"{tier}: {reason}")
-        block = search_results_to_context_string(SearchResults(episodes=episodes))
+        block = search_results_to_context_string(
+            SearchResults(
+                episodes=episodes,
+                edges=graph.edges,
+                nodes=graph.nodes,
+                communities=graph.communities,
+            )
+        )
         lines = "\n".join(f"        - {line}" for line in waiting)
         return {
             "status": "success",

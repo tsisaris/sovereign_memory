@@ -40,7 +40,9 @@ def count_tokens(messages: Sequence[Message], settings: CompactionSettings) -> i
     """
     if not messages:
         return 0
-    tokens = approx_token_count(json.dumps(to_openai_dicts(messages)), settings.approx_bytes_per_token)
+    tokens = approx_token_count(
+        json.dumps(to_openai_dicts(messages)), settings.approx_bytes_per_token
+    )
     return int(tokens * settings.approx_safety_margin)
 
 
