@@ -2,19 +2,20 @@
 
 It is for the loop that LettaAgentV3.step runs for a sleep-time agent in the original
 (letta/agents/letta_agent_v3.py, called from letta/groups/sleeptime_multi_agent_v4.py)
-reduced to what a memory agent needs. What goes in is a system prompt builder, the
-opening user message, the tools and their runner and the step limit; what comes out is a
-LoopResult listing every model call and tool call. It never edits a block itself and never
-hides a tool error.
+reduced to what a memory agent needs. What goes in is an async system prompt builder, the
+opening user message, the tool schemas, an async tool runner and the step limit; what comes out
+is a LoopResult listing every model call and tool call. It never edits a block itself, never
+touches the database (the builder and the runner do, in their own short reads and writes) and
+never hides a tool error.
 """
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from letta_memory_model.chat import Chat
-from letta_memory_model.sleeptime.tools import TERMINAL_TOOLS, SleeptimeTools
+from letta_memory_model.sleeptime.tools import TERMINAL_TOOLS, ToolOutcome
 
 
 @dataclass
@@ -35,10 +36,10 @@ class LoopResult:
 
 async def run_memory_agent(
     chat: Chat,
-    system_prompt: Callable[[], str],
+    system_prompt: Callable[[], Awaitable[str]],
     user_text: str,
     tool_schemas: Sequence[dict[str, Any]],
-    tools: SleeptimeTools,
+    run_tool: Callable[[str, str], Awaitable[ToolOutcome]],
     max_steps: int,
 ) -> LoopResult:
     """Run a memory agent until it finishes, makes no tool call, or reaches max_steps.
@@ -71,7 +72,7 @@ async def run_memory_agent(
             function = call.get("function", {})
             name = function.get("name", "")
             arguments = function.get("arguments", "")
-            outcome = tools.run(
+            outcome = await run_tool(
                 name, arguments if isinstance(arguments, str) else _as_text(arguments)
             )
             result.tool_calls.append(
