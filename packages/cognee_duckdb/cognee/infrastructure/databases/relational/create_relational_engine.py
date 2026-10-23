@@ -75,29 +75,9 @@ def create_relational_engine(
         )
 
     elif db_provider == "turso":
-        from cognee.infrastructure.databases.turso import require_turso
-
-        # Probe the driver here: the adapter module imports it lazily, so importing
-        # the module alone would not surface a missing turso extra.
-        require_turso()
-
-        if db_turso_url or db_turso_auth_token:
-            raise OSError(
-                "Remote Turso databases are not supported by the local Turso backend in this "
-                "version (DB_TURSO_URL / DB_TURSO_AUTH_TOKEN are set). Unset them to use a "
-                "local Turso database file under DB_PATH, or pick another DB_PROVIDER. These "
-                "settings are deprecated leftovers of the former libSQL replica adapter and "
-                "will be removed in a future release."
-            )
-
-        from .sqlalchemy.TursoAdapter import TursoAdapter
-
-        # The Turso rewrite engine (pyturso) drives the query path, migrations and
-        # the sqlite-dialect code paths through cognee's own SQLAlchemy dialect.
-        return TursoAdapter(
-            f"{db_path}/{db_name}",
-            connect_args=database_connect_args,
-            pool_args=pool_args,
+        raise ConnectionError(
+            "DB_PROVIDER=turso is not supported: this memory system keeps its relational "
+            "data in DuckDB. Set DB_PROVIDER=duckdb."
         )
 
     else:
