@@ -9,9 +9,14 @@ and no classifier calls.
 
 import asyncio
 import json
+import os
+from collections import Counter
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
+from uuid import NAMESPACE_OID, uuid5
 
+from cognee.api.v1.config.config import config as cognee_config
 from cognee.infrastructure.databases.graph import get_graph_engine
 from cognee.infrastructure.llm.config import get_llm_config
 from cognee.infrastructure.llm.extraction.knowledge_graph.extract_content_graph import (
@@ -22,9 +27,13 @@ from cognee.infrastructure.llm.extraction.knowledge_graph.extract_event_graph im
 )
 from cognee.infrastructure.llm.LLMGateway import LLMGateway
 from cognee.infrastructure.llm.prompts import render_prompt
+from cognee.modules.chunking.chunk_id import chunk_content_hash, content_chunk_id
+from cognee.modules.chunking.models import DocumentChunk
+from cognee.modules.data.processing.document_types import TextDocument
 from cognee.modules.engine.models.Event import Event
 from cognee.modules.engine.utils.generate_event_datapoint import generate_event_datapoint
 from cognee.modules.engine.utils.timestamp_from_text import timestamp_from_text
+from cognee.modules.graph.utils.get_graph_from_model import get_graph_from_model
 from cognee.modules.retrieval.temporal_hybrid.matching import extract_query_interval, to_epoch_ms
 from cognee.shared.data_models import KnowledgeGraph
 from cognee.tasks.memify.consolidate_entity_descriptions.constants import prompt_name
@@ -36,14 +45,20 @@ from cognee.tasks.memify.consolidate_entity_descriptions.rewrite_entities import
     build_node_neighborhood_prompt,
     query_LLM,
 )
+from cognee.tasks.storage import add_data_points
 from cognee.tasks.temporal_graph.add_entities_to_event import add_entities_to_event
 from cognee.tasks.temporal_graph.enrich_events import enrich_events
+from cognee.tasks.temporal_graph.extract_events_and_entities import extract_events_and_timestamps
+from cognee.tasks.temporal_graph.extract_knowledge_graph_from_events import (
+    extract_knowledge_graph_from_events,
+)
 from cognee.tasks.temporal_graph.models import Event as FoundEvent
 from cognee.tasks.temporal_graph.models import EventList
 
 STEP_NAMES: dict[str, tuple[str, ...]] = {
     "extract_graph": ("text",),
     "extract_events": ("text",),
+    "store_events": ("text",),
     "attach_event_entities": ("events",),
     "query_window": ("question",),
     "date_anchors": ("starts_at", "ends_at", "chunk_ids", "entity_ids"),
@@ -163,16 +178,26 @@ class CogneeModel:
 
     name = "cognee"
 
-    def __init__(self, language_model: dict[str, Any]) -> None:
-        """Keep the settings, check them once and start noting which model answers.
+    def __init__(self, language_model: Mapping[str, Any], settings: Mapping[str, Any]) -> None:
+        """Keep the settings, point Cognee's storage at the data directory and start noting answers.
 
-        It takes the validated language_model settings dict and gives back the ready part with
-        no answer recorded. The settings are checked here by building the Cognee fields once;
-        Cognee itself is pointed at a model only inside run_step. It raises ValueError for any
-        invalid setting and never touches Cognee's configuration outside a step.
+        It takes the validated language_model settings and the cognee settings, which must hold
+        data_directory: the absolute folder Cognee keeps its databases and data under. Cognee's
+        own config calls put its system and data roots there and select DuckDB for the graph,
+        the vectors and the relational store. It raises ValueError for any invalid setting, and
+        it never touches Cognee's language-model configuration outside a step.
         """
-        cognee_llm_fields(language_model)
+        cognee_llm_fields(dict(language_model))
+        directory = settings.get("data_directory") if isinstance(settings, Mapping) else None
+        if not isinstance(directory, str) or not os.path.isabs(directory):
+            raise ValueError("the setting cognee.data_directory must be an absolute folder path")
         self.language_model = dict(language_model)
+        self.data_directory = directory
+        cognee_config.system_root_directory(directory)
+        cognee_config.data_root_directory(directory)
+        cognee_config.set_graph_database_provider("duckdb")
+        cognee_config.set_vector_db_provider("duckdb")
+        cognee_config.set_relational_db_config({"db_provider": "duckdb"})
         self.lock = asyncio.Lock()
         _REPORTED["model"] = None
         _note_reported_model()
@@ -279,6 +304,51 @@ class CogneeModel:
                 }
             )
         return {"events": events, "refused": refused}
+
+    async def step_store_events(self, text: str) -> dict[str, Any]:
+        """Find the events and their entities in a text and store them in Cognee's graph.
+
+        It takes one plain text, makes it one document with one chunk (ids derived from the
+        text, so storing the same text again rewrites the same document and chunk), runs the
+        translated event tasks on it and stores the chunk with `add_data_points` into the
+        DuckDB graph under the data directory, without touching a vector engine. It gives back
+        the counts by node type of what was stored, the chunk count and the graph's totals. It
+        never stores anything when the text is blank.
+        """
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("step 'store_events' needs a non-blank text")
+        digest = chunk_content_hash(text)
+        document = TextDocument(
+            id=uuid5(NAMESPACE_OID, f"memory-text:{digest}"),
+            name=f"memory-text-{digest[:16]}",
+            raw_data_location=f"text:{digest}",
+            external_metadata="",
+            mime_type="text/plain",
+        )
+        chunk = DocumentChunk(
+            id=content_chunk_id(document.id, digest, 0),
+            text=text,
+            chunk_size=len(text.split()),
+            chunk_index=0,
+            cut_type="text_end",
+            content_hash=digest,
+            is_part_of=document,
+            contains=[],
+            document_id=str(document.id),
+            document_name=document.name,
+        )
+        chunks = await extract_events_and_timestamps([chunk])
+        chunks = await extract_knowledge_graph_from_events(chunks)
+        nodes, _edges = await get_graph_from_model(chunks[0])
+        await add_data_points(chunks, graph_only=True)
+        graph = await get_graph_engine()
+        stored_nodes, stored_edges = await graph.get_graph_data()
+        return {
+            "chunks": len(chunks),
+            "stored_by_type": dict(Counter(node.type for node in nodes)),
+            "graph_total_nodes": len(stored_nodes),
+            "graph_total_edges": len(stored_edges),
+        }
 
     async def step_attach_event_entities(self, events: list[dict[str, Any]]) -> dict[str, Any]:
         """Name the entities around events and attach each by a relationship.
