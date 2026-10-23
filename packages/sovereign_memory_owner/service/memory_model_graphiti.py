@@ -56,6 +56,7 @@ from service.memory_graphiti_episodes import episode_uuid
 from service.memory_model_parts import AchievedRecorder, DatabaseAccess, build_door
 
 CANDIDATE_MODES = ("shared_entities", "whole_group")
+SUMMARY_MODES = ("graphiti_default", "always_model")
 NO_NUMBERS = (
     "numbers not yet supplied: memory never makes numbers, so this Graphiti step that ranks by "
     "similarity cannot run here"
@@ -160,7 +161,15 @@ class GraphitiModel:
                 raise ValueError("ingest needs event_ids, a non-empty list")
             if mode not in CANDIDATE_MODES:
                 raise ValueError(f"candidates must be one of {', '.join(CANDIDATE_MODES)}")
-            return {"episodes": [await self._ingest(clients, e, mode) for e in event_ids]}
+            summaries = args.get("summaries", SUMMARY_MODES[0])
+            if summaries not in SUMMARY_MODES:
+                raise ValueError(f"summaries must be one of {', '.join(SUMMARY_MODES)}")
+            return {
+                "episodes": [
+                    await self._ingest(clients, e, mode, summaries == SUMMARY_MODES[1])
+                    for e in event_ids
+                ]
+            }
         group_id = args.get("group_id")
         if not isinstance(group_id, str) or not group_id:
             raise ValueError("communities needs a group_id")
@@ -303,12 +312,16 @@ class GraphitiModel:
                 invalidated.extend(_apply_temporal_invalidation(resolved, candidates))
         return resolved_edges, invalidated, new_edges
 
-    async def _ingest(self, clients: GraphitiClients, event_id: str, mode: str) -> dict[str, Any]:
+    async def _ingest(
+        self, clients: GraphitiClients, event_id: str, mode: str, always_model: bool = False
+    ) -> dict[str, Any]:
         """Turn one stored episode into entities, facts and summaries, and store them.
 
-        It takes the clients, the event id and the candidate mode. It returns the entities, the
-        facts (with their dates), the facts it ended and the seconds each phase took. Raises
-        ValueError when the event has no episode, and stores nothing when any model call fails.
+        It takes the clients, the event id, the candidate mode and whether every entity summary
+        goes through the model (Graphiti's own rule appends facts to a short summary without the
+        model). It returns the entities, the facts (with their dates), the facts it ended and the
+        seconds each phase took. Raises ValueError when the event has no episode, and stores
+        nothing when any model call fails.
         """
         clock: dict[str, float] = {}
 
@@ -358,6 +371,7 @@ class GraphitiModel:
             previous,
             None,
             _build_edges_by_node(new_edges),
+            skip_fact_appending=always_model,
             entity_types=None,
             clients=clients,
         )

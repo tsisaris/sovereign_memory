@@ -213,7 +213,9 @@ class CogneeModel:
                 setattr(configuration, field, "")
             for field, value in cognee_llm_fields({**self.language_model, "model": model}).items():
                 setattr(configuration, field, value)
-            output = await getattr(self, f"step_{step}")(**{key: args[key] for key in STEP_NAMES[step]})
+            output = await getattr(self, f"step_{step}")(
+                **{key: args[key] for key in STEP_NAMES[step]}
+            )
         return json.loads(json.dumps(output, default=str))
 
     async def step_extract_graph(self, text: str) -> dict[str, Any]:

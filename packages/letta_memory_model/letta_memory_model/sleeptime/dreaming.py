@@ -3,10 +3,11 @@
 It is for Letta's name for sleep-time compute, as Letta Code runs it: the trigger rules of
 src/cli/helpers/post-turn-reflection.ts and memory-reminder.ts (shouldFireStepCountTrigger),
 and the reflection subagent of src/agent/subagents/builtin/reflection.md reading a transcript of
-the messages since its last successful run. What goes in is a store, an agent, a chat function
-and the dream settings; what comes out is a record of the dream and the blocks it changed. It
-never edits a block except through the memory tools, and it does not advance its place in the
-history when a dream is cut off by the step limit.
+the messages since its last successful run. What goes in is a StoreAccess, an agent, a chat
+function and the dream settings; what comes out is a record of the dream and the blocks it
+changed. It reads, calls the model, then writes, and never holds the store across a model call;
+it edits a block only through the memory tools, and it does not advance its place in the history
+when a dream is cut off by the step limit.
 """
 
 from typing import Any, Optional
@@ -31,7 +32,9 @@ from letta_memory_model.sleeptime.tools import (
     SLEEPTIME_TOOL_NAMES,
     SLEEPTIME_TOOL_SCHEMAS,
     SleeptimeTools,
+    ToolOutcome,
 )
+from letta_memory_model.store_access import StoreAccess
 
 
 def messages_since_last_dream(
@@ -40,9 +43,9 @@ def messages_since_last_dream(
     """Return the agent's messages stored after the last successful dream, oldest first.
 
     Goes in: the store and the agent; comes out: the messages with a sequence id above the
-    saved one (all of them if the agent has never dreamed). It only reads.
+    saved one (all of them if the agent has never dreamed). It only reads, and the state table
+    must already exist.
     """
-    ensure_state_tables(store)
     after = get_dream_sequence(store, organization_id, agent_id)
     return store.list_messages(organization_id, agent_id, after_sequence_id=after or None)
 
@@ -81,8 +84,16 @@ def _transcript(messages: list[Message]) -> str:
     return "\n".join(lines)
 
 
+def _block_values(store: LettaMemoryStore, organization_id: str, agent_id: str) -> dict[str, str]:
+    """Return the label and value of every block attached to an agent.
+
+    It only reads, and is used to show which blocks a dream changed.
+    """
+    return {b.label: b.value for b in store.list_agent_blocks(organization_id, agent_id)}
+
+
 async def dream(
-    store: LettaMemoryStore,
+    access: StoreAccess,
     organization_id: str,
     agent_id: str,
     chat: Chat,
@@ -99,7 +110,16 @@ async def dream(
     advances only when the dream ended by itself (terminal tool or end of turn). With nothing
     new to read it does not run.
     """
-    new_messages = messages_since_last_dream(store, organization_id, agent_id)
+    await access.write(ensure_state_tables)
+
+    def start(store: LettaMemoryStore) -> tuple[list[Message], dict[str, str]]:
+        """Read the messages since the last dream and the blocks as they are before it."""
+        return (
+            messages_since_last_dream(store, organization_id, agent_id),
+            _block_values(store, organization_id, agent_id),
+        )
+
+    new_messages, before = await access.read(start)
     fire, reason = should_dream(settings, new_messages)
     if not fire and not force:
         return {"ran": False, "reason": reason}
@@ -110,32 +130,41 @@ async def dream(
         DREAM_INSTRUCTION_TEMPLATE.format(instruction=instruction.strip()) if instruction else ""
     )
     user_text = DREAM_USER_TEMPLATE.format(instruction=extra, transcript=transcript)
-    before = {b.label: b.value for b in store.list_agent_blocks(organization_id, agent_id)}
 
-    def system_prompt() -> str:
+    async def system_prompt() -> str:
         """Build the dream system prompt: the reflection instructions plus the agent's memory."""
-        return (
-            DREAM_SYSTEM_PROMPT + "\n" + store.get_agent_memory(organization_id, agent_id).compile()
+        memory = await access.read(
+            lambda store: store.get_agent_memory(organization_id, agent_id).compile()
         )
+        return DREAM_SYSTEM_PROMPT + "\n" + memory
+
+    async def run_tool(name: str, arguments: str) -> ToolOutcome:
+        """Run one tool call as its own committed write; a refusal rolls back and is returned."""
+
+        def work(store: LettaMemoryStore) -> ToolOutcome:
+            """Run the tool on the transaction's store."""
+            return SleeptimeTools(store, organization_id, agent_id, actor_id).run(name, arguments)
+
+        return await access.write(work)
 
     result = await run_memory_agent(
-        chat,
-        system_prompt,
-        user_text,
-        SLEEPTIME_TOOL_SCHEMAS,
-        SleeptimeTools(store, organization_id, agent_id, actor_id),
-        settings.max_steps,
+        chat, system_prompt, user_text, SLEEPTIME_TOOL_SCHEMAS, run_tool, settings.max_steps
     )
-    after = {b.label: b.value for b in store.list_agent_blocks(organization_id, agent_id)}
+    finished = result.stop_reason in ("terminal_tool", "end_turn")
+    top = max(m.sequence_id or 0 for m in new_messages)
+
+    def finish(store: LettaMemoryStore) -> dict[str, str]:
+        """Move the dream's place forward when it ended by itself, and read the blocks after."""
+        if finished:
+            set_dream_sequence(store, organization_id, agent_id, top)
+        return _block_values(store, organization_id, agent_id)
+
+    after = await access.write(finish)
     changed = {
         label: {"before": before.get(label), "after": value}
         for label, value in after.items()
         if before.get(label) != value
     }
-    finished = result.stop_reason in ("terminal_tool", "end_turn")
-    if finished:
-        top = max(m.sequence_id or 0 for m in new_messages)
-        set_dream_sequence(store, organization_id, agent_id, top)
     return {
         "ran": True,
         "reason": reason,

@@ -51,6 +51,7 @@ class RuntimeConfig:
     personalization: "MemoryConfig | None"
     supplier: dict[str, Any] | None
     language_model: dict[str, Any] | None
+    zep: dict[str, Any] | None
 
 
 def _take(
@@ -151,7 +152,31 @@ def _supplier(table: Any) -> dict[str, Any]:
     return table
 
 
-MODEL_OPTIONS_FOR_MEM0 = ("temperature", "max_tokens", "top_p", "reasoning_effort")
+def _zep(table: Any) -> dict[str, Any]:
+    """Read the [zep] table: the numbers Zep's thread summariser needs, none of them defaulted.
+
+    The five numbers (message_window, summary_max_output_tokens, model_context_tokens,
+    prompt_headroom_tokens and characters_per_token) are required and the summariser prompt is
+    optional. The value checks are made by the summariser itself when the service builds it, so
+    a wrong value is refused there with the setting named.
+    """
+    return dict(
+        _take(
+            table,
+            "zep",
+            (
+                "message_window",
+                "summary_max_output_tokens",
+                "model_context_tokens",
+                "prompt_headroom_tokens",
+                "characters_per_token",
+            ),
+            ("summarizer_prompt",),
+        )
+    )
+
+
+MODEL_OPTIONS_FOR_MEM0 =("temperature", "max_tokens", "top_p", "reasoning_effort")
 
 
 def _language_model(table: Any) -> dict[str, Any]:
@@ -287,7 +312,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         data,
         "file",
         ("service", "tiers"),
-        ("visibility", "ranking", "models", "supplier", "language_model"),
+        ("visibility", "ranking", "models", "supplier", "language_model", "zep"),
     )
     service = _take(
         data["service"],
@@ -339,6 +364,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
     ranking = _ranking(data["ranking"]) if "ranking" in data else None
     models = _models(data.get("models", []))
     supplier = _supplier(data["supplier"]) if "supplier" in data else None
+    zep = _zep(data["zep"]) if "zep" in data else None
 
     # Keep a socket symlink visible to the service's lstat-based refusal.
     socket_file = (base / _text(service, "service", "socket_path")).absolute()
@@ -368,6 +394,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         personalization=memory,
         supplier=supplier,
         language_model=language_model,
+        zep=zep,
     )
 
 
