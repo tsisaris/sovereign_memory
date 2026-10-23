@@ -33,6 +33,12 @@ SCHEMA_NAME = "zep_ce"
 DEFAULT_LAST_N_MESSAGES = 4
 MAX_MESSAGES_FOR_FACT_RETRIEVAL = 4
 MEMORY_FACTS_LIMIT = 5
+# Published by Zep for user summary instructions: at most five per user, a name of at most 100
+# characters and a text of at most 100 characters (getzep/zep,
+# zep-eval-harness/config/user_ingestion_config/user_summary_instructions.py, module docstring).
+MAX_USER_INSTRUCTIONS = 5
+MAX_INSTRUCTION_NAME_CHARACTERS = 100
+MAX_INSTRUCTION_TEXT_CHARACTERS = 100
 ROLE_TYPES = ("norole", "system", "assistant", "user", "function", "tool")
 NO_GRAPH_REASON = "no graph service is attached, so no facts can be retrieved"
 
@@ -91,6 +97,29 @@ class Fact:
 
 
 @dataclass
+class Summary:
+    """A session's summary and the message it was made up to (the summary point).
+
+    Translated from the Summary model of Zep v0.x (getzep/zep at 411142c^, pkg/models/memory.go).
+    """
+
+    uuid: UUID
+    created_at: datetime
+    content: str
+    summary_point_uuid: UUID
+    token_count: int
+    metadata: Optional[dict[str, Any]] = None
+
+
+@dataclass
+class UserInstruction:
+    """One user summary instruction: a unique name and the question or directive it carries."""
+
+    name: str
+    text: str
+
+
+@dataclass
 class Memory:
     """Recent messages and relevant facts; facts_unavailable says why no facts were returned."""
 
@@ -98,6 +127,7 @@ class Memory:
     relevant_facts: list[Fact] = field(default_factory=list)
     metadata: Optional[dict[str, Any]] = None
     facts_unavailable: Optional[str] = None
+    summary: Optional[Summary] = None
 
 
 @dataclass
@@ -271,6 +301,9 @@ class ZepCeStore:
         self._sessions = f"{prefix}.sessions"
         self._messages = f"{prefix}.messages"
         self._owed = f"{prefix}.graph_owed"
+        self._summaries = f"{prefix}.summaries"
+        self._instructions = f"{prefix}.user_summary_instructions"
+        self._user_summaries = f"{prefix}.user_summaries"
         self._prefix = prefix
         self._catalog = catalog
 
@@ -363,6 +396,38 @@ class ZepCeStore:
                     group_id VARCHAR NOT NULL,
                     detail JSON,
                     recorded_at TIMESTAMPTZ NOT NULL DEFAULT now())"""
+            )
+            self._db.execute(f"CREATE SEQUENCE IF NOT EXISTS {self._prefix}.summaries_id_seq")
+            self._db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {self._summaries} (
+                    uuid UUID PRIMARY KEY,
+                    id BIGINT DEFAULT nextval('{self._prefix}.summaries_id_seq'),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    deleted_at TIMESTAMPTZ,
+                    session_id VARCHAR NOT NULL,
+                    project_uuid UUID NOT NULL,
+                    content VARCHAR NOT NULL,
+                    metadata JSON,
+                    summary_point_uuid UUID NOT NULL,
+                    token_count BIGINT NOT NULL)"""
+            )
+            self._db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {self._instructions} (
+                    project_uuid UUID NOT NULL,
+                    user_id VARCHAR NOT NULL,
+                    position INTEGER NOT NULL,
+                    name VARCHAR NOT NULL,
+                    text VARCHAR NOT NULL,
+                    PRIMARY KEY (project_uuid, user_id, name))"""
+            )
+            self._db.execute(
+                f"""CREATE TABLE IF NOT EXISTS {self._user_summaries} (
+                    project_uuid UUID NOT NULL,
+                    user_id VARCHAR NOT NULL,
+                    content VARCHAR NOT NULL,
+                    through_message_id BIGINT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (project_uuid, user_id))"""
             )
 
     # Graph hand-off ---------------------------------------------------------------------
@@ -720,6 +785,11 @@ class ZepCeStore:
                 raise NotFoundError("session " + session_id + " not found")
             self._db.execute(
                 f"UPDATE {self._messages} SET deleted_at = ? "
+                "WHERE session_id = ? AND deleted_at IS NULL",
+                [stamp, session_id],
+            )
+            self._db.execute(
+                f"UPDATE {self._summaries} SET deleted_at = ? "
                 "WHERE session_id = ? AND deleted_at IS NULL",
                 [stamp, session_id],
             )
