@@ -75,7 +75,9 @@ class OpenAILLM(LLMBase):
             if timeout is None:
                 self.client = OpenAI(api_key=api_key, base_url=base_url)
             else:
-                self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
+                self.client = OpenAI(
+                    api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0
+                )
 
     def _parse_response(self, response, tools):
         """
