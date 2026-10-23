@@ -7,6 +7,8 @@ or a time limit; they all come from the settings it is given. It makes no number
 and no classifier calls.
 """
 
+import asyncio
+import json
 from datetime import datetime
 from typing import Any
 
@@ -39,6 +41,14 @@ from cognee.tasks.temporal_graph.enrich_events import enrich_events
 from cognee.tasks.temporal_graph.models import Event as FoundEvent
 from cognee.tasks.temporal_graph.models import EventList
 
+STEP_NAMES: dict[str, tuple[str, ...]] = {
+    "extract_graph": ("text",),
+    "extract_events": ("text",),
+    "attach_event_entities": ("events",),
+    "query_window": ("question",),
+    "date_anchors": ("starts_at", "ends_at", "chunk_ids", "entity_ids"),
+    "rewrite_entity_description": ("name",),
+}
 LANGUAGE_MODEL_KEYS = (
     "provider",
     "model",
@@ -146,42 +156,67 @@ class CogneeModel:
     It takes the validated language_model settings dict, sets Cognee's LLM configuration from
     it (clearing the per-stage and fallback overrides so nothing else can choose a model) and
     wraps Cognee's structured-output call to note which model the server says answered. It
-    gives back plain dicts from each step and reports the requested and the achieved model in
-    describe(). It never makes numbers and never falls back to another model.
+    answers the router's ModelPart protocol: a name, its step names, the achieved model and
+    run_step, which points Cognee at the model the router chose for that one call. It never
+    makes numbers and never falls back to another model.
     """
 
-    def __init__(self, language_model: dict[str, Any]) -> None:
-        """Set Cognee's LLM configuration from the settings and start noting answers.
+    name = "cognee"
 
-        It takes the validated language_model settings dict; the model is read once, so
-        changing the setting takes a restart of the memory service and of nothing else. It
-        gives back the ready object and records no answer yet. It raises ValueError for any
-        invalid setting and never touches a setting it was not given.
+    def __init__(self, language_model: dict[str, Any]) -> None:
+        """Keep the settings, check them once and start noting which model answers.
+
+        It takes the validated language_model settings dict and gives back the ready part with
+        no answer recorded. The settings are checked here by building the Cognee fields once;
+        Cognee itself is pointed at a model only inside run_step. It raises ValueError for any
+        invalid setting and never touches Cognee's configuration outside a step.
         """
-        fields = cognee_llm_fields(language_model)
-        configuration = get_llm_config()
-        for name in STAGE_FIELDS_CLEARED:
-            setattr(configuration, name, "")
-        for name, value in fields.items():
-            setattr(configuration, name, value)
-        self.requested_model: str = language_model["model"]
+        cognee_llm_fields(language_model)
+        self.language_model = dict(language_model)
+        self.lock = asyncio.Lock()
         _REPORTED["model"] = None
         _note_reported_model()
 
-    def describe(self) -> dict[str, Any]:
-        """Say which model this part was asked to use and which the server last reported.
+    def steps(self) -> tuple[str, ...]:
+        """Return the names of the steps this part answers, in the order they are documented.
 
-        It takes nothing and gives back the part name, the requested model from the settings
-        and the model name the server's last answer reported, which is None before any call.
-        It never guesses the achieved model from the request.
+        It takes nothing and gives back a tuple of step names. Each can be run by run_step with
+        plain JSON arguments. It never includes a step that is not implemented.
         """
-        return {
-            "part": "cognee",
-            "requested_model": self.requested_model,
-            "achieved_model": _REPORTED["model"],
-        }
+        return tuple(STEP_NAMES)
 
-    async def extract_graph(self, text: str) -> dict[str, Any]:
+    def achieved_model(self) -> str | None:
+        """Return the model name the server reported for the latest Cognee call, or None.
+
+        It takes nothing and gives back the name carried by the server's last answer, which is
+        None before any call. It never reports the requested model in its place.
+        """
+        return _REPORTED["model"]
+
+    async def run_step(self, step: str, args: dict[str, Any], model: str) -> dict[str, Any]:
+        """Point Cognee at the given model, run one named step and return plain JSON.
+
+        It takes a step name, its JSON arguments and the model the router chose for this call.
+        Cognee's configuration is process-wide, so the whole call holds a lock; it is set from
+        the same settings with only the model replaced. It gives back the step's output made
+        plain JSON, raises ValueError for an unknown step or a missing argument, and never
+        runs two steps at once.
+        """
+        if step not in STEP_NAMES:
+            raise ValueError(f"unknown step {step!r}; the steps are {', '.join(STEP_NAMES)}")
+        missing = [key for key in STEP_NAMES[step] if key not in args]
+        if missing:
+            raise ValueError(f"step {step!r} needs: {', '.join(missing)}")
+        async with self.lock:
+            configuration = get_llm_config()
+            for field in STAGE_FIELDS_CLEARED:
+                setattr(configuration, field, "")
+            for field, value in cognee_llm_fields({**self.language_model, "model": model}).items():
+                setattr(configuration, field, value)
+            output = await getattr(self, f"step_{step}")(**{key: args[key] for key in STEP_NAMES[step]})
+        return json.loads(json.dumps(output, default=str))
+
+    async def step_extract_graph(self, text: str) -> dict[str, Any]:
         """Extract a knowledge graph from a text with Cognee's own content-graph step.
 
         It takes the text and gives back the nodes and edges the model found, plus the nodes
@@ -206,7 +241,7 @@ class CogneeModel:
                 )
         return {"nodes": nodes, "edges": edges, "timestamps": timestamps}
 
-    async def extract_events(self, text: str) -> dict[str, Any]:
+    async def step_extract_events(self, text: str) -> dict[str, Any]:
         """Find the events in a text with the translated event step.
 
         It takes the text and gives back each event the model found with its name, description,
@@ -243,7 +278,7 @@ class CogneeModel:
             )
         return {"events": events, "refused": refused}
 
-    async def attach_event_entities(self, events: list[dict[str, Any]]) -> dict[str, Any]:
+    async def step_attach_event_entities(self, events: list[dict[str, Any]]) -> dict[str, Any]:
         """Name the entities around events and attach each by a relationship.
 
         It takes a list of dicts with a name and an optional description, asks the model once
@@ -275,7 +310,7 @@ class CogneeModel:
             attached.append({"event": node.name, "attributes": pairs})
         return {"events": attached, "answered_for": len(enriched), "asked_for": len(nodes)}
 
-    async def query_window(self, question: str) -> dict[str, Any]:
+    async def step_query_window(self, question: str) -> dict[str, Any]:
         """Turn a question into the time window Cognee's temporal search would use.
 
         It takes the question and gives back the window start and end as ISO strings (None
@@ -284,7 +319,7 @@ class CogneeModel:
         start, end, reason = await extract_query_interval(question)
         return {"starts_at": _iso(start), "ends_at": _iso(end), "reason": reason}
 
-    async def date_anchors(
+    async def step_date_anchors(
         self,
         starts_at: str | None,
         ends_at: str | None,
@@ -324,15 +359,16 @@ class CogneeModel:
                 return await get_entity_neighborhood(node_id, properties, graph)
         raise ValueError(f"No entity named {name!r} is in the graph")
 
-    async def rewrite_entity_description(self, node: dict[str, Any]) -> dict[str, Any]:
+    async def step_rewrite_entity_description(self, name: str) -> dict[str, Any]:
         """Rewrite an entity's description from its neighbourhood with Cognee's own prompt.
 
-        It takes a node record as `read_entity_node` gives it, builds the neighbourhood text
-        and sends it with Cognee's consolidation prompt through Cognee's own `query_LLM`. It
-        gives back the old description, the new one and the text the model was shown, so the
-        new description can be compared with the facts it was given. It never writes the
-        new description to the graph.
+        It takes an entity name, reads that entity's node record from Cognee's graph, builds the
+        neighbourhood text and sends it with Cognee's consolidation prompt through Cognee's own
+        `query_LLM`. It gives back the old description, the new one and the text the model was
+        shown, so the new description can be compared with the facts it was given. It never
+        writes the new description to the graph.
         """
+        node = await self.read_entity_node(name)
         text = build_node_neighborhood_prompt(node)
         result = await query_LLM(text, render_prompt(prompt_name, {}))
         return {
