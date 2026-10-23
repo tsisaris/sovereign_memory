@@ -833,6 +833,16 @@ class OwnerService:
         groups = await self._allowed_groups(principal)
         if "group_id" in args and groups is not None and args["group_id"] not in groups:
             raise PermissionError("That group is not visible to this principal")
+        actors = (
+            None
+            if visibility.mode == "pool"
+            else {principal.agent_id}
+            | (set(visibility.actor_agent_ids) if visibility.mode == "granted" else set())
+        )
+        owner_keys = ("agent_id", "foreground_agent_id") + (("user_id",) if part == "mem0" else ())
+        for key in owner_keys:
+            if key in args and actors is not None and args[key] not in actors:
+                raise PermissionError(f"The {key} {args[key]!r} is not visible to this principal")
         try:
             result = await self.model_parts.run(part, step, args, opinion)
         except (ValueError, PermissionError):

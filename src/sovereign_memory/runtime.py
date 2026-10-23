@@ -124,6 +124,20 @@ def model_parts_factory(config: RuntimeConfig, tiers: list[Any]) -> Callable[[An
             from service.memory_model_graphiti import GraphitiModel
 
             parts.append(GraphitiModel(language_model, database))
+        if config.cognee is not None:
+            from service.memory_model_cognee import CogneeModel
+
+            parts.append(CogneeModel(language_model, config.cognee))
+        if config.letta is not None and config.episodic_organization is not None:
+            from service.memory_model_letta import LettaModel
+
+            parts.append(
+                LettaModel(language_model, database, config.letta, config.episodic_organization)
+            )
+        if config.zep is not None:
+            from service.memory_model_zep import ZepModel
+
+            parts.append(ZepModel(language_model, database, config.zep))
         for tier in tiers:
             if tier.tier_name == "personalization":
                 from .config import _mem0_llm
