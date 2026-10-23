@@ -12,7 +12,7 @@ connection across a model call.
 
 import math
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 from uuid import UUID
 
@@ -20,7 +20,13 @@ from graphiti_core.llm_client.config import LLMConfig, ModelSize
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.prompts.extract_nodes import SummarizedEntities, extract_summaries_batch
 from graphiti_core.utils.text_utils import MAX_SUMMARY_CHARS, truncate_at_sentence
-from graphiti_duckdb.zep_ce_store import Message, NotFoundError, UserInstruction, ZepCeStore
+from graphiti_duckdb.zep_ce_store import (
+    GraphFact,
+    Message,
+    NotFoundError,
+    UserInstruction,
+    ZepCeStore,
+)
 from graphiti_duckdb.zep_summarizer import (
     SummarizerSettings,
     drop_empty_messages,
@@ -29,6 +35,7 @@ from graphiti_duckdb.zep_summarizer import (
     summarize,
 )
 
+from service.memory_graphiti_search import keyword_search
 from service.memory_model_parts import AchievedRecorder, DatabaseAccess, build_door
 
 
@@ -50,8 +57,59 @@ def _graph_facts(handle: Any, group_id: str) -> list[str]:
     return [row[0] for row in rows if row[0]]
 
 
+class ReadOnlyGraphError(RuntimeError):
+    """Raised when a call tries to write through the read-only graph service."""
+
+
+class KeywordGraph:
+    """Zep CE's graph service answered from the stored Graphiti graph by words, with no numbers.
+
+    It is for the "relevant facts" of a session (row 17). It takes an open handle and the id of the
+    Graphiti group that holds the user's facts. get_memory and search return the facts that match
+    the messages or the text by Graphiti's keyword search and are still valid. It never writes:
+    adding nodes, deleting a group and handing over messages are refused, because here the graph
+    is written by the model steps of the Graphiti part.
+    """
+
+    def __init__(self, handle: Any, graphiti_group: str) -> None:
+        """Keep the handle and the Graphiti group to search."""
+        self.handle = handle
+        self.graphiti_group = graphiti_group
+
+    def _facts(self, text: str, limit: int) -> list[GraphFact]:
+        """Return up to limit currently valid facts matching the text, best first."""
+        found = keyword_search(self.handle, [self.graphiti_group], text, limit)
+        return [
+            GraphFact(fact=e.fact, uuid=e.uuid, created_at=e.created_at, valid_at=e.valid_at)
+            for e in found.edges
+            if e.invalid_at is None
+        ][:limit]
+
+    def get_memory(
+        self, group_id: str, max_facts: int, messages: Sequence[Message]
+    ) -> list[GraphFact]:
+        """Return up to max_facts valid facts matching the messages' words."""
+        return self._facts(" ".join(m.content for m in messages), max_facts)
+
+    def search(self, group_ids: Sequence[str], text: str, max_facts: int) -> list[GraphFact]:
+        """Return up to max_facts valid facts matching the text's words."""
+        return self._facts(text, max_facts)
+
+    def add_node(self, group_id: str, node_uuid: str, name: str, summary: str) -> None:
+        """Refuse: this graph is read-only here."""
+        raise ReadOnlyGraphError("the graph is written by the Graphiti model steps")
+
+    def delete_group(self, group_id: str) -> None:
+        """Refuse: this graph is read-only here."""
+        raise ReadOnlyGraphError("the graph is written by the Graphiti model steps")
+
+    def put_memory(self, group_id: str, messages: Sequence[Message], skip_notify: bool) -> None:
+        """Refuse: this graph is read-only here."""
+        raise ReadOnlyGraphError("the graph is written by the Graphiti model steps")
+
+
 class ZepModel:
-    """The Zep part: thread summaries, user summaries and user summary instructions."""
+    """The Zep part: thread summaries, user summaries, user summary instructions and relevant facts."""
 
     name = "zep"
 
@@ -80,7 +138,14 @@ class ZepModel:
 
     def steps(self) -> tuple[str, ...]:
         """Return the step names this part answers."""
-        return ("seed_session", "set_instructions", "thread_summary", "get_summary", "user_summary")
+        return (
+            "seed_session",
+            "set_instructions",
+            "thread_summary",
+            "get_summary",
+            "user_summary",
+            "relevant_facts",
+        )
 
     def achieved_model(self) -> str | None:
         """Return the model name the server reported for the latest answer, or None before any."""
@@ -92,6 +157,8 @@ class ZepModel:
         await self.database.write(lambda handle: ZepCeStore(handle, project).ensure_schema())
         if step == "seed_session":
             return await self._seed_session(project, args)
+        if step == "relevant_facts":
+            return await self._relevant_facts(project, args)
         if step == "set_instructions":
             return await self._set_instructions(project, args)
         if step == "get_summary":
@@ -145,6 +212,35 @@ class ZepModel:
             return len(rows)
 
         return {"messages_stored": await self.database.write(seed)}
+
+    async def _relevant_facts(self, project: UUID, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Return a session's last messages and the stored facts that match them, as Zep CE's GetMemory does.
+
+        It takes session_id, graph_group_id (the Graphiti group holding the user's facts) and last_n
+        (how many messages to return). It returns the messages and the relevant facts with their
+        valid-from time, or the reason none are available. It calls no model: the facts were made by
+        the Graphiti model steps, and the match is by words because matching by meaning needs numbers.
+        """
+        session_id, group = self._text(args, "session_id"), self._text(args, "graph_group_id")
+        last_n = args.get("last_n", 0)
+        if isinstance(last_n, bool) or not isinstance(last_n, int) or last_n < 0:
+            raise ValueError("last_n must be a whole number of at least 0")
+
+        def read(handle: Any) -> Any:
+            """Read the memory with the keyword graph attached; no model."""
+            return ZepCeStore(handle, project, graph=KeywordGraph(handle, group)).get_memory(
+                session_id, last_n
+            )
+
+        memory = await self.database.read(read)
+        return {
+            "messages": [{"role": m.role, "content": m.content} for m in memory.messages],
+            "relevant_facts": [
+                {"fact": f.fact, "uuid": f.uuid, "valid_from": f.created_at.isoformat()}
+                for f in memory.relevant_facts
+            ],
+            "facts_unavailable": memory.facts_unavailable,
+        }
 
     async def _set_instructions(self, project: UUID, args: Mapping[str, Any]) -> dict[str, Any]:
         """Store a user's summary instructions, refusing a list that breaks Zep's published limits."""

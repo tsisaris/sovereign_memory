@@ -9,18 +9,22 @@ and the reply says so), and it never holds a database connection across a model 
 """
 
 import asyncio
+import os
 from datetime import datetime
 from typing import Any, Mapping
+from uuid import NAMESPACE_URL, uuid5
 
 import duckdb
 from graphiti_core.cross_encoder.client import CrossEncoderClient
-from graphiti_core.edges import EntityEdge
+from graphiti_core.edges import EntityEdge, HasEpisodeEdge
 from graphiti_core.embedder.client import EmbedderClient
+from graphiti_core.graphiti import Graphiti
 from graphiti_core.graphiti_types import GraphitiClients, uses_prompt_routing
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
-from graphiti_core.nodes import EntityNode, EpisodicNode
+from graphiti_core.nodes import EntityNode, EpisodicNode, SagaNode
 from graphiti_core.search.search_utils import RELEVANT_SCHEMA_LIMIT
+from graphiti_core.telemetry.telemetry import TELEMETRY_ENV_VAR
 from graphiti_core.tracer import NoOpTracer
 from graphiti_core.utils.bulk_utils import resolve_edge_pointers
 from graphiti_core.utils.datetime_utils import utc_now
@@ -121,7 +125,7 @@ class GraphitiModel:
 
     def steps(self) -> tuple[str, ...]:
         """Return the step names this part answers."""
-        return ("ingest", "communities")
+        return ("ingest", "communities", "saga_summary")
 
     def achieved_model(self) -> str | None:
         """Return the model name the server reported for the latest answer, or None before any."""
@@ -172,8 +176,64 @@ class GraphitiModel:
             }
         group_id = args.get("group_id")
         if not isinstance(group_id, str) or not group_id:
-            raise ValueError("communities needs a group_id")
+            raise ValueError("this step needs a group_id")
+        if step == "saga_summary":
+            return await self._saga_summary(clients, group_id, args)
         return await self._communities(clients, group_id)
+
+    async def _saga_summary(
+        self, clients: GraphitiClients, group_id: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Group stored episodes into a saga (when given) and have Graphiti's own code summarise it.
+
+        It takes the group id, saga_name and optionally event_ids to link into the saga. The saga
+        and its HAS_EPISODE links are created by the service because Graphiti makes them only inside
+        add_episode, which needs numbers. The summary itself is Graphiti.summarize_saga run
+        unchanged on a connection of its own, with the model from the settings. It returns the
+        saga's name, summary and how many episodes were read; it stores the summary on the saga.
+        """
+        name, event_ids = args.get("saga_name"), args.get("event_ids", [])
+        if not isinstance(name, str) or not name or not isinstance(event_ids, list):
+            raise ValueError("saga_summary needs saga_name and, optionally, event_ids (a list)")
+
+        def seed(handle: Any) -> str:
+            """Create the saga and link the named episodes to it; no model."""
+            driver = DuckDBDriver(connection=handle)
+            saga = _drive(driver.saga_node_ops.get_by_name(driver, name, group_id))
+            if saga is None:
+                saga = SagaNode(name=name, group_id=group_id)
+                _drive(driver.saga_node_ops.save(driver, saga))
+            for event_id in event_ids:
+                target = episode_uuid(event_id)
+                if not _drive(driver.episode_node_ops.get_by_uuids(driver, [target])):
+                    raise ValueError(f"event {event_id} has no episode in the graph yet")
+                link = HasEpisodeEdge(
+                    uuid=str(uuid5(NAMESPACE_URL, f"saga-link/{saga.uuid}/{target}")),
+                    source_node_uuid=saga.uuid,
+                    target_node_uuid=target,
+                    group_id=group_id,
+                    created_at=utc_now(),
+                )
+                _drive(driver.has_episode_edge_ops.save(driver, link))
+            return saga.uuid
+
+        saga_uuid = await self.database.write(seed)
+        os.environ[TELEMETRY_ENV_VAR] = "false"
+        client = Graphiti(
+            graph_driver=DuckDBDriver(db=str(self.database.path)),
+            llm_client=clients.llm_client,
+            embedder=NoNumbersEmbedder(),
+            cross_encoder=NoNumbersCrossEncoder(),
+        )
+        try:
+            saga = await client.summarize_saga(saga_uuid)
+        finally:
+            await client.driver.close()
+        return {
+            "saga": saga.name,
+            "summary": saga.summary,
+            "episodes_read": saga._summary_episodes_selected,
+        }
 
     @staticmethod
     def _load(handle: Any, event_id: str) -> dict[str, Any]:
