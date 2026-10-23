@@ -40,13 +40,15 @@ class CompactionSettings(BaseModel):
 
     mode: Mode = Field(description="Which way of summarizing to use.")
     prompt: str | None = Field(
-        description="The summary instructions; null means the prompt that belongs to the mode."
+        default=None,
+        description="The summary instructions; absent means the prompt that belongs to the mode.",
     )
     prompt_acknowledgement: bool = Field(
         description="Whether to add an assistant acknowledgement before the transcript."
     )
     clip_chars: int | None = Field(
-        description="Longest summary kept, in characters; null means no clipping."
+        default=None,
+        description="Longest summary kept, in characters; absent means no clipping.",
     )
     sliding_window_percentage: float = Field(
         description="Share of the context window left after a sliding-window summary."

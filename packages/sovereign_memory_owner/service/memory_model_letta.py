@@ -12,6 +12,9 @@ from typing import Any, Mapping, Optional
 
 from letta_memory_model.chat import ChatError, ChatReply, ContextWindowExceededError
 from letta_memory_model.letta_duckdb_store import LettaMemoryStore
+from letta_memory_model.schemas.block import Block
+from letta_memory_model.schemas.conversation import Conversation
+from letta_memory_model.schemas.message import Message
 from letta_memory_model.sleeptime.consolidate import run_sleeptime_agents, setup_sleeptime
 from letta_memory_model.sleeptime.dreaming import dream as run_dream
 from letta_memory_model.sleeptime.settings import parse_dream_settings, parse_sleeptime_settings
@@ -27,7 +30,7 @@ from service.memory_model_parts import (
 )
 
 CONTEXT_WORDS = ("context length", "context window", "too many tokens", "prompt is too long")
-STEPS = ("compact", "setup_sleeptime", "consolidate", "dream")
+STEPS = ("seed_agent", "compact", "setup_sleeptime", "consolidate", "dream")
 
 
 class LettaStoreAccess:
@@ -76,8 +79,14 @@ class LettaModel:
         language_model: Mapping[str, Any],
         database: DatabaseAccess,
         letta_settings: Mapping[str, Any],
+        organization_id: str,
     ) -> None:
-        """Check the three settings sections and build the one door that records what answered."""
+        """Check the three settings sections and build the one door that records what answered.
+
+        organization_id is the one organization this service holds in Letta's store (the episodic
+        tier's); a step naming any other organization is refused with PermissionError.
+        """
+        self.organization_id = organization_id
         self.language_model = dict(language_model)
         self.access = LettaStoreAccess(database)
         self.recorder = AchievedRecorder()
@@ -144,6 +153,44 @@ class LettaModel:
 
         return chat
 
+    async def _seed_agent(self, org: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Create an agent's memory blocks and one conversation of messages in the Letta store; no model.
+
+        It takes agent_id, blocks (a list of label, value and limit) and messages (a list of role and
+        text). It returns the new conversation id and the stored message ids. Letta's own server keeps
+        agents in its Postgres; here the agent is the blocks attached to an id. Raises ValueError for a
+        malformed block or message, and stores nothing then.
+        """
+        agent = self._text(args, "agent_id")
+        blocks, messages = args.get("blocks"), args.get("messages")
+        if not isinstance(blocks, list) or not isinstance(messages, list) or not messages:
+            raise ValueError("seed_agent needs blocks (a list) and messages (a non-empty list)")
+
+        def seed(store: LettaMemoryStore) -> dict[str, Any]:
+            """Create the blocks, attach them, create the conversation and add the messages."""
+            for item in blocks:
+                block = store.create_block(
+                    org,
+                    Block(label=item["label"], value=item["value"], limit=item["limit"]),
+                )
+                store.attach_block(org, agent, block.id)
+            conversation = store.create_conversation(org, Conversation(agent_id=agent))
+            stored = store.add_messages(
+                org,
+                [
+                    Message(
+                        role=m["role"],
+                        text=m["text"],
+                        agent_id=agent,
+                        conversation_id=conversation.id,
+                    )
+                    for m in messages
+                ],
+            )
+            return {"conversation_id": conversation.id, "message_ids": [m.id for m in stored]}
+
+        return await self.access.write(seed)
+
     @staticmethod
     def _text(args: dict[str, Any], key: str) -> str:
         """Return a required non-empty text argument or raise ValueError naming it."""
@@ -163,6 +210,10 @@ class LettaModel:
         ValueError before any model call.
         """
         org = self._text(args, "organization_id")
+        if org != self.organization_id:
+            raise PermissionError("that organization is not the one this service holds")
+        if step == "seed_agent":
+            return await self._seed_agent(org, args)
         chat = self._chat(model)
         if step == "compact":
             mode = args.get("mode")

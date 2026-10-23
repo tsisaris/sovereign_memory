@@ -53,6 +53,7 @@ class RuntimeConfig:
     language_model: dict[str, Any] | None
     zep: dict[str, Any] | None
     cognee: dict[str, Any] | None
+    letta: dict[str, Any] | None
 
 
 def _take(
@@ -177,7 +178,7 @@ def _zep(table: Any) -> dict[str, Any]:
     )
 
 
-MODEL_OPTIONS_FOR_MEM0 =("temperature", "max_tokens", "top_p", "reasoning_effort")
+MODEL_OPTIONS_FOR_MEM0 = ("temperature", "max_tokens", "top_p", "reasoning_effort")
 
 
 def _language_model(table: Any) -> dict[str, Any]:
@@ -313,7 +314,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         data,
         "file",
         ("service", "tiers"),
-        ("visibility", "ranking", "models", "supplier", "language_model", "zep", "cognee"),
+        ("visibility", "ranking", "models", "supplier", "language_model", "zep", "cognee", "letta"),
     )
     service = _take(
         data["service"],
@@ -366,9 +367,16 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
     models = _models(data.get("models", []))
     supplier = _supplier(data["supplier"]) if "supplier" in data else None
     zep = _zep(data["zep"]) if "zep" in data else None
-    cognee = dict(_take(data["cognee"], "cognee", ("data_directory",))) if "cognee" in data else None
+    cognee = (
+        dict(_take(data["cognee"], "cognee", ("data_directory",))) if "cognee" in data else None
+    )
     if cognee is not None:
         _text(cognee, "cognee", "data_directory")
+    letta = (
+        dict(_take(data["letta"], "letta", ("compaction", "sleeptime", "dream")))
+        if "letta" in data
+        else None
+    )
 
     # Keep a socket symlink visible to the service's lstat-based refusal.
     socket_file = (base / _text(service, "service", "socket_path")).absolute()
@@ -400,6 +408,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         language_model=language_model,
         zep=zep,
         cognee=cognee,
+        letta=letta,
     )
 
 

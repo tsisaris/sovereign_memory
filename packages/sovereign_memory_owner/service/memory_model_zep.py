@@ -20,7 +20,7 @@ from graphiti_core.llm_client.config import LLMConfig, ModelSize
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.prompts.extract_nodes import SummarizedEntities, extract_summaries_batch
 from graphiti_core.utils.text_utils import MAX_SUMMARY_CHARS, truncate_at_sentence
-from graphiti_duckdb.zep_ce_store import UserInstruction, ZepCeStore
+from graphiti_duckdb.zep_ce_store import Message, NotFoundError, UserInstruction, ZepCeStore
 from graphiti_duckdb.zep_summarizer import (
     SummarizerSettings,
     drop_empty_messages,
@@ -80,7 +80,7 @@ class ZepModel:
 
     def steps(self) -> tuple[str, ...]:
         """Return the step names this part answers."""
-        return ("set_instructions", "thread_summary", "get_summary", "user_summary")
+        return ("seed_session", "set_instructions", "thread_summary", "get_summary", "user_summary")
 
     def achieved_model(self) -> str | None:
         """Return the model name the server reported for the latest answer, or None before any."""
@@ -90,6 +90,8 @@ class ZepModel:
         """Run one step with the named model; every step needs project_uuid and its own id argument."""
         project = UUID(str(args.get("project_uuid", "")))
         await self.database.write(lambda handle: ZepCeStore(handle, project).ensure_schema())
+        if step == "seed_session":
+            return await self._seed_session(project, args)
         if step == "set_instructions":
             return await self._set_instructions(project, args)
         if step == "get_summary":
@@ -105,6 +107,44 @@ class ZepModel:
         if not isinstance(value, str) or not value:
             raise ValueError(f"this step needs {key}")
         return value
+
+    async def _seed_session(self, project: UUID, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Create a user (when new), a session and its messages in the Zep store; no model.
+
+        It takes user_id, first_name, last_name, session_id and messages (a list of role and
+        content). It returns how many messages the session now holds. Zep CE keeps these in its own
+        Postgres; this stands in for the REST calls that create them. Raises ValueError for a
+        malformed message, and stores nothing then.
+        """
+        user_id, session_id = self._text(args, "user_id"), self._text(args, "session_id")
+        rows = args.get("messages")
+        if not isinstance(rows, list) or any(
+            not isinstance(r, dict)
+            or not isinstance(r.get("role"), str)
+            or not isinstance(r.get("content"), str)
+            for r in rows
+        ):
+            raise ValueError("messages must be a list of objects with a role and a content")
+
+        def seed(handle: Any) -> int:
+            """Create the user if missing, the session, and the messages; return the message count."""
+            store = ZepCeStore(handle, project)
+            try:
+                store.get_user(user_id)
+            except NotFoundError:
+                store.create_user(
+                    user_id,
+                    first_name=str(args.get("first_name", "")),
+                    last_name=str(args.get("last_name", "")),
+                )
+            store.create_session(session_id, user_id=user_id)
+            store.put_messages(
+                session_id,
+                [Message(content=r["content"], role=r["role"], role_type=r["role"]) for r in rows],
+            )
+            return len(rows)
+
+        return {"messages_stored": await self.database.write(seed)}
 
     async def _set_instructions(self, project: UUID, args: Mapping[str, Any]) -> dict[str, Any]:
         """Store a user's summary instructions, refusing a list that breaks Zep's published limits."""
