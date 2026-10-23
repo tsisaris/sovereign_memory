@@ -50,6 +50,7 @@ class RuntimeConfig:
     models: tuple[dict[str, Any], ...]
     personalization: "MemoryConfig | None"
     supplier: dict[str, Any] | None
+    language_model: dict[str, Any] | None
 
 
 def _take(
@@ -150,12 +151,66 @@ def _supplier(table: Any) -> dict[str, Any]:
     return table
 
 
-def _personalization(table: Any) -> "MemoryConfig":
-    """Read the Mem0 table: llm, embedder and vector_store are required, the vector store is DuckDB."""
+MODEL_OPTIONS_FOR_MEM0 = ("temperature", "max_tokens", "top_p", "reasoning_effort")
+
+
+def _language_model(table: Any) -> dict[str, Any]:
+    """Read the language_model table: which model, where it answers, and its options.
+
+    Every key is required and none has a default. The provider must be ollama (the
+    local server this round uses); the model name, the address it answers on, the
+    key the client sends (a local server ignores it), the time limit of one request
+    and the options object are all settings, so changing models changes settings only.
+    """
+    where = "language_model"
+    table = dict(
+        _take(
+            table,
+            where,
+            ("provider", "model", "base_url", "api_key", "request_timeout_seconds", "options"),
+        )
+    )
+    if _text(table, where, "provider") != "ollama":
+        raise ConfigurationError(f"{where}.provider must be ollama")
+    for key in ("model", "base_url", "api_key"):
+        _text(table, where, key)
+    _positive(table, where, "request_timeout_seconds", False)
+    if not isinstance(table["options"], dict):
+        raise ConfigurationError(f"{where}.options must be a table of model options")
+    return table
+
+
+def _mem0_llm(language_model: dict[str, Any]) -> dict[str, Any]:
+    """Return Mem0's llm section made from the language_model settings (Ollama's OpenAI-style door)."""
+    config = {
+        "model": language_model["model"],
+        "api_key": language_model["api_key"],
+        "openai_base_url": language_model["base_url"].rstrip("/") + "/v1",
+    }
+    config.update(
+        {key: value for key, value in language_model["options"].items() if key in MODEL_OPTIONS_FOR_MEM0}
+    )
+    return {"provider": "openai", "config": config}
+
+
+def _personalization(table: Any, language_model: dict[str, Any] | None) -> "MemoryConfig":
+    """Read the Mem0 table: embedder and vector_store are required, the vector store is DuckDB.
+
+    Mem0's language model is never set here: it is made from the language_model
+    settings, so a stored llm section is refused and a missing language_model is named.
+    """
     where = "tiers.personalization"
     table = _take(table, where, ("memory",))
+    if isinstance(table["memory"], dict) and "llm" in table["memory"]:
+        raise ConfigurationError(
+            f"{where}.memory.llm is not a setting: the model is set in language_model"
+        )
+    if language_model is None:
+        raise ConfigurationError(f"{where} needs the language_model settings")
     memory = _take(
-        table["memory"],
+        {**table["memory"], "llm": _mem0_llm(language_model)}
+        if isinstance(table["memory"], dict)
+        else table["memory"],
         f"{where}.memory",
         ("llm", "embedder", "vector_store", "enable_update_delete_branches"),
         ("custom_fact_extraction_prompt", "custom_update_memory_prompt", "custom_instructions"),
@@ -219,7 +274,10 @@ def _personalization(table: Any) -> "MemoryConfig":
 def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
     """Validate parsed TOML and return the RuntimeConfig; relative paths resolve against base."""
     data = _take(
-        data, "file", ("service", "tiers"), ("visibility", "ranking", "models", "supplier")
+        data,
+        "file",
+        ("service", "tiers"),
+        ("visibility", "ranking", "models", "supplier", "language_model"),
     )
     service = _take(
         data["service"],
@@ -256,7 +314,12 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
             embedding_model = _embedding_model(
                 relational["embedding_model"], "tiers.relational.embedding_model"
             )
-    memory = _personalization(tiers["personalization"]) if "personalization" in tiers else None
+    language_model = _language_model(data["language_model"]) if "language_model" in data else None
+    memory = (
+        _personalization(tiers["personalization"], language_model)
+        if "personalization" in tiers
+        else None
+    )
     ranks_by_models = "relational" in tiers or "personalization" in tiers
     if ranks_by_models and "ranking" not in data:
         raise ConfigurationError(
@@ -294,6 +357,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         models=models,
         personalization=memory,
         supplier=supplier,
+        language_model=language_model,
     )
 
 
