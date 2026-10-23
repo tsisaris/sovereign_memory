@@ -229,7 +229,9 @@ class GraphitiModel:
             if local.resolved_nodes[0] is None:
                 _resolve_with_similarity([node], indexes, local)
             if local.resolved_nodes[0] is not None:
-                _commit_resolution(state, local.resolved_nodes[0], local.uuid_map, local.duplicate_pairs, idx)
+                _commit_resolution(
+                    state, local.resolved_nodes[0], local.uuid_map, local.duplicate_pairs, idx
+                )
                 continue
             state.unresolved_indices.append(idx)
         if state.unresolved_indices:
@@ -274,7 +276,11 @@ class GraphitiModel:
         seen: set[tuple[str, str, str]] = set()
         routing = {"clients": clients} if uses_prompt_routing(clients) else {}
         for edge in edges:
-            key = (edge.source_node_uuid, edge.target_node_uuid, " ".join(edge.fact.lower().split()))
+            key = (
+                edge.source_node_uuid,
+                edge.target_node_uuid,
+                " ".join(edge.fact.lower().split()),
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -317,18 +323,32 @@ class GraphitiModel:
         t = asyncio.get_running_loop().time()
         extracted, index_map = await extract_nodes(clients, episode, previous, None, None, None)
         t = lap("extract_entities_seconds", t)
-        nodes, uuid_map = await self._resolve_nodes(clients, extracted, episode, previous, loaded["nodes"])
+        nodes, uuid_map = await self._resolve_nodes(
+            clients, extracted, episode, previous, loaded["nodes"]
+        )
         t = lap("resolve_entities_seconds", t)
         edge_type_map = {("Entity", "Entity"): []}
         extracted_edges, materialized = await extract_edges(
-            clients, episode, extracted, previous, edge_type_map, episode.group_id, None, False, None
+            clients,
+            episode,
+            extracted,
+            previous,
+            edge_type_map,
+            episode.group_id,
+            None,
+            False,
+            None,
         )
         for node in materialized:
             nodes.append(node)
             uuid_map[node.uuid] = node.uuid
         t = lap("extract_facts_seconds", t)
         resolved, invalidated, new_edges = await self._resolve_edges(
-            clients, resolve_edge_pointers(extracted_edges, uuid_map), episode, loaded["edges"], mode
+            clients,
+            resolve_edge_pointers(extracted_edges, uuid_map),
+            episode,
+            loaded["edges"],
+            mode,
         )
         t = lap("date_and_contradiction_seconds", t)
         await _extract_entity_summaries_batch(

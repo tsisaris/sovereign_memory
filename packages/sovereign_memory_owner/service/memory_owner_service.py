@@ -43,14 +43,14 @@ from service.memory_combiners import (
 )
 from service.memory_consolidation import MemoryConsolidator
 from service.memory_dispatcher import SUCCESS_STATUSES, MemoryDispatcher, ProcessorRegistry
+from service.memory_graphiti_episodes import _has_graphiti_schema
+from service.memory_graphiti_search import keyword_search
 from service.memory_ground_truth import (
     export_manifest,
     initialize_ground_truth_schema,
     record_case,
     verify_export,
 )
-from service.memory_graphiti_episodes import _has_graphiti_schema
-from service.memory_graphiti_search import keyword_search
 from service.memory_model_parts import OPINIONS, DatabaseAccess, ModelParts
 from service.memory_models import list_models, model_state
 from service.memory_numbers import NumbersStore, initialize_numbers_schema, pending_requests
@@ -730,7 +730,9 @@ class OwnerService:
 
         def search_graph(handle: Any) -> tuple[SearchResults, int]:
             """Search the stored graph by words and count the entities it holds; reads only."""
-            results = keyword_search(handle, None if groups is None else sorted(groups), query, limit)
+            results = keyword_search(
+                handle, None if groups is None else sorted(groups), query, limit
+            )
             if not _has_graphiti_schema(handle):
                 return results, 0
             held = handle.execute(
@@ -738,7 +740,9 @@ class OwnerService:
             ).fetchone()[0]
             return results, held
 
-        graph, entity_count = await self.lifetime_conn.run(lambda: search_graph(self.lifetime_conn.native))
+        graph, entity_count = await self.lifetime_conn.run(
+            lambda: search_graph(self.lifetime_conn.native)
+        )
         waiting = (
             []
             if entity_count

@@ -64,9 +64,7 @@ class AchievedRecorder:
             self.last_model = body["model"]
 
 
-def build_door(
-    language_model: Mapping[str, Any], recorder: AchievedRecorder
-) -> AsyncOpenAI:
+def build_door(language_model: Mapping[str, Any], recorder: AchievedRecorder) -> AsyncOpenAI:
     """Return an OpenAI-style client for the settings' server that records what answered.
 
     It takes the validated language_model settings and a recorder. It returns a client
@@ -111,8 +109,10 @@ def _processor_of(language_model: Mapping[str, Any], model: str) -> dict[str, An
     ) as reply:
         loaded = json.loads(reply.read())["models"]
     for entry in loaded:
-        if entry.get("name") == model or entry.get("model") == model or (
-            ":" not in model and entry.get("name") == f"{model}:latest"
+        if (
+            entry.get("name") == model
+            or entry.get("model") == model
+            or (":" not in model and entry.get("name") == f"{model}:latest")
         ):
             in_card = int(entry.get("size_vram", 0))
             return {
@@ -212,7 +212,9 @@ class ModelParts:
             raise ValueError(f"unknown part {part!r}; the parts are {', '.join(self.parts)}")
         target = self.parts[part]
         if step not in target.steps():
-            raise ValueError(f"part {part!r} has no step {step!r}; its steps are {', '.join(target.steps())}")
+            raise ValueError(
+                f"part {part!r} has no step {step!r}; its steps are {', '.join(target.steps())}"
+            )
         model = model_for(self.language_model, opinion)
         started = time.monotonic()
         output = await target.run_step(step, args, model)

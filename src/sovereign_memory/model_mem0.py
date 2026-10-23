@@ -81,7 +81,10 @@ class Mem0Model:
         text = await asyncio.to_thread(
             memory.llm.generate_response,
             messages=[
-                {"role": "system", "content": args.get("prompt") or PROCEDURAL_MEMORY_SYSTEM_PROMPT},
+                {
+                    "role": "system",
+                    "content": args.get("prompt") or PROCEDURAL_MEMORY_SYSTEM_PROMPT,
+                },
                 *messages,
                 {"role": "user", "content": "Create procedural memory of the above conversation."},
             ],

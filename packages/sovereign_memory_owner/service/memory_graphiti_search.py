@@ -54,9 +54,7 @@ class NoModelClient(LLMClient):
         raise RuntimeError("keyword search must not call a language model")
 
 
-def keyword_search(
-    handle: Any, groups: list[str] | None, query: str, limit: int
-) -> SearchResults:
+def keyword_search(handle: Any, groups: list[str] | None, query: str, limit: int) -> SearchResults:
     """Return the facts, entities, episodes and communities matching a question by words.
 
     It takes the owner's open handle, the group ids to search (None for every group), the
