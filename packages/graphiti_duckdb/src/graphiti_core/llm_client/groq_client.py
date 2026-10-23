@@ -35,6 +35,7 @@ else:
 from pydantic import BaseModel
 
 from ..prompts.models import Message
+from .cache import OwnerConnection
 from .client import LLMClient
 from .config import LLMConfig, ModelSize
 from .errors import RateLimitError
@@ -46,12 +47,17 @@ DEFAULT_MAX_TOKENS = 2048
 
 
 class GroqClient(LLMClient):
-    def __init__(self, config: LLMConfig | None = None, cache: bool = False):
+    def __init__(
+        self,
+        config: LLMConfig | None = None,
+        cache: bool = False,
+        cache_connection: OwnerConnection | None = None,
+    ):
         if config is None:
             config = LLMConfig(max_tokens=DEFAULT_MAX_TOKENS)
         elif config.max_tokens is None:
             config.max_tokens = DEFAULT_MAX_TOKENS
-        super().__init__(config, cache)
+        super().__init__(config, cache, cache_connection)
 
         self.client = AsyncGroq(api_key=config.api_key)
 

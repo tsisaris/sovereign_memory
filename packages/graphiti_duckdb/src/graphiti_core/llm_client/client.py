@@ -26,13 +26,12 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_random_
 
 from ..prompts.models import Message
 from ..tracer import NoOpTracer, Tracer
-from .cache import LLMCache
+from .cache import LLMCache, OwnerConnection
 from .config import DEFAULT_MAX_TOKENS, LLMConfig, ModelSize
 from .errors import EmptyResponseError, RateLimitError
 from .token_tracker import TokenUsageTracker
 
 DEFAULT_TEMPERATURE = 0
-DEFAULT_CACHE_DIR = "./llm_cache"
 
 
 def get_extraction_language_instruction(group_id: str | None = None) -> str:
@@ -73,7 +72,12 @@ def is_server_or_retry_error(exception):
 
 
 class LLMClient(ABC):
-    def __init__(self, config: LLMConfig | None, cache: bool = False):
+    def __init__(
+        self,
+        config: LLMConfig | None,
+        cache: bool = False,
+        cache_connection: OwnerConnection | None = None,
+    ):
         if config is None:
             config = LLMConfig()
 
@@ -87,9 +91,10 @@ class LLMClient(ABC):
         self.tracer: Tracer = NoOpTracer()
         self.token_tracker: TokenUsageTracker = TokenUsageTracker()
 
-        # Only create the cache directory if caching is enabled
+        # The answer store lives in the memory service's DuckDB file, through its own
+        # connection only; caching on without that connection is refused here.
         if self.cache_enabled:
-            self.cache_dir = LLMCache(DEFAULT_CACHE_DIR)
+            self.cache_dir = LLMCache(cache_connection)
 
     def set_tracer(self, tracer: Tracer) -> None:
         """Set the tracer for this LLM client."""
@@ -255,7 +260,7 @@ class LLMClient(ABC):
             # Check cache first
             if self.cache_enabled and self.cache_dir is not None:
                 cache_key = self._get_cache_key(messages, model=model)
-                cached_response = self.cache_dir.get(cache_key)
+                cached_response = await self.cache_dir.get(cache_key)
                 if cached_response is not None:
                     logger.debug(f"Cache hit for {cache_key}")
                     span.add_attributes({"cache.hit": True})
@@ -280,7 +285,7 @@ class LLMClient(ABC):
             # Cache response if enabled
             if self.cache_enabled and self.cache_dir is not None:
                 cache_key = self._get_cache_key(messages, model=model)
-                self.cache_dir.set(cache_key, response)
+                await self.cache_dir.set(cache_key, response)
 
             return response
 

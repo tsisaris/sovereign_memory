@@ -44,7 +44,7 @@ class UnsupportedDBProviderError(CogneeConfigurationError):
             name,
             status_code,
             remediation=(
-                "Set DB_PROVIDER to 'sqlite' (default) or 'postgres' (needs the postgres "
+                "Set DB_PROVIDER to 'duckdb' (default) or 'postgres' (needs the postgres "
                 'extra: pip install "cognee[postgres]"); dlt ingestion writes to the same '
                 "relational database cognee uses."
             ),

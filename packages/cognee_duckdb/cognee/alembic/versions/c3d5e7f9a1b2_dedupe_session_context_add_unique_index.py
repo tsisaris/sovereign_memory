@@ -25,7 +25,6 @@ cannot proceed with a cache database the upsert would break on.
 
 import logging
 import os
-import sqlite3
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -80,7 +79,7 @@ def standalone_sqlite_cache_path(alembic_conn) -> tuple[str, str] | None:
 
     Returns ``(path, driver)``; the driver is ``aiosqlite`` for stock SQLite and
     ``cognee_turso`` for a cache on the Turso rewrite engine, whose files (in
-    ``mvcc`` journal mode) stdlib ``sqlite3`` cannot open — see ``_connect_cache``.
+    ``mvcc`` journal mode) a plain SQLite reader cannot open — see ``_connect_turso_cache``.
 
     Resolves the location exactly as the runtime does (CACHE_DB_URL when set,
     else a cache.db next to the relational SQLite database). Returns None when
@@ -140,46 +139,63 @@ def standalone_sqlite_cache_path(alembic_conn) -> tuple[str, str] | None:
     return path, url.get_driver_name()
 
 
-def _connect_cache(path: str, driver: str):
-    """Open the standalone cache file with the engine that owns it.
+CACHE_ALIAS = "standalone_cache"
 
-    A Turso cache is opened through pyturso: in ``wal`` mode stdlib ``sqlite3``
-    could read it too, but an ``mvcc``-mode file is not a SQLite database to it
-    ("file is not a database"), and the migration must not fail on upgrade.
-    Both connections expose the same DB-API surface this migration uses.
+
+def _connect_turso_cache(path: str):
+    """Open a standalone Turso cache file through pyturso.
+
+    A Turso cache is not opened as a SQLite file: an ``mvcc``-mode file is not a
+    SQLite database to a plain SQLite reader ("file is not a database"), and the
+    migration must not fail on upgrade. The connection exposes a DB-API surface.
     """
-    if driver == TURSO_DRIVER:
-        # Without the turso extra there is no way to heal a Turso cache, and the
-        # runtime cache engine would fail to start anyway; fail here with the
-        # install hint rather than a bare ModuleNotFoundError.
-        from cognee.infrastructure.databases.turso.runtime import (
-            INSTALL_HINT,
-            explain_file_in_use,
-        )
+    # Without the turso extra there is no way to heal a Turso cache, and the
+    # runtime cache engine would fail to start anyway; fail here with the
+    # install hint rather than a bare ModuleNotFoundError.
+    from cognee.infrastructure.databases.turso.runtime import INSTALL_HINT, explain_file_in_use
 
-        try:
-            import turso
-        except ImportError as error:
-            raise RuntimeError(
-                f"The session cache at {path} lives on the Turso engine (CACHE_BACKEND=turso "
-                f"or a sqlite+cognee_turso CACHE_DB_URL) but pyturso is not installed. "
-                f"{INSTALL_HINT}"
-            ) from error
+    try:
+        import turso
+    except ImportError as error:
+        raise RuntimeError(
+            f"The session cache at {path} lives on the Turso engine (CACHE_BACKEND=turso "
+            f"or a sqlite+cognee_turso CACHE_DB_URL) but pyturso is not installed. "
+            f"{INSTALL_HINT}"
+        ) from error
 
-        with explain_file_in_use(path):
-            connection = turso.connect(path)
-            connection.execute("PRAGMA busy_timeout=30000").fetchall()
-        return connection
-    return sqlite3.connect(path, timeout=30)
+    with explain_file_in_use(path):
+        connection = turso.connect(path)
+        connection.execute("PRAGMA busy_timeout=30000").fetchall()
+    return connection
 
 
-def heal_standalone_sqlite_cache(path: str, driver: str = "aiosqlite") -> None:
-    """Apply the same dedupe-then-index to the standalone cache.db file.
+def _attach_sqlite_cache(path: str):
+    """Open a standalone SQLite cache file through DuckDB's own sqlite extension.
 
-    Any failure propagates and fails the migration: there is no runtime
-    fallback, so a cache database left without the index must block the deploy.
+    Returns a DuckDB connection with the file attached read-write as
+    ``standalone_cache``. DuckDB's extension reads and writes SQLite files, so
+    this migration needs no SQLite library of its own. Raises RuntimeError naming
+    the file when the extension is not installed for this DuckDB.
     """
-    connection = _connect_cache(path, driver)
+    import duckdb
+
+    connection = duckdb.connect()
+    try:
+        connection.execute("LOAD sqlite")
+    except duckdb.Error as error:
+        connection.close()
+        raise RuntimeError(
+            f"The session cache at {path} is a SQLite file and DuckDB's sqlite extension "
+            f"is not installed, so it cannot be healed: {error}"
+        ) from error
+    quoted = path.replace("'", "''")
+    connection.execute(f"ATTACH '{quoted}' AS {CACHE_ALIAS} (TYPE sqlite)")
+    return connection
+
+
+def _heal_turso_cache(path: str) -> None:
+    """Dedupe and index the Turso cache file; it is opened and always closed here."""
+    connection = _connect_turso_cache(path)
     try:
         table_exists = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (TABLE_NAME,)
@@ -201,13 +217,65 @@ def heal_standalone_sqlite_cache(path: str, driver: str = "aiosqlite") -> None:
         connection.close()
 
 
+def _heal_sqlite_cache(path: str) -> None:
+    """Dedupe and index a stock SQLite cache file through DuckDB's sqlite extension.
+
+    The file is attached, changed in one transaction and always released. Nothing
+    is done when the table is missing or the index already exists.
+    """
+    connection = _attach_sqlite_cache(path)
+    try:
+        table_exists = connection.execute(
+            "SELECT 1 FROM duckdb_tables() WHERE database_name = ? AND table_name = ?",
+            [CACHE_ALIAS, TABLE_NAME],
+        ).fetchone()
+        index_exists = connection.execute(
+            "SELECT 1 FROM duckdb_indexes() WHERE database_name = ? AND index_name = ?",
+            [CACHE_ALIAS, INDEX_NAME],
+        ).fetchone()
+        if table_exists and not index_exists:
+            table = f"{CACHE_ALIAS}.main.{TABLE_NAME}"
+            connection.begin()
+            connection.execute(
+                f"DELETE FROM {table} WHERE seq NOT IN "
+                f"(SELECT MAX(seq) FROM {table} GROUP BY {', '.join(KEY_COLUMNS)})"
+            )
+            connection.execute(
+                f"CREATE UNIQUE INDEX {INDEX_NAME} ON {table} ({', '.join(KEY_COLUMNS)})"
+            )
+            connection.commit()
+            logger.info("Deduped and indexed standalone SQLite cache database at %s", path)
+    finally:
+        connection.close()
+
+
+def heal_standalone_sqlite_cache(path: str, driver: str = "aiosqlite") -> None:
+    """Apply the same dedupe-then-index to the standalone cache.db file.
+
+    A Turso cache is opened through pyturso, any other file through DuckDB's sqlite
+    extension. Any failure propagates and fails the migration: there is no runtime
+    fallback, so a cache database left without the index must block the deploy.
+    """
+    if driver == TURSO_DRIVER:
+        _heal_turso_cache(path)
+    else:
+        _heal_sqlite_cache(path)
+
+
 def drop_standalone_sqlite_cache_index(path: str, driver: str = "aiosqlite") -> None:
     """Downgrade mirror: the pre-index adapter appends duplicate keys, so the
     unique index must not survive a downgrade or old writes raise IntegrityError."""
-    connection = _connect_cache(path, driver)
+    if driver == TURSO_DRIVER:
+        connection = _connect_turso_cache(path)
+        try:
+            connection.execute(f"DROP INDEX IF EXISTS {INDEX_NAME}")
+            connection.commit()
+        finally:
+            connection.close()
+        return
+    connection = _attach_sqlite_cache(path)
     try:
-        connection.execute(f"DROP INDEX IF EXISTS {INDEX_NAME}")
-        connection.commit()
+        connection.execute(f"DROP INDEX IF EXISTS {CACHE_ALIAS}.main.{INDEX_NAME}")
     finally:
         connection.close()
 

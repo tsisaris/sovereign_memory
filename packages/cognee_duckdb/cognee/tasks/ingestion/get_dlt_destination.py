@@ -38,6 +38,12 @@ def get_dlt_destination(dlt_db_name: str) -> Any | None:
                 "drivername": relational_config.db_provider,
             },
         )
+    elif relational_config.db_provider == "duckdb":
+        # dlt's own DuckDB destination: one staging file per dlt database name, the
+        # dataset is a schema inside it, kept apart from the memory system's file.
+        destination = dlt.destinations.duckdb(
+            credentials=os.path.join(relational_config.db_path, dlt_db_name),
+        )
     elif relational_config.db_provider == "postgres":
         # The dlt library doesn't accept postgres as the drivername, it only accepts postgresql
         destination = dlt.destinations.sqlalchemy(
