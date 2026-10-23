@@ -23,7 +23,9 @@ async def extract_knowledge_graph_from_events(
     `cognee/tasks/temporal_graph/extract_knowledge_graph_from_events.py`. It takes document
     chunks whose `contains` lists hold Event nodes, sends all those events to the language
     model in one request, and appends the entities it names to each event by the relationship
-    it names. It gives back the same chunks and never calls the model when no chunk has an event.
+    it names. It gives back the same chunks and never calls the model when no chunk has an
+    event. Where the removed task silently paired as many events as the model answered for,
+    this one raises ValueError when the model answers for a different number of events.
     """
     all_events = []
     for chunk in data_chunks:
@@ -36,7 +38,7 @@ async def extract_knowledge_graph_from_events(
 
     enriched_events = await enrich_events(all_events)
 
-    for event, enriched_event in zip(all_events, enriched_events):
+    for event, enriched_event in zip(all_events, enriched_events, strict=True):
         add_entities_to_event(event, enriched_event)
 
     return data_chunks

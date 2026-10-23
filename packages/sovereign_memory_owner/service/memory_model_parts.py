@@ -14,12 +14,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 import httpx
 from openai import AsyncOpenAI
 
 OPINIONS = ("main", "second")
+DEFAULTED_REQUEST_OPTIONS = ("reasoning_effort", "top_p")
 
 
 def model_for(language_model: Mapping[str, Any], opinion: str) -> str:
@@ -77,13 +78,29 @@ def build_door(
         timeout=float(language_model["request_timeout_seconds"]),
         event_hooks={"response": [recorder.hook]},
     )
-    return AsyncOpenAI(
+    client = AsyncOpenAI(
         base_url=language_model["base_url"].rstrip("/") + "/v1",
         api_key=language_model["api_key"],
         timeout=float(language_model["request_timeout_seconds"]),
         max_retries=0,
         http_client=http_client,
     )
+    defaults = {
+        key: value
+        for key, value in language_model["options"].items()
+        if key in DEFAULTED_REQUEST_OPTIONS
+    }
+    if defaults:
+        original = client.chat.completions.create
+
+        async def create(*args: Any, **kwargs: Any) -> Any:
+            """Send a chat request with the settings' request options filled in where the caller gave none."""
+            for key, value in defaults.items():
+                kwargs.setdefault(key, value)
+            return await original(*args, **kwargs)
+
+        client.chat.completions.create = create
+    return client
 
 
 def _processor_of(language_model: Mapping[str, Any], model: str) -> dict[str, Any]:
@@ -118,6 +135,22 @@ async def processor_of(language_model: Mapping[str, Any], model: str) -> dict[st
         return await asyncio.to_thread(_processor_of, language_model, model)
     except (urllib.error.URLError, OSError, ValueError, KeyError) as error:
         return {"loaded": False, "unknown_because": f"{type(error).__name__}: {error}"}
+
+
+class DatabaseAccess(Protocol):
+    """How a part reaches the memory database: short reads and one-transaction writes.
+
+    The service supplies it. A read runs a plain function on the owner's own connection
+    handle; a write runs one on a connection of its own inside one transaction that is
+    committed when the function returns and rolled back when it raises. A part holds no
+    connection itself, and a model call is never made inside either.
+    """
+
+    async def read(self, work: Callable[[Any], Any]) -> Any:
+        """Run work(handle) on the owner's handle and return what it returns."""
+
+    async def write(self, work: Callable[[Any], Any]) -> Any:
+        """Run work(handle) in one committed transaction and return what it returns."""
 
 
 class ModelPart(Protocol):

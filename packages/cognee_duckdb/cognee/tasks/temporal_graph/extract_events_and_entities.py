@@ -31,7 +31,7 @@ async def extract_events_and_timestamps(data_chunks: list[DocumentChunk]) -> lis
         *[extract_event_graph(chunk.text, EventList) for chunk in data_chunks]
     )
 
-    for data_chunk, event_list in zip(data_chunks, events):
+    for data_chunk, event_list in zip(data_chunks, events, strict=True):
         for event in event_list.events:
             event_datapoint = generate_event_datapoint(event)
             if data_chunk.contains is None:
