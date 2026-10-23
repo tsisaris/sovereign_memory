@@ -186,6 +186,7 @@ def _mem0_llm(language_model: dict[str, Any]) -> dict[str, Any]:
         "model": language_model["model"],
         "api_key": language_model["api_key"],
         "openai_base_url": language_model["base_url"].rstrip("/") + "/v1",
+        "request_timeout_seconds": language_model["request_timeout_seconds"],
     }
     config.update(
         {key: value for key, value in language_model["options"].items() if key in MODEL_OPTIONS_FOR_MEM0}
