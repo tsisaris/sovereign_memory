@@ -55,7 +55,8 @@ async def run_memory_agent(
     wrapped = [{"type": "function", "function": schema} for schema in tool_schemas]
     while result.steps < max_steps:
         result.steps += 1
-        reply = await chat([{"role": "system", "content": system_prompt()}, *conversation], wrapped)
+        system = await system_prompt()
+        reply = await chat([{"role": "system", "content": system}, *conversation], wrapped)
         if reply.model:
             result.models.append(reply.model)
         result.final_text = reply.text or ""
