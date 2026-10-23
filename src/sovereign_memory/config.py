@@ -157,10 +157,12 @@ MODEL_OPTIONS_FOR_MEM0 = ("temperature", "max_tokens", "top_p", "reasoning_effor
 def _language_model(table: Any) -> dict[str, Any]:
     """Read the language_model table: which model, where it answers, and its options.
 
-    Every key is required and none has a default. The provider must be ollama (the
-    local server this round uses); the model name, the address it answers on, the
-    key the client sends (a local server ignores it), the time limit of one request
-    and the options object are all settings, so changing models changes settings only.
+    Every key is required and none has a default, except second_opinion_model, which is
+    optional and, when present, names the model a caller may ask for instead of the main
+    one. The provider must be ollama (the local server this round uses); the model name,
+    the address it answers on, the key the client sends (a local server ignores it), the
+    time limit of one request and the options object are all settings, so changing models
+    changes settings only.
     """
     where = "language_model"
     table = dict(
@@ -168,12 +170,15 @@ def _language_model(table: Any) -> dict[str, Any]:
             table,
             where,
             ("provider", "model", "base_url", "api_key", "request_timeout_seconds", "options"),
+            ("second_opinion_model",),
         )
     )
     if _text(table, where, "provider") != "ollama":
         raise ConfigurationError(f"{where}.provider must be ollama")
     for key in ("model", "base_url", "api_key"):
         _text(table, where, key)
+    if "second_opinion_model" in table:
+        _text(table, where, "second_opinion_model")
     _positive(table, where, "request_timeout_seconds", False)
     if not isinstance(table["options"], dict):
         raise ConfigurationError(f"{where}.options must be a table of model options")

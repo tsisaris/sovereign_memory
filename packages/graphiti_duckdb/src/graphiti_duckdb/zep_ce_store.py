@@ -592,6 +592,11 @@ class ZepCeStore:
             ).fetchall()
             if not removed:
                 raise NotFoundError("user " + user_id + " not found")
+            for table in (self._instructions, self._user_summaries):
+                self._db.execute(
+                    f"DELETE FROM {table} WHERE project_uuid = ? AND user_id = ?",
+                    [self._project, user_id],
+                )
             self._graph_step("delete_group", user_id, {})
             for session in sessions:
                 self._graph_step("delete_group", session.session_id, {})
@@ -1148,11 +1153,249 @@ class ZepCeStore:
         facts = self._graph.search(groups, text, limit)
         return [Fact(f.fact, f.uuid, f.valid_at or f.created_at) for f in facts], None
 
+    # Summaries ----------------------------------------------------------------------------
+
+    @staticmethod
+    def _summary_from_row(row: Sequence[Any]) -> Summary:
+        """Build a Summary from a summaries row in the column order uuid, created_at, content, point, tokens, metadata."""
+        return Summary(
+            uuid=row[0],
+            created_at=row[1],
+            content=row[2],
+            summary_point_uuid=row[3],
+            token_count=row[4],
+            metadata=_load(row[5]),
+        )
+
+    _SUMMARY_COLUMNS = "uuid, created_at, content, summary_point_uuid, token_count, metadata"
+
+    def create_summary(
+        self,
+        session_id: str,
+        content: str,
+        summary_point_uuid: UUID,
+        token_count: int,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Summary:
+        """Store a new summary for a session, as SummaryDAO.Create and CreateSummary do.
+
+        Original: getzep/zep at 411142c^, pkg/store/postgres/summary.go (Create) and
+        memorystore.go (CreateSummary). The summary point is the uuid of the last message the
+        summary covers. Raises NotFoundError when the session does not exist (the original's task
+        treats that as "were the records deleted?") and BadRequestError for empty content. The
+        original also queued the summary for embedding; that waits on numbers and is not done here.
+        """
+        if not content:
+            raise BadRequestError("summary content cannot be empty")
+        with self._transaction():
+            if not self._db.execute(
+                f"SELECT 1 FROM {self._sessions} "
+                "WHERE session_id = ? AND project_uuid = ? AND deleted_at IS NULL",
+                [session_id, self._project],
+            ).fetchone():
+                raise NotFoundError("session " + session_id + " not found")
+            summary_id = uuid4()
+            self._db.execute(
+                f"INSERT INTO {self._summaries} (uuid, session_id, project_uuid, content, metadata, "
+                "summary_point_uuid, token_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    summary_id,
+                    session_id,
+                    self._project,
+                    content,
+                    None if metadata is None else json.dumps(metadata),
+                    summary_point_uuid,
+                    token_count,
+                ],
+            )
+            return self.get_summary_by_uuid(session_id, summary_id)
+
+    def get_summary(self, session_id: str) -> Optional[Summary]:
+        """Return the most recent live summary of a session, or None when it has none.
+
+        Original: summary.go, SummaryDAO.Get (newest by creation time, not deleted).
+        """
+        with self._transaction():
+            row = self._db.execute(
+                f"SELECT {self._SUMMARY_COLUMNS} FROM {self._summaries} "
+                "WHERE session_id = ? AND project_uuid = ? AND deleted_at IS NULL "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                [session_id, self._project],
+            ).fetchone()
+            return None if row is None else self._summary_from_row(row)
+
+    def get_summary_by_uuid(self, session_id: str, summary_uuid: UUID) -> Summary:
+        """Return one summary of a session by uuid, or raise NotFoundError.
+
+        Original: summary.go, SummaryDAO.GetByUUID.
+        """
+        with self._transaction():
+            row = self._db.execute(
+                f"SELECT {self._SUMMARY_COLUMNS} FROM {self._summaries} "
+                "WHERE session_id = ? AND project_uuid = ? AND uuid = ?",
+                [session_id, self._project, summary_uuid],
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"summary {summary_uuid} not found")
+            return self._summary_from_row(row)
+
+    def messages_since_last_summary(
+        self, session_id: str, summary: Optional[Summary], message_window: int
+    ) -> list[Message]:
+        """Return the newest message_window live messages after the summary point, oldest first.
+
+        Original: getzep/zep at 411142c^, pkg/store/postgres/message.go, GetSinceLastSummary and
+        getMessageIndex. With no summary, or a summary point that is no longer stored, the point
+        counts as position 0, so the newest message_window messages of the session come back.
+        """
+        if message_window < 1:
+            raise ValueError("the message window must be at least 1")
+        with self._transaction():
+            point = 0
+            if summary is not None:
+                found = self._db.execute(
+                    f"SELECT id FROM {self._messages} WHERE session_id = ? AND uuid = ? "
+                    "AND project_uuid = ?",
+                    [session_id, summary.summary_point_uuid, self._project],
+                ).fetchone()
+                point = found[0] if found else 0
+            rows = self._db.execute(
+                f"SELECT {self._MESSAGE_COLUMNS} FROM {self._messages} "
+                "WHERE session_id = ? AND project_uuid = ? AND deleted_at IS NULL AND id > ? "
+                "ORDER BY id DESC LIMIT ?",
+                [session_id, self._project, point, message_window],
+            ).fetchall()
+            return [self._message_from_row(r) for r in reversed(rows)]
+
+    def get_memory_with_summary(
+        self, session_id: str, last_n_messages: int, message_window: int
+    ) -> Memory:
+        """Return the newest summary with the last N messages, or the messages since the summary.
+
+        Original: getzep/zep at 411142c^, pkg/store/postgres/memory.go, MemoryDAO.Get. With
+        last_n_messages above 0 the last N messages come back; with 0, the messages after the
+        summary point, at most message_window of them. The graph's relevant facts are not part of
+        this call (they stay with get_memory). Raises ValueError for a negative count.
+        """
+        if last_n_messages < 0:
+            raise ValueError("cannot specify negative lastNMessages")
+        with self._transaction():
+            summary = self.get_summary(session_id)
+            if last_n_messages > 0:
+                messages = self.get_messages_last_n(session_id, last_n_messages)
+            else:
+                messages = self.messages_since_last_summary(session_id, summary, message_window)
+            return Memory(messages=messages, summary=summary)
+
+    # User summary instructions and user summaries -----------------------------------------
+
+    def set_user_instructions(self, user_id: str, instructions: Sequence[UserInstruction]) -> None:
+        """Replace a user's summary instructions with the given list, refusing a list that breaks Zep's limits.
+
+        Original: Zep's published user summary instructions (getzep/zep,
+        zep-eval-harness/config/user_ingestion_config/user_summary_instructions.py): up to five
+        per user, each with a unique name of at most 100 characters and a text of at most 100
+        characters. Raises NotFoundError for an unknown user and BadRequestError for a list that
+        is too long, a blank or repeated name, a blank text or a name or text that is too long;
+        nothing is stored in that case.
+        """
+        if len(instructions) > MAX_USER_INSTRUCTIONS:
+            raise BadRequestError(f"at most {MAX_USER_INSTRUCTIONS} instructions per user")
+        names: set[str] = set()
+        for instruction in instructions:
+            if not instruction.name.strip() or not instruction.text.strip():
+                raise BadRequestError("an instruction needs a name and a text")
+            if len(instruction.name) > MAX_INSTRUCTION_NAME_CHARACTERS:
+                raise BadRequestError(
+                    f"an instruction name is at most {MAX_INSTRUCTION_NAME_CHARACTERS} characters"
+                )
+            if len(instruction.text) > MAX_INSTRUCTION_TEXT_CHARACTERS:
+                raise BadRequestError(
+                    f"an instruction text is at most {MAX_INSTRUCTION_TEXT_CHARACTERS} characters"
+                )
+            if instruction.name in names:
+                raise BadRequestError("instruction names must be unique: " + instruction.name)
+            names.add(instruction.name)
+        with self._transaction():
+            self.get_user(user_id)
+            self._db.execute(
+                f"DELETE FROM {self._instructions} WHERE project_uuid = ? AND user_id = ?",
+                [self._project, user_id],
+            )
+            for position, instruction in enumerate(instructions):
+                self._db.execute(
+                    f"INSERT INTO {self._instructions} (project_uuid, user_id, position, name, text) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [self._project, user_id, position, instruction.name, instruction.text],
+                )
+
+    def get_user_instructions(self, user_id: str) -> list[UserInstruction]:
+        """Return a user's summary instructions in the order they were set; raises NotFoundError for an unknown user."""
+        with self._transaction():
+            self.get_user(user_id)
+            rows = self._db.execute(
+                f"SELECT name, text FROM {self._instructions} "
+                "WHERE project_uuid = ? AND user_id = ? ORDER BY position",
+                [self._project, user_id],
+            ).fetchall()
+            return [UserInstruction(name, text) for name, text in rows]
+
+    def get_user_summary(self, user_id: str) -> Optional[tuple[str, int]]:
+        """Return a user's stored summary and the id of the last message folded into it, or None.
+
+        The summary lives on the user's node in the original (Graphiti entity summary); here it is
+        kept beside the user. Raises NotFoundError for an unknown user.
+        """
+        with self._transaction():
+            self.get_user(user_id)
+            row = self._db.execute(
+                f"SELECT content, through_message_id FROM {self._user_summaries} "
+                "WHERE project_uuid = ? AND user_id = ?",
+                [self._project, user_id],
+            ).fetchone()
+            return None if row is None else (row[0], int(row[1]))
+
+    def put_user_summary(self, user_id: str, content: str, through_message_id: int) -> None:
+        """Store a user's summary and the id of the last message folded into it, replacing the old one.
+
+        Raises NotFoundError for an unknown user and BadRequestError for empty content.
+        """
+        if not content:
+            raise BadRequestError("user summary cannot be empty")
+        with self._transaction():
+            self.get_user(user_id)
+            self._db.execute(
+                f"INSERT OR REPLACE INTO {self._user_summaries} "
+                "(project_uuid, user_id, content, through_message_id, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [self._project, user_id, content, through_message_id, _now()],
+            )
+
+    def user_messages_after(
+        self, user_id: str, after_message_id: int
+    ) -> list[tuple[int, str, Message]]:
+        """Return the live messages of all of a user's live sessions with an id above a mark, oldest first.
+
+        Each item is the message's id, its session id and the message. Raises NotFoundError for an
+        unknown user.
+        """
+        with self._transaction():
+            self.get_user(user_id)
+            rows = self._db.execute(
+                f"SELECT m.id, m.session_id, m.uuid, m.created_at, m.updated_at, m.role, "
+                f"m.role_type, m.content, m.token_count, m.metadata FROM {self._messages} m "
+                f"JOIN {self._sessions} s ON s.session_id = m.session_id "
+                "WHERE s.user_id = ? AND s.project_uuid = ? AND s.deleted_at IS NULL "
+                "AND m.deleted_at IS NULL AND m.id > ? ORDER BY m.id",
+                [user_id, self._project, after_message_id],
+            ).fetchall()
+            return [(r[0], r[1], self._message_from_row(r[2:])) for r in rows]
+
     # Purge ---------------------------------------------------------------------------------
 
     def _purge_soft_deleted(self) -> None:
         """Hard-delete every soft-deleted message and session, as the original's purge does."""
-        for table in (self._messages, self._sessions):
+        for table in (self._messages, self._summaries, self._sessions):
             self._db.execute(f"DELETE FROM {table} WHERE deleted_at IS NOT NULL")
 
     def purge_deleted(self) -> None:
