@@ -11,9 +11,10 @@ from typing import Any, Dict, List
 class ContextAssembler:
     """Assembles context blocks for prompting and incorporates decay metrics."""
 
-    def __init__(self, decay_lower_bound: float = 0.3, decay_upper_bound: float = 1.5):
+    def __init__(self, decay_lower_bound: float, decay_upper_bound: float):
         """
-        Initialize the assembler with decay parameters from published 0.3-1.5 bounds.
+        Initialize the assembler with the decay bounds the deployment declared in its
+        settings; there is no default, and unordered or negative bounds are refused.
         """
         if not (0.0 <= decay_lower_bound <= decay_upper_bound):
             raise ValueError("Decay bounds must be properly ordered and non-negative")

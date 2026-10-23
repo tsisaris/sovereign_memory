@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+from service.memory_combiners import SCORES
+from service.memory_settings import SearchSettings
 
 from .config import (
     HISTORY_TABLE,
@@ -195,10 +197,15 @@ def change_settings(
                         f'setting {path} has no description: give --describe {path}="what it does, in plain words"'
                     )
                 final_words[path] = given
-        parse(
+        checked = parse(
             _with_database(_unflatten([(p, v) for p, v in values.items()]), database),
             database.parent,
         )
+        if checked.ranking is not None:
+            try:
+                SearchSettings.from_mapping(checked.ranking, tuple(SCORES))
+            except ValueError as error:
+                raise ConfigurationError(f"ranking: {error}") from error
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         lines: list[str] = []
         for path in sorted(set(current) | set(values)):
