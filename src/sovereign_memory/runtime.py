@@ -30,12 +30,17 @@ from service.memory_tier_support import event_text
 from service.memory_visibility import RestrictedPolicy, ScopeLabelPolicy
 
 from .config import (
-    LOAD_COMMAND,
+    SET_COMMAND,
     TIER_KEYS,
     ConfigurationError,
     RuntimeConfig,
     load,
-    load_settings_file,
+)
+from .settings_store import (
+    change_settings,
+    parse_assignment,
+    parse_description,
+    show_page,
 )
 
 DATABASE_ENVIRONMENT_VARIABLE = "SOVEREIGN_MEMORY_DATABASE"
@@ -213,34 +218,71 @@ async def rebuild(service: OwnerService, tier: str, request_id: str, max_items: 
         await service.stop()
 
 
-def load_settings_command(argv: Sequence[str]) -> int:
-    """Store a readable TOML settings file in the memory database and list what was stored.
+def set_setting_command(argv: Sequence[str]) -> int:
+    """Change one or several settings in the memory database and print one line per change.
 
-    Takes the settings file and the memory database path; prints one line per setting
-    stored and returns 0, or prints the reason and returns 2 and changes nothing.
+    Takes the memory database path, any number of name=value pairs (values are JSON,
+    or plain text when not JSON), --describe name=words, --unset name and --by who.
+    Returns 0 after printing the changes, or prints the reason and returns 2 with
+    nothing changed. It never starts the service.
     """
     parser = argparse.ArgumentParser(
-        prog="python -m sovereign_memory load-settings",
-        description="Validate a settings file and store it in the memory database's settings table",
+        prog="python -m sovereign_memory set-setting",
+        description="Check and change settings in the memory database; records old value, "
+        "new value, when and who",
     )
-    parser.add_argument("settings_file")
     parser.add_argument("database")
+    parser.add_argument("assignments", nargs="*", metavar="name=value")
+    parser.add_argument("--describe", action="append", default=[], metavar="name=words")
+    parser.add_argument("--unset", action="append", default=[], metavar="name")
+    parser.add_argument("--by", metavar="who", help="who is changing it (default: the login name)")
+    args = parser.parse_intermixed_args(argv)
+    try:
+        assignments: dict[str, Any] = {}
+        for text in args.assignments:
+            name, value = parse_assignment(text)
+            if name in assignments:
+                raise ConfigurationError(f"{name} is given twice")
+            assignments[name] = value
+        descriptions: dict[str, str] = {}
+        for text in args.describe:
+            name, words = parse_description(text)
+            descriptions[name] = words
+        lines = change_settings(args.database, assignments, descriptions, args.unset, args.by)
+    except ConfigurationError as error:
+        print(f"Refused: {error}", file=sys.stderr)
+        return 2
+    for line in lines:
+        print(line)
+    return 0
+
+
+def show_settings_command(argv: Sequence[str]) -> int:
+    """Print the readable settings page of a memory database, built from the database each run.
+
+    Takes the memory database path and optionally --history. Returns 0 after printing,
+    or prints the reason and returns 2. It only reads.
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m sovereign_memory show-settings",
+        description="Show every setting: name, value, what it does, when last changed and by whom",
+    )
+    parser.add_argument("database")
+    parser.add_argument("--history", action="store_true", help="also list every recorded change")
     args = parser.parse_args(argv)
     try:
-        stored = load_settings_file(args.settings_file, args.database)
+        page = show_page(args.database, args.history)
     except ConfigurationError as error:
-        print(f"Configuration error: {error}", file=sys.stderr)
+        print(f"Refused: {error}", file=sys.stderr)
         return 2
-    for path in stored:
-        print(f"stored {path}")
-    print(f"{len(stored)} settings stored in {args.database}")
+    print(page)
     return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the runtime on a memory database, or load its settings; return the exit status.
+    """Run the runtime on a memory database, or change or show its settings; return the exit status.
 
-    `load-settings <settings file> <database>` stores settings. Otherwise the memory
+    `set-setting <database> name=value ...` changes settings and `show-settings <database>` prints them. Otherwise the memory
     database is the first argument, else the path in SOVEREIGN_MEMORY_DATABASE, and
     every other setting is read from its settings table. The old SOVEREIGN_MEMORY_CONFIG
     variable, and a TOML file given where the database belongs, are refused with a
@@ -249,13 +291,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     engine, but not started).
     """
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments and arguments[0] == "load-settings":
-        return load_settings_command(arguments[1:])
+    if arguments and arguments[0] == "set-setting":
+        return set_setting_command(arguments[1:])
+    if arguments and arguments[0] == "show-settings":
+        return show_settings_command(arguments[1:])
     if os.environ.get(OLD_CONFIG_ENVIRONMENT_VARIABLE):
         print(
             f"{OLD_CONFIG_ENVIRONMENT_VARIABLE} is no longer read: settings now live in the "
             f"memory database. Set {DATABASE_ENVIRONMENT_VARIABLE} to the database file, and "
-            f"load settings with: {LOAD_COMMAND}",
+            f"set settings with: {SET_COMMAND}",
             file=sys.stderr,
         )
         return 2
@@ -283,7 +327,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if path.endswith(".toml"):
         print(
             f"{path} looks like a settings file, but settings now live in the memory "
-            f"database. Load it with: {LOAD_COMMAND}",
+            f"database. Set them with: {SET_COMMAND}",
             file=sys.stderr,
         )
         return 2
