@@ -103,6 +103,40 @@ def build_tiers(config: RuntimeConfig, only_tier: str | None = None) -> list[Any
     return tiers
 
 
+def model_parts_factory(config: RuntimeConfig, tiers: list[Any]) -> Callable[[Any], Any] | None:
+    """Return the function that builds the language-model router, or None when no model is set.
+
+    It takes the validated configuration and the built tiers. The function it returns takes
+    the service's database access and builds one part per configured tier, every one made
+    from the single language_model setting and nothing else. It calls no model and opens no
+    database.
+    """
+    language_model = config.language_model
+    if language_model is None:
+        return None
+
+    def make(database: Any) -> Any:
+        """Build the router with a part for each configured tier."""
+        from service.memory_model_parts import ModelParts
+
+        parts: list[Any] = []
+        if config.temporal_enabled:
+            from service.memory_model_graphiti import GraphitiModel
+
+            parts.append(GraphitiModel(language_model, database))
+        for tier in tiers:
+            if tier.tier_name == "personalization":
+                from .config import _mem0_llm
+                from .model_mem0 import Mem0Model
+
+                parts.append(
+                    Mem0Model(tier, lambda model: _mem0_llm({**language_model, "model": model}))
+                )
+        return ModelParts(language_model, parts)
+
+    return make
+
+
 def build_service(config: RuntimeConfig, only_tier: str | None = None) -> OwnerService:
     """Return an OwnerService wired to the configured tiers and visibility policy; not started."""
     tiers = build_tiers(config, only_tier)
@@ -141,6 +175,7 @@ def build_service(config: RuntimeConfig, only_tier: str | None = None) -> OwnerS
             ranking=config.ranking,
             models=config.models,
             supplier=supplier,
+            model_parts_factory=model_parts_factory(config, tiers),
         )
     except ValueError as error:
         raise ConfigurationError(f"ranking: {error}") from error
