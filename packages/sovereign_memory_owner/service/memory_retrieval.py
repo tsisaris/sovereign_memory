@@ -275,6 +275,9 @@ class MemoryRetrievalService:
         if settings is None or settings.decay_time_constant_seconds is None:
             raise RuntimeError("Decay needs a declared decay_time_constant_seconds")
         tau = settings.decay_time_constant_seconds
+        lower, upper = settings.decay_lower_bound, settings.decay_upper_bound
+        if lower is None or upper is None:
+            raise RuntimeError("Decay needs declared decay_lower_bound and decay_upper_bound")
         event_of = {hit["item_id"]: hit["event_id"] for label in used for hit in kept[label]}
 
         def read() -> dict[str, str]:
@@ -288,7 +291,7 @@ class MemoryRetrievalService:
 
         created = await self.conn.run(read)
         now = datetime.now(timezone.utc)
-        assembler = ContextAssembler()
+        assembler = ContextAssembler(lower, upper)
         biased: list[tuple[str, float]] = []
         for item_id, score in merged:
             stamp = datetime.fromisoformat(created[event_of[item_id]])
