@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 import httpx
@@ -145,6 +146,10 @@ class DatabaseAccess(Protocol):
     committed when the function returns and rolled back when it raises. A part holds no
     connection itself, and a model call is never made inside either.
     """
+
+    @property
+    def path(self) -> Path:
+        """The path of the memory database file, for a part that must open a connection of its own."""
 
     async def read(self, work: Callable[[Any], Any]) -> Any:
         """Run work(handle) on the owner's handle and return what it returns."""
