@@ -1,16 +1,24 @@
 """Mem0's language-model steps inside the memory service, made from the language_model setting.
 
 It is for running Mem0's own fact extraction, its ADD/UPDATE/DELETE/NONE decision and its
-procedural-memory text with the model the settings name, on the personalization tier's own
-Mem0 object. It takes the tier and a function that turns a model name into Mem0's llm
-section, and answers the steps "extract_facts", "decide_actions" and "procedural". It never
+procedural-memory text, and the model half of its former graph memory, with the model the
+settings name, on the personalization tier's own Mem0 object. It takes the tier and a function
+that turns a model name into Mem0's llm section, and answers the steps "extract_facts",
+"decide_actions", "procedural", "graph_triplets" and "graph_delete_decision". It never
 stores a memory (storing needs numbers memory does not make) and never invents an id.
 """
 
+import asyncio
 from typing import Any, Callable
 
 from mem0.configs.prompts import PROCEDURAL_MEMORY_SYSTEM_PROMPT
 from mem0.exceptions import LLMError
+from mem0.memory.graph_extraction import (
+    delete_decisions,
+    establish_relations_from_data,
+    identity_text,
+    retrieve_nodes_from_data,
+)
 from mem0.memory.main import _build_filters_and_metadata
 from mem0.memory.owner_tier import Mem0Tier
 from mem0.memory.utils import remove_code_blocks
@@ -30,7 +38,13 @@ class Mem0Model:
 
     def steps(self) -> tuple[str, ...]:
         """Return the step names this part answers."""
-        return ("extract_facts", "decide_actions", "procedural")
+        return (
+            "extract_facts",
+            "decide_actions",
+            "procedural",
+            "graph_triplets",
+            "graph_delete_decision",
+        )
 
     def achieved_model(self) -> str | None:
         """Return the model name the server reported for the latest answer, or None before any."""
@@ -55,9 +69,9 @@ class Mem0Model:
 
     async def run_step(self, step: str, args: dict[str, Any], model: str) -> dict[str, Any]:
         """Run one step with the named model and return its real output."""
-        import asyncio
-
         memory = await self._memory(model)
+        if step in ("graph_triplets", "graph_delete_decision"):
+            return await self._graph_step(memory, step, args)
         if step == "extract_facts":
             messages = self._messages(args)
             user = args.get("user_id")
@@ -90,6 +104,40 @@ class Mem0Model:
             ],
         )
         return {"procedural_memory": remove_code_blocks(text)}
+
+    @staticmethod
+    async def _graph_step(memory: Any, step: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Run one model step of Mem0's former graph memory: triplets from a text, or relations to end.
+
+        graph_triplets takes text and user_id and returns the entities with their types and the
+        relations among them; graph_delete_decision takes stored (relations with source,
+        relationship and destination), text and user_id and returns the relations to end. Nothing is
+        stored: storing a node by similarity needs numbers. Raises ValueError for a missing or wrong
+        argument.
+        """
+        text, user = args.get("text"), args.get("user_id")
+        if not isinstance(text, str) or not text or not isinstance(user, str) or not user:
+            raise ValueError("this step needs text and user_id, both non-empty text")
+        identity = identity_text(user)
+        if step == "graph_triplets":
+            entity_types = await asyncio.to_thread(retrieve_nodes_from_data, memory.llm, text, user)
+            relations = await asyncio.to_thread(
+                establish_relations_from_data, memory.llm, text, identity, entity_types, None
+            )
+            return {"entities": entity_types, "relations": relations}
+        stored = args.get("stored")
+        if not isinstance(stored, list) or any(
+            not isinstance(item, dict)
+            or not all(
+                isinstance(item.get(k), str) for k in ("source", "relationship", "destination")
+            )
+            for item in stored
+        ):
+            raise ValueError(
+                "stored must be a list of relations with source, relationship, destination"
+            )
+        to_end = await asyncio.to_thread(delete_decisions, memory.llm, stored, text, identity)
+        return {"relations_to_end": to_end}
 
     @staticmethod
     def _messages(args: dict[str, Any]) -> list[dict[str, str]]:

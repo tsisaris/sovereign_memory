@@ -831,7 +831,12 @@ class OwnerService:
             ):
                 raise PermissionError(f"The event {event_id} is not visible to this principal")
         groups = await self._allowed_groups(principal)
-        if "group_id" in args and groups is not None and args["group_id"] not in groups:
+        if (
+            part == "graphiti"
+            and "group_id" in args
+            and groups is not None
+            and args["group_id"] not in groups
+        ):
             raise PermissionError("That group is not visible to this principal")
         actors = (
             None
