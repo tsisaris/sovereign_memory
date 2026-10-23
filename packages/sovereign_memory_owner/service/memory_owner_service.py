@@ -139,6 +139,11 @@ class _ServiceDatabase:
         """Keep the service whose connection and transaction helper this class uses."""
         self.service = service
 
+    @property
+    def path(self) -> Path:
+        """The path of the memory database file."""
+        return self.service.db_path
+
     async def read(self, work: Callable[[Any], Any]) -> Any:
         """Run work(handle) on the owner's worker and return its result."""
         conn = self.service.lifetime_conn
@@ -831,13 +836,14 @@ class OwnerService:
             ):
                 raise PermissionError(f"The event {event_id} is not visible to this principal")
         groups = await self._allowed_groups(principal)
-        if (
-            part == "graphiti"
-            and "group_id" in args
-            and groups is not None
-            and args["group_id"] not in groups
-        ):
-            raise PermissionError("That group is not visible to this principal")
+        for group_key in ("group_id", "graph_group_id"):
+            if (
+                part in ("graphiti", "zep")
+                and group_key in args
+                and groups is not None
+                and args[group_key] not in groups
+            ):
+                raise PermissionError("That group is not visible to this principal")
         actors = (
             None
             if visibility.mode == "pool"
