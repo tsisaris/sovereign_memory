@@ -195,7 +195,9 @@ class EmbeddingDoorSupplier:
             raise NumbersNotYetSupplied(
                 f"{PENDING_WORK}: agent_embedding lists no reader that is {model_id} {revision}"
             )
-        vectors = await self._embed(capability, model_id, revision, [{"id": "question", "text": text}])
+        vectors = await self._embed(
+            capability, model_id, revision, [{"id": "question", "text": text}]
+        )
         return list(vectors["question"])
 
     async def recompute(

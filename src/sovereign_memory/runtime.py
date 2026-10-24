@@ -30,7 +30,6 @@ from service.memory_supplier_http import CorpusHttpSupplier
 from service.memory_tier_support import event_text
 from service.memory_visibility import RestrictedPolicy, ScopeLabelPolicy
 
-from .ecosystem import EcosystemError, Presence, environment_snapshot
 from .config import (
     SET_COMMAND,
     TIER_KEYS,
@@ -38,6 +37,7 @@ from .config import (
     RuntimeConfig,
     load,
 )
+from .ecosystem import EcosystemError, Presence, environment_snapshot
 from .settings_store import (
     change_settings,
     parse_assignment,
@@ -429,6 +429,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         print(json.dumps(result))
         return 0 if result["status"] == "completed" else 1
+
     def report() -> dict:
         """Say in plain data how the service is, for the health door."""
         return {

@@ -70,7 +70,9 @@ def address_from(environment: Mapping[str, str]) -> Address | None:
     if not host and not port:
         return None
     if not host or not port:
-        raise EcosystemError(f"{HTTP_HOST_VARIABLE} and {HTTP_PORT_VARIABLE} must be given together")
+        raise EcosystemError(
+            f"{HTTP_HOST_VARIABLE} and {HTTP_PORT_VARIABLE} must be given together"
+        )
     if not port.isdigit() or not 1 <= int(port) <= 65535:
         raise EcosystemError(f"{HTTP_PORT_VARIABLE} must be a whole number from 1 to 65535")
     return Address(host, int(port))
@@ -124,6 +126,7 @@ class Presence:
         self.registry: Any = None
         self.registration_note = "registration has not been tried"
         self.heartbeat_task: asyncio.Task[None] | None = None
+        self.errors: tuple[type[BaseException], ...] = (EcosystemError, OSError, ValueError)
 
     def _root(self) -> str | None:
         """Return the Sovereign tree: SOVEREIGN_ROOT, else the one machine.json declares, else None.
@@ -202,12 +205,22 @@ class Presence:
         It raises nothing the caller must handle except what the registry itself raises.
         """
         root = self._root()
-        host, port = self.environment.get(REDIS_HOST_VARIABLE), self.environment.get(REDIS_PORT_VARIABLE)
+        host, port = (
+            self.environment.get(REDIS_HOST_VARIABLE),
+            self.environment.get(REDIS_PORT_VARIABLE),
+        )
         if root is None or not host or not port or not port.isdigit():
             return f"not registered: {SOVEREIGN_ROOT_VARIABLE}, {REDIS_HOST_VARIABLE} and {REDIS_PORT_VARIABLE} are not all given"
         if self.registry is None:
             bus_module = shared_module("shared_redis_bus", root)
             registry_module = shared_module("shared_agent_registry", root)
+            self.errors = (
+                EcosystemError,
+                OSError,
+                ValueError,
+                bus_module.RedisUnavailableError,
+                shared_module("shared_schema_validator", root).SchemaValidationError,
+            )
             bus = bus_module.RedisBus(host, int(port))
             self.registry = registry_module.AgentRegistry(bus)
             self.registry.register(
@@ -250,7 +263,7 @@ class Presence:
         while True:
             try:
                 self.registration_note = await asyncio.to_thread(self._register)
-            except Exception as error:  # the registry may be down; the service must keep serving
+            except self.errors as error:  # the registry may be down; the service must keep serving
                 self.registration_note = f"registration failed: {type(error).__name__}: {error}"
                 self.registry = None
                 logger.warning(self.registration_note)
@@ -264,7 +277,7 @@ class Presence:
         if self.registry is not None:
             try:
                 await asyncio.to_thread(self.registry.deregister, AGENT_ID)
-            except Exception as error:
+            except self.errors as error:
                 logger.warning("Deregistering failed: %s: %s", type(error).__name__, error)
         if self.server is not None:
             self.server.close()
