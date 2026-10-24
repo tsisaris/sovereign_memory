@@ -38,6 +38,17 @@ Rerun rows 13 and 20 when numbers exist (candidate search by meaning) or on a st
 - Zep, one line: Graphiti is Zep's open-source engine and Zep CE's summarizer is translated, so what remains uncovered is Zep Cloud's closed parts (its own extraction, reranker and embedding models, dashboards), the summary embedding and entity-recognition steps on summaries, and the Go worker for user summaries, whose prompt only is public.
 - EverAlgo, one line, prior art only: yes, three extractors do something none of the five does: foresight (predicts the future effects of an episode with start and end dates), the agent case-to-skill pipeline (scores cases, adds, updates and retires skills by confidence and maturity), and language-model boundary detection (cuts a chat into memory cells); its atomic facts, episodes, profile, merging, clustering and rankers each match something in one of the five. Nothing was added.
 
+## For the toolkit window (verbatim gaps, 2026-10-24)
+
+The doorway install waits on that window; it was not forced and `~/sovereign` was not touched.
+
+1. Fixed source folder: `shared_swap.py` line 42 reads `NEWER = checkpoint_install.HOME / "sovereign_pm_integration_20261009" / "shared"`; the newer modules can come from nowhere else, so a changed router had to be tried through a driver that set `shared_swap.NEWER` to a staging folder.
+2. Non-repeatable last step: `commit_tenancy` stops with "tenancy comment: the text to replace is not there exactly once; not changed" because the comment was already replaced; it runs after the modules are swapped and outside the restore block, so a real install would leave the new files in place and exit with that message. The install rehearsal on a scratch copy ended with exactly this message (exit 1).
+3. No step to retire a file: the procedure replaces the eight listed modules and nothing removes one, so `~/sovereign/shared/shared_memory_anatid.py` cannot be retired through it.
+4. No port-registry declaration: no central port registry file exists anywhere; each agent's port lives only in its own project document or unit (in use: 9099 consensus, 9100 embedding, 9130 corpus, 9199, 8077 validator). The service took 9110 by that absence of a conflict, and the registration in `shared_agent_registry` carries the port but is not a declaration of ownership.
+
+The changed router and the script that built it are in `local/router_stage/` (never committed); the rehearsal of the swap with only the router passed with 0 regressions.
+
 ## Notes
 
 - Scratch helpers, Modelfiles and upstream clones were in the session scratch folder and are deleted. `local/proof/model_proof_20261023.duckdb` (never committed) holds the proof database and its settings; `local/proof_variants/` was deleted.
