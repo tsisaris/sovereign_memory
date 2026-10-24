@@ -50,7 +50,11 @@ class RuntimeConfig:
     models: tuple[dict[str, Any], ...]
     personalization: "MemoryConfig | None"
     supplier: dict[str, Any] | None
+    embedding_door: dict[str, Any] | None
     language_model: dict[str, Any] | None
+    zep: dict[str, Any] | None
+    cognee: dict[str, Any] | None
+    letta: dict[str, Any] | None
 
 
 def _take(
@@ -139,16 +143,45 @@ def _models(rows: Any) -> tuple[dict[str, Any], ...]:
     return tuple(result)
 
 
-def _supplier(table: Any) -> dict[str, Any]:
-    """Read the [supplier] table: where agent_corpus answers, who memory says it is, the time limit.
+def _door(table: Any, where: str) -> dict[str, Any]:
+    """Read a number-source table: where it answers, who memory says it is, the time limit.
 
     Every key is required and none has a default; the time limit must be a positive number.
     """
-    table = dict(_take(table, "supplier", ("base_url", "requester_agent_id", "timeout_seconds")))
-    _text(table, "supplier", "base_url")
-    _text(table, "supplier", "requester_agent_id")
-    _positive(table, "supplier", "timeout_seconds", False)
+    table = dict(_take(table, where, ("base_url", "requester_agent_id", "timeout_seconds")))
+    _text(table, where, "base_url")
+    _text(table, where, "requester_agent_id")
+    _positive(table, where, "timeout_seconds", False)
     return table
+
+
+def _supplier(table: Any) -> dict[str, Any]:
+    """Read the [supplier] table: where agent_corpus answers, who memory says it is, the time limit."""
+    return _door(table, "supplier")
+
+
+def _zep(table: Any) -> dict[str, Any]:
+    """Read the [zep] table: the numbers Zep's thread summariser needs, none of them defaulted.
+
+    The five numbers (message_window, summary_max_output_tokens, model_context_tokens,
+    prompt_headroom_tokens and characters_per_token) are required and the summariser prompt is
+    optional. The value checks are made by the summariser itself when the service builds it, so
+    a wrong value is refused there with the setting named.
+    """
+    return dict(
+        _take(
+            table,
+            "zep",
+            (
+                "message_window",
+                "summary_max_output_tokens",
+                "model_context_tokens",
+                "prompt_headroom_tokens",
+                "characters_per_token",
+            ),
+            ("summarizer_prompt",),
+        )
+    )
 
 
 MODEL_OPTIONS_FOR_MEM0 = ("temperature", "max_tokens", "top_p", "reasoning_effort")
@@ -157,10 +190,12 @@ MODEL_OPTIONS_FOR_MEM0 = ("temperature", "max_tokens", "top_p", "reasoning_effor
 def _language_model(table: Any) -> dict[str, Any]:
     """Read the language_model table: which model, where it answers, and its options.
 
-    Every key is required and none has a default. The provider must be ollama (the
-    local server this round uses); the model name, the address it answers on, the
-    key the client sends (a local server ignores it), the time limit of one request
-    and the options object are all settings, so changing models changes settings only.
+    Every key is required and none has a default, except second_opinion_model, which is
+    optional and, when present, names the model a caller may ask for instead of the main
+    one. The provider must be ollama (the local server this round uses); the model name,
+    the address it answers on, the key the client sends (a local server ignores it), the
+    time limit of one request and the options object are all settings, so changing models
+    changes settings only.
     """
     where = "language_model"
     table = dict(
@@ -168,12 +203,15 @@ def _language_model(table: Any) -> dict[str, Any]:
             table,
             where,
             ("provider", "model", "base_url", "api_key", "request_timeout_seconds", "options"),
+            ("second_opinion_model",),
         )
     )
     if _text(table, where, "provider") != "ollama":
         raise ConfigurationError(f"{where}.provider must be ollama")
     for key in ("model", "base_url", "api_key"):
         _text(table, where, key)
+    if "second_opinion_model" in table:
+        _text(table, where, "second_opinion_model")
     _positive(table, where, "request_timeout_seconds", False)
     if not isinstance(table["options"], dict):
         raise ConfigurationError(f"{where}.options must be a table of model options")
@@ -282,7 +320,17 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         data,
         "file",
         ("service", "tiers"),
-        ("visibility", "ranking", "models", "supplier", "language_model"),
+        (
+            "visibility",
+            "ranking",
+            "models",
+            "supplier",
+            "embedding_door",
+            "language_model",
+            "zep",
+            "cognee",
+            "letta",
+        ),
     )
     service = _take(
         data["service"],
@@ -334,6 +382,24 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
     ranking = _ranking(data["ranking"]) if "ranking" in data else None
     models = _models(data.get("models", []))
     supplier = _supplier(data["supplier"]) if "supplier" in data else None
+    embedding_door = (
+        _door(data["embedding_door"], "embedding_door") if "embedding_door" in data else None
+    )
+    if supplier is not None and embedding_door is not None:
+        raise ConfigurationError(
+            "[supplier] and [embedding_door] are both given: numbers come from one source, not two"
+        )
+    zep = _zep(data["zep"]) if "zep" in data else None
+    cognee = (
+        dict(_take(data["cognee"], "cognee", ("data_directory",))) if "cognee" in data else None
+    )
+    if cognee is not None:
+        _text(cognee, "cognee", "data_directory")
+    letta = (
+        dict(_take(data["letta"], "letta", ("compaction", "sleeptime", "dream")))
+        if "letta" in data
+        else None
+    )
 
     # Keep a socket symlink visible to the service's lstat-based refusal.
     socket_file = (base / _text(service, "service", "socket_path")).absolute()
@@ -362,7 +428,11 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         models=models,
         personalization=memory,
         supplier=supplier,
+        embedding_door=embedding_door,
         language_model=language_model,
+        zep=zep,
+        cognee=cognee,
+        letta=letta,
     )
 
 
