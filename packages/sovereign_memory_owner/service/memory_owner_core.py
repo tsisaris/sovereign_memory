@@ -36,6 +36,7 @@ class OwnerCore:
         """Initialize the core with a specific worker-owned database connection."""
         self.conn = conn
         self.validator = MemoryEventValidator()
+        self.created_now: bool | None = None
 
     @staticmethod
     def _immutable_event(event_data: dict) -> dict:
@@ -140,6 +141,17 @@ class OwnerCore:
                     receipt JSON NOT NULL,
                     PRIMARY KEY (request_id, event_id, tier)
                 );
+                CREATE TABLE IF NOT EXISTS memory_router_records (
+                    principal VARCHAR NOT NULL,
+                    record_key VARCHAR NOT NULL,
+                    kind VARCHAR NOT NULL,
+                    writer VARCHAR NOT NULL,
+                    content VARCHAR NOT NULL,
+                    episode VARCHAR,
+                    episode_source VARCHAR,
+                    created_at VARCHAR NOT NULL,
+                    PRIMARY KEY (principal, record_key)
+                );
                 """,
             )
             await self._retire_single_identity()
@@ -147,6 +159,54 @@ class OwnerCore:
         except Exception:
             await self.conn.rollback()
             raise
+
+    async def claim_record(
+        self,
+        principal: str,
+        record_key: str,
+        kind: str,
+        writer: str,
+        content: str,
+        episode: str | None,
+        episode_source: str | None,
+        created_at: str,
+    ) -> tuple[bool, dict]:
+        """Write a router bookkeeping record once; return (created, the record as stored).
+
+        A record is the router's own note (a claim to process an event, its result, a wait): it is
+        not a memory, so no tier ever processes it. The first writer of a key wins in one atomic
+        statement and gets created True; every later call gets created False and the stored record
+        unchanged. It never overwrites and never deletes.
+        """
+        await self.conn.begin()
+        try:
+            cursor = await self.conn.cursor()
+            await cursor.execute(
+                "INSERT INTO memory_router_records (principal, record_key, kind, writer, content, "
+                "episode, episode_source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT DO NOTHING RETURNING record_key",
+                (principal, record_key, kind, writer, content, episode, episode_source, created_at),
+            )
+            created = await cursor.fetchone() is not None
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
+        return created, (await self.get_record(principal, record_key)) or {}
+
+    async def get_record(self, principal: str, record_key: str) -> dict | None:
+        """Return one router bookkeeping record of the principal, or None when there is none. Reads only."""
+        cursor = await self.conn.cursor()
+        await cursor.execute(
+            "SELECT kind, writer, content, episode, episode_source, created_at "
+            "FROM memory_router_records WHERE principal = ? AND record_key = ?",
+            (principal, record_key),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        keys = ("kind", "writer", "content", "episode", "episode_source", "created_at")
+        return {"record_key": record_key, **dict(zip(keys, row, strict=True))}
 
     async def _retire_single_identity(self) -> None:
         """Replace the rebuilds table's single embedding identity by a list of model labels.
@@ -488,7 +548,8 @@ class OwnerCore:
         removal, given only by the owner's removal capture, is (target event,
         operation, requested_by): the target's removal row is written in the
         same transaction, so the removal is visible exactly when it is durable.
-        Returns the event dictionary on success.
+        Returns the event dictionary on success, and sets created_now to True when this call
+        wrote the event and False when the event already existed (a repeat of the identical event).
         Raises ValueError if validation fails.
         """
         # Durable receipt output must not alter a caller's retryable input envelope.
@@ -632,6 +693,7 @@ class OwnerCore:
 
                 event_data["tier_receipts"] = result_receipts
                 await self.conn.commit()
+                self.created_now = False
                 return event_data
 
             await cursor.execute(
@@ -689,6 +751,7 @@ class OwnerCore:
             event_data["tier_receipts"] = result_receipts
 
             await self.conn.commit()
+            self.created_now = True
             return event_data
         except Exception:
             await self.conn.rollback()
