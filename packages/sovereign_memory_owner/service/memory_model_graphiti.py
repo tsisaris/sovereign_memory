@@ -399,7 +399,9 @@ class GraphitiModel:
             seen.add(key)
             related = _same_pair_edges(edge, existing_edges)
             related_ids = {r.uuid for r in related}
-            reach = self._reach(mode, {edge.source_node_uuid, edge.target_node_uuid}, existing_edges)
+            reach = self._reach(
+                mode, {edge.source_node_uuid, edge.target_node_uuid}, existing_edges
+            )
             pool = [
                 e
                 for e in existing_edges
