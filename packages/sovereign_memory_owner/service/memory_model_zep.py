@@ -18,7 +18,10 @@ from uuid import UUID
 
 from graphiti_core.llm_client.config import LLMConfig, ModelSize
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
-from graphiti_core.prompts.extract_nodes import SummarizedEntities, extract_summaries_batch
+from graphiti_core.prompts.extract_nodes import (
+    SummarizedEntities,
+    extract_entity_summaries_from_episodes,
+)
 from graphiti_core.utils.text_utils import MAX_SUMMARY_CHARS, truncate_at_sentence
 from graphiti_duckdb.zep_ce_store import (
     GraphFact,
@@ -351,11 +354,16 @@ class ZepModel:
     ) -> list[Any]:
         """Build Graphiti's entity-summary messages for the user, with the user's instructions added.
 
-        Original: graphiti_core/prompts/extract_nodes.py, extract_summaries_batch (the prompt that
-        combines the new messages with the existing summary). Zep publishes no prompt for user
-        summary instructions, so they are added as one clearly marked block after Graphiti's text.
+        Original: graphiti_core/prompts/extract_nodes.py, extract_entity_summaries_from_episodes,
+        whose system prompt is the one Graphiti says it mirrors from Zep's own summary worker
+        (src/lib/graphsummary/processor.go, entitySummarySystemPrompt). It carries the rule that
+        decides an update: "When newer episode text conflicts with older summary content, prefer the
+        newer explicit fact". The earlier choice, extract_summaries_batch, only says to combine the
+        messages with the existing summary and so let the old summary outweigh a new statement.
+        Zep publishes no prompt for user summary instructions, so they are added as one clearly
+        marked block after Graphiti's text.
         """
-        messages = extract_summaries_batch(
+        messages = extract_entity_summaries_from_episodes(
             {
                 "previous_episodes": [],
                 "episode_content": new_lines,
