@@ -382,7 +382,9 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
     ranking = _ranking(data["ranking"]) if "ranking" in data else None
     models = _models(data.get("models", []))
     supplier = _supplier(data["supplier"]) if "supplier" in data else None
-    embedding_door = _door(data["embedding_door"], "embedding_door") if "embedding_door" in data else None
+    embedding_door = (
+        _door(data["embedding_door"], "embedding_door") if "embedding_door" in data else None
+    )
     if supplier is not None and embedding_door is not None:
         raise ConfigurationError(
             "[supplier] and [embedding_door] are both given: numbers come from one source, not two"
@@ -426,6 +428,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         models=models,
         personalization=memory,
         supplier=supplier,
+        embedding_door=embedding_door,
         language_model=language_model,
         zep=zep,
         cognee=cognee,
