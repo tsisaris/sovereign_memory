@@ -28,6 +28,16 @@ The 4B side: it fails Graphiti's extraction (answers run on until cut), fails th
 
 Rerun rows 13 and 20 when numbers exist (candidate search by meaning) or on a stronger model; give the user-summary update a step that retires an old preference; join the event Timestamps to the chunk; wire dreaming to the git repository.
 
+## Rulings of 2026-10-23, done 2026-10-24
+
+- Service: `run_sovereign_memory.sh` and the user unit `agent-sovereign-memory.service` (port 9110; no central port registry file exists, ports are only in each agent's own document). Started by the entry file, survived the terminal, came back after `kill -9`, `/health` answered. The file needs `chmod +x run_sovereign_memory.sh` on disk (git already records it executable).
+- Environment record: `environment/requirements.lock`; env-guard says CHECKED. `.copier-answers.yml` still names `sovereign_tools` as the environment; it is copier-owned and was not hand-edited.
+- Doorway: the router in `~/sovereign/shared` is untouched. The changed router is built by `local/router_stage/build_router.py` into `local/router_stage/shared_memory_router.py` (no memory library; talks to this service). Rehearsal through `shared_swap`: 0 regressions (89 of 105 dependent tests pass before and after). Gaps in the procedure: the newer-modules folder is a fixed constant, the install's last step (tenancy comment) stops because that comment was already replaced, and there is no step to retire `shared_memory_anatid.py`. The real install was not run.
+- Numbers: `EmbeddingDoorSupplier` takes numbers from agent_embedding at 127.0.0.1:9100 (`static_retrieval_mrl_en_v1`); ledger rows 13, 15, 19, 20, 23, 28, 29, 30, 33, 42, 43, 45, 51, 53 carry the results. Still waiting: Graphiti's own cosine search and node matching (no embedder in its slot), Cognee's 21 search types, Mem0's time boost, Zep summary embedding.
+- Defects: row 13 fixed (setting `graphiti.contradiction_candidates`, cost measured beside it); row 20 fixed (newer statement wins). Row 19 downgraded: other entity summaries add unsupported detail.
+- Zep, one line: Graphiti is Zep's open-source engine and Zep CE's summarizer is translated, so what remains uncovered is Zep Cloud's closed parts (its own extraction, reranker and embedding models, dashboards), the summary embedding and entity-recognition steps on summaries, and the Go worker for user summaries, whose prompt only is public.
+- EverAlgo, one line, prior art only: yes, three extractors do something none of the five does: foresight (predicts the future effects of an episode with start and end dates), the agent case-to-skill pipeline (scores cases, adds, updates and retires skills by confidence and maturity), and language-model boundary detection (cuts a chat into memory cells); its atomic facts, episodes, profile, merging, clustering and rankers each match something in one of the five. Nothing was added.
+
 ## Notes
 
 - Scratch helpers, Modelfiles and upstream clones were in the session scratch folder and are deleted. `local/proof/model_proof_20261023.duckdb` (never committed) holds the proof database and its settings; `local/proof_variants/` was deleted.
