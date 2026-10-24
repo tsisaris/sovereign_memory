@@ -89,13 +89,21 @@ def build_door(language_model: Mapping[str, Any], recorder: AchievedRecorder) ->
         for key, value in language_model["options"].items()
         if key in DEFAULTED_REQUEST_OPTIONS
     }
-    if defaults:
+    cap = language_model["options"].get("max_tokens")
+    if defaults or cap is not None:
         original = client.chat.completions.create
 
         async def create(*args: Any, **kwargs: Any) -> Any:
-            """Send a chat request with the settings' request options filled in where the caller gave none."""
+            """Send a chat request with the settings' request options filled in where the caller gave none.
+
+            The max_tokens setting is a ceiling: a caller that asks for more is cut to it, and a
+            caller that names none gets it.
+            """
             for key, value in defaults.items():
                 kwargs.setdefault(key, value)
+            if cap is not None:
+                asked = kwargs.get("max_tokens")
+                kwargs["max_tokens"] = cap if asked is None else min(asked, cap)
             return await original(*args, **kwargs)
 
         client.chat.completions.create = create
