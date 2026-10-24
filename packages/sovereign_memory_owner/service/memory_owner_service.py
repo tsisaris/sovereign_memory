@@ -7,8 +7,9 @@ event the principal produced, then remove its projections) and "status" (an
 event's durable receipts and whether every tier finished). The review screen adds
 "review_list", "review_show", "review_page", "review_judge" and "review_select",
 "models" lists the model registry with each model's freshness, and "context" builds
-the context block for a prompt and says what is waiting on numbers or a language model. The principal
-comes from the transport, never from the request body.
+the context block for a prompt and says what is waiting on numbers or a language model, "load" returns
+one stored event with its original text, "model_parts" and "model" describe and run the
+language-model memory steps. The principal comes from the transport, never from the request body.
 """
 
 import asyncio
@@ -82,6 +83,9 @@ OPERATIONS = (
     "review_select",
     "model_parts",
     "model",
+    "load",
+    "record_claim",
+    "record_get",
 )
 SETTINGS_SOURCE = "memory_runtime_settings table, [ranking]"
 SUPPLIER_ABSENT_REASON = (
@@ -548,6 +552,12 @@ class OwnerService:
                     response = await self._models()
                 elif operation == "context":
                     response = await self._context(principal, payload)
+                elif operation == "load":
+                    response = await self._load(principal, payload)
+                elif operation == "record_claim":
+                    response = await self._record_claim(principal, payload)
+                elif operation == "record_get":
+                    response = await self._record_get(principal, payload)
                 elif operation == "model_parts":
                     response = await self._model_parts_report()
                 elif operation == "model":
@@ -657,8 +667,10 @@ class OwnerService:
         The principal replaces whatever actor the request claimed. Capture uses
         its own connection, so it never waits behind engine work. Two identical
         captures racing each other end with the same durable event: the loser of
-        the insert reads the winner's row. Raises ValueError for an invalid or
-        conflicting event.
+        the insert reads the winner's row. The reply says "created": true for the
+        call that wrote the event and false for a repeat of the identical event,
+        so a caller can claim an event id exactly once. Raises ValueError for an
+        invalid or conflicting event.
         """
         actor_field = (
             "agent_id" if event_data.get("schema_version") == "1.0.0" else "actor_agent_id"
@@ -671,9 +683,10 @@ class OwnerService:
             except (duckdb.ConstraintException, duckdb.TransactionException):
                 # Another request inserted the same event first; take the idempotent path.
                 result_event = await core.ingest_event(event_data, payload_content)
+            created = core.created_now
         # The reply reports the durable receipts as captured; processing follows.
         self._spawn_processing(self.dispatcher.process_event(result_event["event_id"]))
-        return {"status": "success", "event": result_event}
+        return {"status": "success", "event": result_event, "created": created}
 
     async def _retrieve(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
         """Answer a scoped retrieval; raises ValueError for a malformed query or limit."""
@@ -783,6 +796,76 @@ class OwnerService:
             "waiting": waiting,
             "episodes": len(episodes),
         }
+
+    async def _load(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Return one stored event the principal may see: its envelope and its original text.
+
+        Goes in: an event_id. Comes out: found false for an unknown event; otherwise found true, the
+        stored envelope (receipts as they stand) and payload_text, the original bytes decoded as
+        UTF-8. Raises ValueError for a missing event_id or a payload that is not UTF-8 text, and
+        PermissionError when the principal may not see the event. It changes nothing.
+        """
+        event_id = request.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            raise ValueError("load needs an event_id")
+        core = OwnerCore(self.lifetime_conn)
+        try:
+            event, payload = await core.load_event(event_id)
+        except ValueError as unknown:
+            if str(unknown).startswith("Unknown event"):
+                return {"status": "success", "found": False}
+            raise
+        visibility = await self.retrieval.policy.resolve(principal)
+        if not visibility.permits(
+            event.get("actor_agent_id", event.get("agent_id")), principal.agent_id
+        ):
+            raise PermissionError("The event is not visible to this principal")
+        try:
+            text = (payload or b"").decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError(f"The payload of {event_id} is not UTF-8 text: {error}") from error
+        receipts = await core.receipts(event_id)
+        return {
+            "status": "success",
+            "found": True,
+            "event": {**event, "tier_receipts": receipts},
+            "payload_text": text,
+        }
+
+    async def _record_claim(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Write a router bookkeeping record once and say whether this call wrote it.
+
+        Goes in: key, kind, writer, content (all text) and optionally episode and episode_source.
+        Comes out: created true for the first call with that key and false for every later one, with
+        the record as stored in both cases. The record is not a memory and no tier processes it.
+        Raises ValueError for a missing or non-text field.
+        """
+        fields = {name: request.get(name) for name in ("key", "kind", "writer", "content")}
+        optional = {name: request.get(name) for name in ("episode", "episode_source")}
+        if any(not isinstance(value, str) or not value for value in fields.values()) or any(
+            value is not None and not isinstance(value, str) for value in optional.values()
+        ):
+            raise ValueError("record_claim needs key, kind, writer and content as text")
+        async with self._transaction_connection() as conn:
+            created, record = await OwnerCore(conn).claim_record(
+                principal.agent_id,
+                fields["key"],
+                fields["kind"],
+                fields["writer"],
+                fields["content"],
+                optional["episode"],
+                optional["episode_source"],
+                datetime.now(timezone.utc).isoformat(),
+            )
+        return {"status": "success", "created": created, "record": record}
+
+    async def _record_get(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Return one router bookkeeping record of the principal, or found false. Reads only."""
+        key = request.get("key")
+        if not isinstance(key, str) or not key:
+            raise ValueError("record_get needs a key")
+        record = await OwnerCore(self.lifetime_conn).get_record(principal.agent_id, key)
+        return {"status": "success", "found": record is not None, "record": record}
 
     async def _model_parts_report(self) -> dict:
         """Say which language model each part asks for and which model last answered it.

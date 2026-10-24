@@ -408,7 +408,9 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         else None
     )
     if "temporal" in tiers and graphiti is None:
-        raise ConfigurationError("tiers.temporal needs the graphiti settings: contradiction_candidates")
+        raise ConfigurationError(
+            "tiers.temporal needs the graphiti settings: contradiction_candidates"
+        )
 
     # Keep a socket symlink visible to the service's lstat-based refusal.
     socket_file = (base / _text(service, "service", "socket_path")).absolute()
