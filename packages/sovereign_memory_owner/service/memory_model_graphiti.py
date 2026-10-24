@@ -59,7 +59,7 @@ from graphiti_duckdb.duckdb_driver import DuckDBDriver
 from service.memory_graphiti_episodes import episode_uuid
 from service.memory_model_parts import AchievedRecorder, DatabaseAccess, build_door
 
-CANDIDATE_MODES = ("shared_entities", "whole_group")
+CANDIDATE_MODES = ("same_entity", "same_subject", "whole_group")
 SUMMARY_MODES = ("graphiti_default", "always_model")
 NO_NUMBERS = (
     "numbers not yet supplied: memory never makes numbers, so this Graphiti step that ranks by "
@@ -115,8 +115,24 @@ class GraphitiModel:
 
     name = "graphiti"
 
-    def __init__(self, language_model: Mapping[str, Any], database: DatabaseAccess) -> None:
-        """Keep the settings and the database access, and build the one HTTP door that records answers."""
+    def __init__(
+        self,
+        language_model: Mapping[str, Any],
+        database: DatabaseAccess,
+        settings: Mapping[str, Any],
+    ) -> None:
+        """Keep the settings and the database access, and build the one HTTP door that records answers.
+
+        settings holds contradiction_candidates, which names which stored facts the model is shown as
+        possibly contradicted by a new fact (one of CANDIDATE_MODES); it has no default. Raises
+        ValueError naming the setting when it is missing or not one of the allowed words.
+        """
+        mode = settings.get("contradiction_candidates")
+        if mode not in CANDIDATE_MODES:
+            raise ValueError(
+                f"the setting graphiti.contradiction_candidates must be one of {', '.join(CANDIDATE_MODES)}"
+            )
+        self.contradiction_candidates: str = mode
         self.language_model = dict(language_model)
         self.database = database
         self.recorder = AchievedRecorder()
@@ -156,15 +172,15 @@ class GraphitiModel:
         )
 
     async def run_step(self, step: str, args: dict[str, Any], model: str) -> dict[str, Any]:
-        """Run "ingest" (event_ids, candidates) or "communities" (group_id) with the named model."""
+        """Run "ingest" (event_ids), "communities" or "saga_summary" (group_id) with the named model."""
         clients = self._clients(model)
         if step == "ingest":
             event_ids = args.get("event_ids")
-            mode = args.get("candidates", CANDIDATE_MODES[0])
+            mode = self.contradiction_candidates
+            if "candidates" in args:
+                raise ValueError("candidates is a setting now: graphiti.contradiction_candidates")
             if not isinstance(event_ids, list) or not event_ids:
                 raise ValueError("ingest needs event_ids, a non-empty list")
-            if mode not in CANDIDATE_MODES:
-                raise ValueError(f"candidates must be one of {', '.join(CANDIDATE_MODES)}")
             summaries = args.get("summaries", SUMMARY_MODES[0])
             if summaries not in SUMMARY_MODES:
                 raise ValueError(f"summaries must be one of {', '.join(SUMMARY_MODES)}")
@@ -323,6 +339,29 @@ class GraphitiModel:
                 state.uuid_map[node.uuid] = node.uuid
         return [n for n in state.resolved_nodes if n is not None], state.uuid_map
 
+    @staticmethod
+    def _reach(mode: str, ends: set[str], existing: list[EntityEdge]) -> set[str] | None:
+        """Return the entities whose stored facts are shown as candidates, or None for every fact.
+
+        "same_entity" is the two entities of the new fact. "same_subject" is those two and every
+        entity reached from them through stored facts, however many steps away. "whole_group" is
+        None, meaning no restriction. It reads the stored facts and changes nothing.
+        """
+        if mode == "whole_group":
+            return None
+        if mode == "same_entity":
+            return set(ends)
+        reached = set(ends)
+        growing = True
+        while growing:
+            growing = False
+            for fact in existing:
+                pair = {fact.source_node_uuid, fact.target_node_uuid}
+                if pair & reached and not pair <= reached:
+                    reached |= pair
+                    growing = True
+        return reached
+
     async def _resolve_edges(
         self,
         clients: GraphitiClients,
@@ -330,14 +369,19 @@ class GraphitiModel:
         episode: EpisodicNode,
         existing_edges: list[EntityEdge],
         mode: str,
+        counts: list[int],
     ) -> tuple[list[EntityEdge], list[EntityEdge], list[EntityEdge]]:
         """Date each fact and let the model decide which known facts it contradicts.
 
         Original: graphiti_core/utils/maintenance/edge_operations.py, resolve_extracted_edges. The
         searches by number are replaced: same-pair facts come from the stored facts between the
-        two entities, and the facts that might be contradicted are, in mode "shared_entities", the
-        stored facts touching either entity, or, in mode "whole_group", every stored fact. It
-        returns the resolved facts, the facts it ended and the facts new to the graph.
+        two entities. The facts shown to the model as possibly contradicted depend on mode:
+        "same_entity" is the stored facts touching either of the new fact's two entities;
+        "same_subject" is every stored fact about the same subject, meaning every stored fact
+        connected to either entity through other stored facts (a person, the people and projects
+        around them, and everything said about those); "whole_group" is every stored fact of the
+        group. It returns the resolved facts, the facts it ended and the facts new to the graph.
+        The number of candidates the model was shown for each new fact is added to counts.
         """
         resolved_edges: list[EntityEdge] = []
         invalidated: list[EntityEdge] = []
@@ -355,13 +399,14 @@ class GraphitiModel:
             seen.add(key)
             related = _same_pair_edges(edge, existing_edges)
             related_ids = {r.uuid for r in related}
-            ends = {edge.source_node_uuid, edge.target_node_uuid}
+            reach = self._reach(mode, {edge.source_node_uuid, edge.target_node_uuid}, existing_edges)
             pool = [
                 e
                 for e in existing_edges
                 if e.uuid not in related_ids
-                and (mode == "whole_group" or ends & {e.source_node_uuid, e.target_node_uuid})
+                and (reach is None or reach & {e.source_node_uuid, e.target_node_uuid})
             ]
+            counts.append(len(pool))
             resolved, _duplicates, candidates = await _dedupe_extracted_edge(
                 clients.llm_client, edge, related, pool, episode, {}, **routing
             )
@@ -416,12 +461,14 @@ class GraphitiModel:
             nodes.append(node)
             uuid_map[node.uuid] = node.uuid
         t = lap("extract_facts_seconds", t)
+        shown: list[int] = []
         resolved, invalidated, new_edges = await self._resolve_edges(
             clients,
             resolve_edge_pointers(extracted_edges, uuid_map),
             episode,
             loaded["edges"],
             mode,
+            shown,
         )
         t = lap("date_and_contradiction_seconds", t)
         await _extract_entity_summaries_batch(
@@ -455,6 +502,8 @@ class GraphitiModel:
         return {
             "event_id": event_id,
             "candidates": mode,
+            "candidate_facts_shown_per_new_fact": shown,
+            "stored_facts_before": len(loaded["edges"]),
             "entities": [{"uuid": n.uuid, "name": n.name, "summary": n.summary} for n in nodes],
             "facts": [self._fact(e, e in new_edges) for e in resolved],
             "ended_facts": [self._fact(e, False) for e in invalidated],

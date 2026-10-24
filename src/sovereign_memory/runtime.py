@@ -122,10 +122,10 @@ def model_parts_factory(config: RuntimeConfig, tiers: list[Any]) -> Callable[[An
         from service.memory_model_parts import ModelParts
 
         parts: list[Any] = []
-        if config.temporal_enabled:
+        if config.temporal_enabled and config.graphiti is not None:
             from service.memory_model_graphiti import GraphitiModel
 
-            parts.append(GraphitiModel(language_model, database))
+            parts.append(GraphitiModel(language_model, database, config.graphiti))
         if config.cognee is not None:
             from service.memory_model_cognee import CogneeModel
 

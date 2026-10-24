@@ -55,6 +55,7 @@ class RuntimeConfig:
     zep: dict[str, Any] | None
     cognee: dict[str, Any] | None
     letta: dict[str, Any] | None
+    graphiti: dict[str, Any] | None
 
 
 def _take(
@@ -330,6 +331,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
             "zep",
             "cognee",
             "letta",
+            "graphiti",
         ),
     )
     service = _take(
@@ -400,6 +402,13 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         if "letta" in data
         else None
     )
+    graphiti = (
+        dict(_take(data["graphiti"], "graphiti", ("contradiction_candidates",)))
+        if "graphiti" in data
+        else None
+    )
+    if "temporal" in tiers and graphiti is None:
+        raise ConfigurationError("tiers.temporal needs the graphiti settings: contradiction_candidates")
 
     # Keep a socket symlink visible to the service's lstat-based refusal.
     socket_file = (base / _text(service, "service", "socket_path")).absolute()
@@ -433,6 +442,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         zep=zep,
         cognee=cognee,
         letta=letta,
+        graphiti=graphiti,
     )
 
 
