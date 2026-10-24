@@ -50,6 +50,7 @@ class RuntimeConfig:
     models: tuple[dict[str, Any], ...]
     personalization: "MemoryConfig | None"
     supplier: dict[str, Any] | None
+    embedding_door: dict[str, Any] | None
     language_model: dict[str, Any] | None
     zep: dict[str, Any] | None
     cognee: dict[str, Any] | None
@@ -142,16 +143,21 @@ def _models(rows: Any) -> tuple[dict[str, Any], ...]:
     return tuple(result)
 
 
-def _supplier(table: Any) -> dict[str, Any]:
-    """Read the [supplier] table: where agent_corpus answers, who memory says it is, the time limit.
+def _door(table: Any, where: str) -> dict[str, Any]:
+    """Read a number-source table: where it answers, who memory says it is, the time limit.
 
     Every key is required and none has a default; the time limit must be a positive number.
     """
-    table = dict(_take(table, "supplier", ("base_url", "requester_agent_id", "timeout_seconds")))
-    _text(table, "supplier", "base_url")
-    _text(table, "supplier", "requester_agent_id")
-    _positive(table, "supplier", "timeout_seconds", False)
+    table = dict(_take(table, where, ("base_url", "requester_agent_id", "timeout_seconds")))
+    _text(table, where, "base_url")
+    _text(table, where, "requester_agent_id")
+    _positive(table, where, "timeout_seconds", False)
     return table
+
+
+def _supplier(table: Any) -> dict[str, Any]:
+    """Read the [supplier] table: where agent_corpus answers, who memory says it is, the time limit."""
+    return _door(table, "supplier")
 
 
 def _zep(table: Any) -> dict[str, Any]:
@@ -314,7 +320,17 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         data,
         "file",
         ("service", "tiers"),
-        ("visibility", "ranking", "models", "supplier", "language_model", "zep", "cognee", "letta"),
+        (
+            "visibility",
+            "ranking",
+            "models",
+            "supplier",
+            "embedding_door",
+            "language_model",
+            "zep",
+            "cognee",
+            "letta",
+        ),
     )
     service = _take(
         data["service"],
@@ -366,6 +382,11 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
     ranking = _ranking(data["ranking"]) if "ranking" in data else None
     models = _models(data.get("models", []))
     supplier = _supplier(data["supplier"]) if "supplier" in data else None
+    embedding_door = _door(data["embedding_door"], "embedding_door") if "embedding_door" in data else None
+    if supplier is not None and embedding_door is not None:
+        raise ConfigurationError(
+            "[supplier] and [embedding_door] are both given: numbers come from one source, not two"
+        )
     zep = _zep(data["zep"]) if "zep" in data else None
     cognee = (
         dict(_take(data["cognee"], "cognee", ("data_directory",))) if "cognee" in data else None

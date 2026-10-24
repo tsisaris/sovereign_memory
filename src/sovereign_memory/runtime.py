@@ -25,10 +25,12 @@ from service.memory_dispatcher import ProcessorRegistry
 from service.memory_owner_core import OwnerCore
 from service.memory_owner_service import OwnerService
 from service.memory_processor_seam import TerminalProcessingError
+from service.memory_supplier_door import EmbeddingDoorSupplier
 from service.memory_supplier_http import CorpusHttpSupplier
 from service.memory_tier_support import event_text
 from service.memory_visibility import RestrictedPolicy, ScopeLabelPolicy
 
+from .ecosystem import EcosystemError, Presence, environment_snapshot
 from .config import (
     SET_COMMAND,
     TIER_KEYS,
@@ -163,18 +165,25 @@ def build_service(config: RuntimeConfig, only_tier: str | None = None) -> OwnerS
         else RestrictedPolicy()
     )
     holder: list[OwnerService] = []
-    supplier = None
+    supplier: Any = None
+
+    async def original_text(event_id: str) -> str | None:
+        """Return the original text of one of this service's events, read from its own file."""
+        envelope, payload = await OwnerCore(holder[0].lifetime_conn).load_event(event_id)
+        return event_text(envelope, payload)[0]
+
     if config.supplier is not None:
-
-        async def original_text(event_id: str) -> str | None:
-            """Return the original text of one of this service's events, read from its own file."""
-            envelope, payload = await OwnerCore(holder[0].lifetime_conn).load_event(event_id)
-            return event_text(envelope, payload)[0]
-
         supplier = CorpusHttpSupplier(
             config.supplier["base_url"],
             config.supplier["requester_agent_id"],
             float(config.supplier["timeout_seconds"]),
+            original_text,
+        )
+    elif config.embedding_door is not None:
+        supplier = EmbeddingDoorSupplier(
+            config.embedding_door["base_url"],
+            config.embedding_door["requester_agent_id"],
+            float(config.embedding_door["timeout_seconds"]),
             original_text,
         )
     try:
@@ -216,8 +225,13 @@ async def maintain(service: OwnerService, interval: float, stop: asyncio.Event) 
             logger.exception("Scheduled owner maintenance failed")
 
 
-async def run(service: OwnerService, maintenance_interval_seconds: float) -> None:
+async def run(
+    service: OwnerService, maintenance_interval_seconds: float, presence: Presence | None = None
+) -> None:
     """Start the service and serve until SIGINT or SIGTERM, then stop it cleanly.
+
+    When a presence is given, its port is claimed, its health door opened and its registration
+    begun once the service is up, and all three are ended before the service stops.
 
     Whatever ends the wait (a signal, a failed start, cancellation), the
     maintenance task is told to stop and awaited for at most the service's declared
@@ -236,9 +250,13 @@ async def run(service: OwnerService, maintenance_interval_seconds: float) -> Non
         await service.start()
         maintenance = asyncio.create_task(maintain(service, maintenance_interval_seconds, stop))
         try:
+            if presence is not None:
+                await presence.start()
             await stop.wait()
         finally:
             stop.set()
+            if presence is not None:
+                await presence.stop()
             try:
                 _, running = await asyncio.wait(
                     {maintenance}, timeout=service.drain_timeout_seconds
@@ -359,7 +377,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--rebuild-tier", choices=("relational", "personalization"))
     parser.add_argument("--rebuild-id")
     parser.add_argument("--rebuild-limit", type=int)
+    parser.add_argument(
+        "--reset", action="store_true", help="clear generated state (there is none to clear here)"
+    )
+    parser.add_argument(
+        "--deep-reset",
+        action="store_true",
+        help="clear generated state and logs (there are none to clear here)",
+    )
     args = parser.parse_args(arguments)
+    if args.reset or args.deep_reset:
+        print(
+            "Reset: this service keeps no generated state or logs of its own. The memory "
+            "database is the operator's content and no reset mode ever clears it; nothing was removed.",
+            file=sys.stderr,
+        )
     if args.rebuild_tier and (
         not args.rebuild_id or args.rebuild_limit is None or args.rebuild_limit <= 0
     ):
@@ -397,5 +429,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         print(json.dumps(result))
         return 0 if result["status"] == "completed" else 1
-    asyncio.run(run(service, config.maintenance_interval_seconds))
+    def report() -> dict:
+        """Say in plain data how the service is, for the health door."""
+        return {
+            "status": "ok" if service.server is not None else "starting",
+            "service": "sovereign_memory",
+            "socket": str(config.socket_path),
+            "database": str(config.database_path),
+            "parts": sorted(service.model_parts.parts) if service.model_parts else [],
+        }
+
+    try:
+        presence = Presence(environment_snapshot(), report)
+    except EcosystemError as error:
+        print(f"Configuration error: {error}", file=sys.stderr)
+        return 2
+    try:
+        asyncio.run(run(service, config.maintenance_interval_seconds, presence))
+    except EcosystemError as error:
+        print(f"Did not start: {error}", file=sys.stderr)
+        return 1
     return 0
