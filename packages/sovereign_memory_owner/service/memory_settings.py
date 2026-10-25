@@ -25,7 +25,11 @@ SETTING_NAMES = (
 
 # Optional: absent means the feature is off. decay_time_constant_seconds turns on the
 # recency bias on search scores; no source publishes a value, so there is no default.
-OPTIONAL_SETTING_NAMES = ("decay_time_constant_seconds",)
+OPTIONAL_SETTING_NAMES = (
+    "decay_time_constant_seconds",
+    "decay_lower_bound",
+    "decay_upper_bound",
+)
 
 SETTINGS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_settings (
@@ -47,7 +51,9 @@ class SearchSettings:
     comparison; merging_constant is the constant added to a rank in reciprocal
     rank fusion. None has a default. decay_time_constant_seconds is optional: when
     the deployment declares it, search scores are biased by the age of their event;
-    when it does not, search ordering is exactly what the combiner gave.
+    when it does not, search ordering is exactly what the combiner gave. The decay
+    bias is held between decay_lower_bound and decay_upper_bound, so the three decay
+    settings are declared together or not at all.
     """
 
     comparison_score: str
@@ -55,6 +61,8 @@ class SearchSettings:
     smallest_held_back_set: int
     merging_constant: float
     decay_time_constant_seconds: float | None = None
+    decay_lower_bound: float | None = None
+    decay_upper_bound: float | None = None
 
     @classmethod
     def from_mapping(cls, table: Any, known_scores: tuple[str, ...]) -> "SearchSettings":
@@ -95,12 +103,32 @@ class SearchSettings:
             or decay <= 0
         ):
             raise ValueError("decay_time_constant_seconds must be a finite number above 0")
+        lower = table.get("decay_lower_bound")
+        upper = table.get("decay_upper_bound")
+        declared = [value is not None for value in (decay, lower, upper)]
+        if any(declared) and not all(declared):
+            raise ValueError(
+                "decay_time_constant_seconds, decay_lower_bound and decay_upper_bound "
+                "must be declared together"
+            )
+        for name, bound in (("decay_lower_bound", lower), ("decay_upper_bound", upper)):
+            if bound is not None and (
+                isinstance(bound, bool)
+                or not isinstance(bound, (int, float))
+                or not math.isfinite(bound)
+                or bound < 0
+            ):
+                raise ValueError(f"{name} must be a finite number, zero or above")
+        if lower is not None and upper is not None and lower > upper:
+            raise ValueError("decay_lower_bound must not be above decay_upper_bound")
         return cls(
             score,
             float(share),
             smallest,
             float(constant),
             None if decay is None else float(decay),
+            None if lower is None else float(lower),
+            None if upper is None else float(upper),
         )
 
     def report(self) -> dict[str, Any]:

@@ -39,6 +39,10 @@ _FORBIDDEN_KEYWORDS = (
     "replace",
     "set",
     "reindex",
+    # DuckDB's sqlite extension opens files through SQLite itself, outside DuckDB's
+    # switch against reading other files, so a query may not name them.
+    "sqlite_scan",
+    "sqlite_attach",
 )
 
 _FENCE_RE = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
