@@ -7,8 +7,9 @@ event the principal produced, then remove its projections) and "status" (an
 event's durable receipts and whether every tier finished). The review screen adds
 "review_list", "review_show", "review_page", "review_judge" and "review_select",
 "models" lists the model registry with each model's freshness, and "context" builds
-the context block for a prompt and says what is waiting on numbers or a language model. The principal
-comes from the transport, never from the request body.
+the context block for a prompt and says what is waiting on numbers or a language model, "load" returns
+one stored event with its original text, "model_parts" and "model" describe and run the
+language-model memory steps. The principal comes from the transport, never from the request body.
 """
 
 import asyncio
@@ -22,7 +23,7 @@ import struct
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Mapping, Sequence
+from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 
 import duckdb
 from duckdb_sqlalchemy_async.duckdb_sqlalchemy_async_bridge import AsyncConnection
@@ -43,12 +44,15 @@ from service.memory_combiners import (
 )
 from service.memory_consolidation import MemoryConsolidator
 from service.memory_dispatcher import SUCCESS_STATUSES, MemoryDispatcher, ProcessorRegistry
+from service.memory_graphiti_episodes import _has_graphiti_schema
+from service.memory_graphiti_search import keyword_search
 from service.memory_ground_truth import (
     export_manifest,
     initialize_ground_truth_schema,
     record_case,
     verify_export,
 )
+from service.memory_model_parts import OPINIONS, DatabaseAccess, ModelParts
 from service.memory_models import list_models, model_state
 from service.memory_numbers import NumbersStore, initialize_numbers_schema, pending_requests
 from service.memory_numbers_services import NumbersServices
@@ -62,6 +66,7 @@ from service.memory_settings import (
     record_settings,
 )
 from service.memory_supplier import NumbersSupplier, UnavailableSupplier
+from service.memory_tier_support import group_of
 
 logger = logging.getLogger(__name__)
 OPERATIONS = (
@@ -76,6 +81,11 @@ OPERATIONS = (
     "review_page",
     "review_judge",
     "review_select",
+    "model_parts",
+    "model",
+    "load",
+    "record_claim",
+    "record_get",
 )
 SETTINGS_SOURCE = "memory_runtime_settings table, [ranking]"
 SUPPLIER_ABSENT_REASON = (
@@ -120,6 +130,42 @@ def _inspect_socket_path(path: Path) -> tuple[int, int] | None:
     raise FileExistsError(f"Another service is listening on {path}; refusing to replace it")
 
 
+class _ServiceDatabase:
+    """The service's database access for language-model parts: short reads and committed writes.
+
+    It is for letting a part read and store on the memory file without holding a connection
+    across a model call. It takes the running service. A read runs on the owner's own handle; a
+    write runs on a connection of its own in one transaction that is committed when the work
+    returns and rolled back when it raises. It never lets a model call happen inside either.
+    """
+
+    def __init__(self, service: "OwnerService") -> None:
+        """Keep the service whose connection and transaction helper this class uses."""
+        self.service = service
+
+    @property
+    def path(self) -> Path:
+        """The path of the memory database file."""
+        return self.service.db_path
+
+    async def read(self, work: Callable[[Any], Any]) -> Any:
+        """Run work(handle) on the owner's worker and return its result."""
+        conn = self.service.lifetime_conn
+        return await conn.run(lambda: work(conn.native))
+
+    async def write(self, work: Callable[[Any], Any]) -> Any:
+        """Run work(handle) in one transaction on a connection of its own and commit it."""
+        async with self.service._transaction_connection() as conn:
+            await conn.begin()
+            try:
+                result = await conn.run(lambda: work(conn.native))
+            except BaseException:
+                await conn.rollback()
+                raise
+            await conn.commit()
+            return result
+
+
 class OwnerService:
     """The unified owner service running the DuckDB connection and socket server."""
 
@@ -138,6 +184,7 @@ class OwnerService:
         supplier: NumbersSupplier | None = None,
         models: Sequence[Mapping[str, Any]] = (),
         artifacts: dict[str, ArtifactCombiner] | None = None,
+        model_parts_factory: Callable[[DatabaseAccess], ModelParts] | None = None,
     ):
         """Initialize the service with socket and db paths.
 
@@ -153,7 +200,10 @@ class OwnerService:
         ranks by models' numbers); supplier is where numbers come from, and when
         absent every request for numbers answers "numbers not yet supplied";
         models are registry rows to add at start; artifacts are trained
-        combiners from the builder, keyed by combiner id.
+        combiners from the builder, keyed by combiner id; model_parts_factory
+        makes the language-model router from the service's own database access
+        when the service starts (absent, the "model" operations answer that no
+        language model is configured).
         """
         self.socket_path = Path(socket_path)
         self.db_path = Path(db_path)
@@ -186,6 +236,8 @@ class OwnerService:
         self.artifacts = dict(artifacts or {})
         self.store: NumbersStore | None = None
         self.numbers: NumbersServices | None = None
+        self._model_parts_factory = model_parts_factory
+        self.model_parts: ModelParts | None = None
 
     async def start(self, *, process_pending: bool = True) -> None:
         """Initialize database connection and start UNIX socket server.
@@ -214,6 +266,8 @@ class OwnerService:
                 self.lifetime_conn, self.retrievers, self.policy, self.settings, self.artifacts
             )
             self.review = ReviewScreen(self.lifetime_conn, self.retrieval.policy)
+            if self._model_parts_factory is not None:
+                self.model_parts = self._model_parts_factory(_ServiceDatabase(self))
             await self.dispatcher.initialize_storage()
             # Ensure socket directory exists
             self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -498,6 +552,16 @@ class OwnerService:
                     response = await self._models()
                 elif operation == "context":
                     response = await self._context(principal, payload)
+                elif operation == "load":
+                    response = await self._load(principal, payload)
+                elif operation == "record_claim":
+                    response = await self._record_claim(principal, payload)
+                elif operation == "record_get":
+                    response = await self._record_get(principal, payload)
+                elif operation == "model_parts":
+                    response = await self._model_parts_report()
+                elif operation == "model":
+                    response = await self._model(principal, payload)
                 else:
                     response = await self._review(operation, principal, payload)
             except PermissionError as refusal:
@@ -603,8 +667,10 @@ class OwnerService:
         The principal replaces whatever actor the request claimed. Capture uses
         its own connection, so it never waits behind engine work. Two identical
         captures racing each other end with the same durable event: the loser of
-        the insert reads the winner's row. Raises ValueError for an invalid or
-        conflicting event.
+        the insert reads the winner's row. The reply says "created": true for the
+        call that wrote the event and false for a repeat of the identical event,
+        so a caller can claim an event id exactly once. Raises ValueError for an
+        invalid or conflicting event.
         """
         actor_field = (
             "agent_id" if event_data.get("schema_version") == "1.0.0" else "actor_agent_id"
@@ -617,9 +683,10 @@ class OwnerService:
             except (duckdb.ConstraintException, duckdb.TransactionException):
                 # Another request inserted the same event first; take the idempotent path.
                 result_event = await core.ingest_event(event_data, payload_content)
+            created = core.created_now
         # The reply reports the durable receipts as captured; processing follows.
         self._spawn_processing(self.dispatcher.process_event(result_event["event_id"]))
-        return {"status": "success", "event": result_event}
+        return {"status": "success", "event": result_event, "created": created}
 
     async def _retrieve(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
         """Answer a scoped retrieval; raises ValueError for a malformed query or limit."""
@@ -677,10 +744,31 @@ class OwnerService:
                     valid_at=stamp,
                 )
             )
-        waiting = [
-            "FACTS, ENTITIES and COMMUNITIES: waiting on a language model "
-            "(Graphiti extracts them from episodes)"
-        ]
+        groups = await self._allowed_groups(principal)
+
+        def search_graph(handle: Any) -> tuple[SearchResults, int]:
+            """Search the stored graph by words and count the entities it holds; reads only."""
+            results = keyword_search(
+                handle, None if groups is None else sorted(groups), query, limit
+            )
+            if not _has_graphiti_schema(handle):
+                return results, 0
+            held = handle.execute(
+                "SELECT count(*) FROM graphiti.graph_node WHERE label = 'Entity'"
+            ).fetchone()[0]
+            return results, held
+
+        graph, entity_count = await self.lifetime_conn.run(
+            lambda: search_graph(self.lifetime_conn.native)
+        )
+        waiting = (
+            []
+            if entity_count
+            else [
+                "FACTS, ENTITIES and COMMUNITIES: waiting on a language model "
+                "(Graphiti extracts them from episodes; none has been extracted yet)"
+            ]
+        )
         for tier, answer in answers.items():
             if answer["status"] == "ok":
                 continue
@@ -693,7 +781,14 @@ class OwnerService:
                 waiting.append(f"{tier}: not configured on this service")
             else:
                 waiting.append(f"{tier}: {reason}")
-        block = search_results_to_context_string(SearchResults(episodes=episodes))
+        block = search_results_to_context_string(
+            SearchResults(
+                episodes=episodes,
+                edges=graph.edges,
+                nodes=graph.nodes,
+                communities=graph.communities,
+            )
+        )
         lines = "\n".join(f"        - {line}" for line in waiting)
         return {
             "status": "success",
@@ -701,6 +796,154 @@ class OwnerService:
             "waiting": waiting,
             "episodes": len(episodes),
         }
+
+    async def _load(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Return one stored event the principal may see: its envelope and its original text.
+
+        Goes in: an event_id. Comes out: found false for an unknown event; otherwise found true, the
+        stored envelope (receipts as they stand) and payload_text, the original bytes decoded as
+        UTF-8. Raises ValueError for a missing event_id or a payload that is not UTF-8 text, and
+        PermissionError when the principal may not see the event. It changes nothing.
+        """
+        event_id = request.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            raise ValueError("load needs an event_id")
+        core = OwnerCore(self.lifetime_conn)
+        try:
+            event, payload = await core.load_event(event_id)
+        except ValueError as unknown:
+            if str(unknown).startswith("Unknown event"):
+                return {"status": "success", "found": False}
+            raise
+        visibility = await self.retrieval.policy.resolve(principal)
+        if not visibility.permits(
+            event.get("actor_agent_id", event.get("agent_id")), principal.agent_id
+        ):
+            raise PermissionError("The event is not visible to this principal")
+        try:
+            text = (payload or b"").decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError(f"The payload of {event_id} is not UTF-8 text: {error}") from error
+        receipts = await core.receipts(event_id)
+        return {
+            "status": "success",
+            "found": True,
+            "event": {**event, "tier_receipts": receipts},
+            "payload_text": text,
+        }
+
+    async def _record_claim(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Write a router bookkeeping record once and say whether this call wrote it.
+
+        Goes in: key, kind, writer, content (all text) and optionally episode and episode_source.
+        Comes out: created true for the first call with that key and false for every later one, with
+        the record as stored in both cases. The record is not a memory and no tier processes it.
+        Raises ValueError for a missing or non-text field.
+        """
+        fields = {name: request.get(name) for name in ("key", "kind", "writer", "content")}
+        optional = {name: request.get(name) for name in ("episode", "episode_source")}
+        if any(not isinstance(value, str) or not value for value in fields.values()) or any(
+            value is not None and not isinstance(value, str) for value in optional.values()
+        ):
+            raise ValueError("record_claim needs key, kind, writer and content as text")
+        async with self._transaction_connection() as conn:
+            created, record = await OwnerCore(conn).claim_record(
+                principal.agent_id,
+                fields["key"],
+                fields["kind"],
+                fields["writer"],
+                fields["content"],
+                optional["episode"],
+                optional["episode_source"],
+                datetime.now(timezone.utc).isoformat(),
+            )
+        return {"status": "success", "created": created, "record": record}
+
+    async def _record_get(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Return one router bookkeeping record of the principal, or found false. Reads only."""
+        key = request.get("key")
+        if not isinstance(key, str) or not key:
+            raise ValueError("record_get needs a key")
+        record = await OwnerCore(self.lifetime_conn).get_record(principal.agent_id, key)
+        return {"status": "success", "found": record is not None, "record": record}
+
+    async def _model_parts_report(self) -> dict:
+        """Say which language model each part asks for and which model last answered it.
+
+        Goes in: nothing. Comes out: the main and second-opinion model names from the
+        settings, where the server holds the main model (processor only or graphics card), and
+        per part its steps and the model its latest answer came from. It calls no model. Raises
+        ValueError when the service was started with no language model configured.
+        """
+        if self.model_parts is None:
+            raise ValueError("no language model is configured on this service")
+        return {"status": "success", **await self.model_parts.describe()}
+
+    async def _allowed_groups(self, principal: AuthenticatedPrincipal) -> set[str] | None:
+        """Return the Graphiti group ids the principal may see, or None when it may see every group."""
+        visibility = await self.retrieval.policy.resolve(principal)
+        if visibility.mode == "pool":
+            return None
+        actors = (
+            {principal.agent_id}
+            if visibility.mode == "own"
+            else set(visibility.actor_agent_ids) | {principal.agent_id}
+        )
+        return {group_of(actor) for actor in actors}
+
+    async def _model(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Run one named step of one part with the main or the second-opinion model.
+
+        Goes in: part, step, args (an object) and opinion ("main" by default or "second"). Every
+        event the args name must be visible to the principal and a group id must be one the
+        principal may see. Comes out: the step's real output plus part, step, opinion,
+        requested_model, achieved_model, placement and seconds. Raises ValueError for a
+        malformed request or an unknown part, step or opinion, PermissionError for an event or
+        group the principal may not see, and RuntimeError (naming the cause) when the model
+        call itself fails; nothing is stored when a step fails.
+        """
+        if self.model_parts is None:
+            raise ValueError("no language model is configured on this service")
+        part, step = request.get("part"), request.get("step")
+        args, opinion = request.get("args", {}), request.get("opinion", "main")
+        if not isinstance(part, str) or not isinstance(step, str) or not isinstance(args, dict):
+            raise ValueError("model needs part and step (text) and args (an object)")
+        if opinion not in OPINIONS:
+            raise ValueError(f"opinion must be one of {', '.join(OPINIONS)}")
+        visibility = await self.retrieval.policy.resolve(principal)
+        core = OwnerCore(self.lifetime_conn)
+        for event_id in args.get("event_ids", []):
+            event, _ = await core.load_event(event_id)
+            if not visibility.permits(
+                event.get("actor_agent_id", event.get("agent_id")), principal.agent_id
+            ):
+                raise PermissionError(f"The event {event_id} is not visible to this principal")
+        groups = await self._allowed_groups(principal)
+        for group_key in ("group_id", "graph_group_id"):
+            if (
+                part in ("graphiti", "zep")
+                and group_key in args
+                and groups is not None
+                and args[group_key] not in groups
+            ):
+                raise PermissionError("That group is not visible to this principal")
+        actors = (
+            None
+            if visibility.mode == "pool"
+            else {principal.agent_id}
+            | (set(visibility.actor_agent_ids) if visibility.mode == "granted" else set())
+        )
+        owner_keys = ("agent_id", "foreground_agent_id") + (("user_id",) if part == "mem0" else ())
+        for key in owner_keys:
+            if key in args and actors is not None and args[key] not in actors:
+                raise PermissionError(f"The {key} {args[key]!r} is not visible to this principal")
+        try:
+            result = await self.model_parts.run(part, step, args, opinion)
+        except (ValueError, PermissionError):
+            raise
+        except Exception as error:
+            raise RuntimeError(f"{type(error).__name__}: {error}") from error
+        return {"status": "success", **result}
 
     async def _models(self) -> dict:
         """Report every registered model with its freshness and reasons, and the numbers still owed.
