@@ -110,8 +110,12 @@ class NumbersServices:
         models = await self._require_reader()(lambda handle: list_models(handle, "embedding"))
         return [await self.store.request(model, event_id, None, reason) for model in models]
 
-    async def question_numbers(self, model_id: str, revision: str, text: str) -> list[float]:
+    async def question_numbers(
+        self, model_id: str, revision: str, text: str, role: str = "question"
+    ) -> list[float]:
         """Fetch the numbers of one search question from the supplier's single-text door.
+
+        The role ("question" or "passage") is handed on so the supplier reads the text as its model requires.
 
         The vector is checked against the registered width and for finite
         values. Raises NumbersNotYetSupplied when the supplier cannot answer and
@@ -119,7 +123,7 @@ class NumbersServices:
         never embeds the question itself.
         """
         model = await self.model(model_id, revision)
-        vector = await self.supplier.question_numbers(model_id, revision, text)
+        vector = await self.supplier.question_numbers(model_id, revision, text, role)
         return check_vector(vector, model.width)
 
     async def word_ranking(

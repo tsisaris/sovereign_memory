@@ -12,7 +12,7 @@ import asyncio
 import json
 import urllib.error
 import urllib.request
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from service.memory_supplier import (
@@ -28,6 +28,7 @@ CAPABILITIES_PATH = "/capabilities"
 EMBED_PATH = "/embed"
 REQUESTER_HEADER = "requester-agent-id"
 PIECE_SUFFIX = "#0"
+ROLES = ("question", "passage")
 
 EventTextReader = Callable[[str], Awaitable[str | None]]
 
@@ -47,8 +48,13 @@ class EmbeddingDoorSupplier:
         requester_agent_id: str,
         timeout_seconds: float,
         event_text: EventTextReader,
+        prefixes: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
-        """Keep the declared address, requester, time limit and event-text reader; open nothing."""
+        """Keep the declared address, requester, time limit, event-text reader and prefixes; open nothing.
+
+        prefixes maps a model id to the words its authors say go before a question and before a
+        passage; a model with no entry gets its text unchanged, which is a declaration, not a guess.
+        """
         if not base_url or not requester_agent_id or timeout_seconds <= 0:
             raise ValueError(
                 "base_url, requester_agent_id and a positive timeout_seconds are all required"
@@ -57,6 +63,18 @@ class EmbeddingDoorSupplier:
         self.requester_agent_id = requester_agent_id
         self.timeout_seconds = timeout_seconds
         self.event_text = event_text
+        self.prefixes = prefixes or {}
+
+    def _prefixed(self, model_id: str, role: str, text: str) -> str:
+        """Return the text with the words this model's authors put before a question or a passage.
+
+        It takes the model id, the role ("question" or "passage") and the text. It returns the text
+        with the declared words in front, or unchanged when none are declared for that model and
+        role. It never alters the stored text: only what is sent to the door.
+        """
+        if role not in ROLES:
+            raise ValueError(f"role must be one of {ROLES}, not {role!r}")
+        return f"{self.prefixes.get(model_id, {}).get(role, '')}{text}"
 
     def _call(self, method: str, path: str, body: dict[str, Any] | None) -> Any:
         """Make one blocking request and return the decoded reply, or raise the sentinel.
@@ -171,15 +189,19 @@ class EmbeddingDoorSupplier:
                 f"{PENDING_WORK}: memory holds no original text for event {event_id}"
             )
         piece_id = f"{event_id}{PIECE_SUFFIX}"
-        vectors = await self._embed(recipe, model_id, revision, [{"id": piece_id, "text": text}])
+        sent = self._prefixed(model_id, "passage", text)
+        vectors = await self._embed(recipe, model_id, revision, [{"id": piece_id, "text": sent}])
         piece = SuppliedPiece(piece_id, event_id, 0, text, text_fingerprint(text))
         width = len(vectors[piece_id])
         return SuppliedNumbers(model_id, revision, width, (piece,), {piece_id: vectors[piece_id]})
 
-    async def question_numbers(self, model_id: str, revision: str, text: str) -> list[float]:
+    async def question_numbers(
+        self, model_id: str, revision: str, text: str, role: str = "question"
+    ) -> list[float]:
         """Return the door's numbers for one text under the capability whose occupant is the model asked for.
 
-        It takes the model label and the text. It finds the capability the door lists for that
+        It takes the model label, the text and its role (question or passage), and puts that role's
+        declared words in front of the text. It finds the capability the door lists for that
         occupant and revision, asks it to embed the text and returns the vector. It raises the sentinel
         when the door lists no such capability or answers with another label.
         """
@@ -196,7 +218,10 @@ class EmbeddingDoorSupplier:
                 f"{PENDING_WORK}: agent_embedding lists no reader that is {model_id} {revision}"
             )
         vectors = await self._embed(
-            capability, model_id, revision, [{"id": "question", "text": text}]
+            capability,
+            model_id,
+            revision,
+            [{"id": "question", "text": self._prefixed(model_id, role, text)}],
         )
         return list(vectors["question"])
 
