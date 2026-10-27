@@ -257,6 +257,51 @@ def ensure_starting_combiner(
     return row
 
 
+def adopt_by_ruling(
+    handle: duckdb.DuckDBPyConnection,
+    combiner_id: str,
+    settings_read: list[str],
+    ruling: str,
+    decided_by: str,
+    decided_at: str,
+) -> CombinerRow:
+    """Make reciprocal rank fusion over every registered embedding model the current combiner, by the owner's ruling.
+
+    It takes the new combiner id, the setting names the rule reads, the ruling in the owner's
+    words, who recorded it and when. It registers the combiner over every embedding model now
+    registered and appends one decision row that says it was adopted by ruling and carries the
+    ruling's words; no comparison score is written because none was made. It raises ValueError
+    when no embedding model is registered. It never edits an earlier decision, and a later
+    candidate is still compared against held-back cases as before.
+    """
+    labels = [m.label for m in list_models(handle, "embedding")]
+    if not labels:
+        raise ValueError("No embedding model is registered; there is nothing to combine")
+    row = register_combiner(
+        handle,
+        combiner_id=combiner_id,
+        rule=RULE_RRF,
+        models=labels,
+        settings_read=settings_read,
+        proposed_by=decided_by,
+        proposed_at=decided_at,
+    )
+    before = current_combiner(handle)
+    handle.execute(
+        "INSERT INTO memory_combiner_decisions VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, "
+        "NULL, NULL, ?, ?)",
+        [
+            f"decision-{combiner_id}-{decided_at}",
+            row.combiner_id,
+            None if before is None else before.combiner_id,
+            DECISION_ADOPTED,
+            f"adopted by the owner's ruling: {ruling}",
+            decided_at,
+        ],
+    )
+    return row
+
+
 def _merged(
     combiner: CombinerRow, rankings: dict[str, list[str]], settings: SearchSettings
 ) -> list[str] | None:

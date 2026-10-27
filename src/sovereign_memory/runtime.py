@@ -13,14 +13,18 @@ read of the settings table) and never calls a model itself.
 
 import argparse
 import asyncio
+import getpass
 import json
 import logging
 import os
 import signal
 import sys
 from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from typing import Any
 
+import duckdb
+from service.memory_combiners import adopt_by_ruling
 from service.memory_dispatcher import ProcessorRegistry
 from service.memory_owner_core import OwnerCore
 from service.memory_owner_service import OwnerService
@@ -185,6 +189,7 @@ def build_service(config: RuntimeConfig, only_tier: str | None = None) -> OwnerS
             config.embedding_door["requester_agent_id"],
             float(config.embedding_door["timeout_seconds"]),
             original_text,
+            config.embedding_door.get("prefixes"),
         )
     try:
         service = OwnerService(
@@ -346,10 +351,57 @@ def show_settings_command(argv: Sequence[str]) -> int:
     return 0
 
 
+def adopt_combiner_command(argv: Sequence[str]) -> int:
+    """Make rank fusion over every registered embedding model the current combiner, by the owner's ruling.
+
+    Takes the memory database path, the new combiner id, the ruling in the owner's words,
+    the names of the settings the combiner reads (--reads, repeated) and optionally who
+    records it (--by). Prints one line naming the combiner and its models and returns 0, or
+    prints the reason and returns 2 with nothing changed. It never starts the service, which
+    must be stopped, and never edits an earlier decision.
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m sovereign_memory adopt-combiner",
+        description="Adopt rank fusion over every registered embedding model by the owner's ruling",
+    )
+    parser.add_argument("database")
+    parser.add_argument("combiner_id")
+    parser.add_argument("--ruling", required=True, metavar="words")
+    parser.add_argument("--reads", action="append", required=True, metavar="setting")
+    parser.add_argument("--by", metavar="who", default=getpass.getuser())
+    args = parser.parse_args(argv)
+    try:
+        handle = duckdb.connect(args.database)
+    except duckdb.Error as error:
+        print(f"Refused: cannot open {args.database} (stop the service first): {error}", file=sys.stderr)
+        return 2
+    try:
+        handle.execute("BEGIN")
+        row = adopt_by_ruling(
+            handle,
+            args.combiner_id,
+            args.reads,
+            args.ruling,
+            args.by,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        handle.execute("COMMIT")
+    except (ValueError, duckdb.Error) as error:
+        handle.execute("ROLLBACK")
+        print(f"Refused: {error}", file=sys.stderr)
+        return 2
+    finally:
+        handle.close()
+    print(f"Combiner {row.combiner_id} is current over: {', '.join(row.models)}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the runtime on a memory database, or change or show its settings; return the exit status.
 
-    `set-setting <database> name=value ...` changes settings and `show-settings <database>` prints them. Otherwise the memory
+    `set-setting <database> name=value ...` changes settings, `show-settings <database>` prints them and
+    `adopt-combiner <database> <id> --ruling words --reads setting` makes rank fusion over every
+    registered embedding model the current combiner. Otherwise the memory
     database is the first argument, else the path in SOVEREIGN_MEMORY_DATABASE, and
     every other setting is read from its settings table. The old SOVEREIGN_MEMORY_CONFIG
     variable, and a TOML file given where the database belongs, are refused with a
@@ -362,6 +414,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return set_setting_command(arguments[1:])
     if arguments and arguments[0] == "show-settings":
         return show_settings_command(arguments[1:])
+    if arguments and arguments[0] == "adopt-combiner":
+        return adopt_combiner_command(arguments[1:])
     if os.environ.get(OLD_CONFIG_ENVIRONMENT_VARIABLE):
         print(
             f"{OLD_CONFIG_ENVIRONMENT_VARIABLE} is no longer read: settings now live in the "
