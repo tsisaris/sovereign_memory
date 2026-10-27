@@ -240,6 +240,17 @@ class MemoryRetrievalService:
             "models": models,
             "decay": decay,
             "words": words_report,
+            "rankings": {
+                label: [
+                    {
+                        key: hit[key]
+                        for key in ("item_id", "event_id", "distance", "text", "memory", "content")
+                        if key in hit
+                    }
+                    for hit in kept[label][:limit]
+                ]
+                for label in used
+            },
             "ground_truth_case": case_id,
         }
         if error is not None:

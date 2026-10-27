@@ -373,7 +373,10 @@ def adopt_combiner_command(argv: Sequence[str]) -> int:
     try:
         handle = duckdb.connect(args.database)
     except duckdb.Error as error:
-        print(f"Refused: cannot open {args.database} (stop the service first): {error}", file=sys.stderr)
+        print(
+            f"Refused: cannot open {args.database} (stop the service first): {error}",
+            file=sys.stderr,
+        )
         return 2
     try:
         handle.execute("BEGIN")
