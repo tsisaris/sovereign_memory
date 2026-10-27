@@ -35,6 +35,7 @@ from service.memory_combiners import (
 )
 from service.memory_context_assembler import ContextAssembler
 from service.memory_ground_truth import COMBINED_OUTPUT, MODEL_OUTPUT, record_case, record_output
+from service.memory_numbers_services import NumbersServices
 from service.memory_owner_core import TIERS, OwnerCore
 from service.memory_processor_seam import (
     AuthenticatedPrincipal,
@@ -44,6 +45,7 @@ from service.memory_processor_seam import (
 )
 from service.memory_review import disagree
 from service.memory_settings import SearchSettings
+from service.memory_supplier import NumbersNotYetSupplied
 from service.memory_visibility import RestrictedPolicy
 
 logger = logging.getLogger(__name__)
@@ -59,12 +61,15 @@ class MemoryRetrievalService:
         policy: VisibilityPolicy | None = None,
         settings: SearchSettings | None = None,
         artifacts: dict[str, ArtifactCombiner] | None = None,
+        numbers: NumbersServices | None = None,
     ) -> None:
         """Bind the owner connection, the retrievers keyed by tier name and the visibility policy.
 
         Without a policy every principal is restricted to its own events. settings
         are the declared search settings (needed to merge rankings) and artifacts
-        the trained combiners the builder supplied, keyed by combiner id.
+        the trained combiners the builder supplied, keyed by combiner id. numbers is
+        the supplier's door, used only for the keyword ranking when the settings
+        declare words_capability.
         """
         self.conn = conn
         self.core = OwnerCore(conn)
@@ -72,6 +77,7 @@ class MemoryRetrievalService:
         self.policy = policy or RestrictedPolicy()
         self.settings = settings
         self.artifacts = artifacts or {}
+        self.numbers = numbers
 
     async def retrieve(
         self, principal: AuthenticatedPrincipal, query: str, limit: int
@@ -211,7 +217,14 @@ class MemoryRetrievalService:
                 "combiner": combiner.describe(),
                 "models": models,
             }
-        merged = await self._combine(combiner, kept, used)
+        words_report: dict[str, Any] = {
+            "applied": False,
+            "reason": "no words_capability is declared",
+        }
+        words: list[str] | None = None
+        if self.settings.words_capability is not None and combiner.rule == RULE_RRF:
+            words, words_report = await self._words_ranking(query, kept, used)
+        merged = await self._combine(combiner, kept, used, words)
         decay = {"applied": False, "reason": "no decay_time_constant_seconds is declared"}
         if self.settings.decay_time_constant_seconds is not None:
             merged, decay = await self._apply_decay(merged, kept, used)
@@ -226,26 +239,70 @@ class MemoryRetrievalService:
             "combiner": combiner.describe(),
             "models": models,
             "decay": decay,
+            "words": words_report,
             "ground_truth_case": case_id,
         }
         if error is not None:
             answer["ground_truth_error"] = error
         return answer
 
+    async def _words_ranking(
+        self, query: str, kept: dict[str, list[dict[str, Any]]], used: list[str]
+    ) -> tuple[list[str] | None, dict[str, Any]]:
+        """Ask the supplier which of the models' candidate hits share words with the question.
+
+        The candidates are the hits the used models ranked (their item ids and text); the supplier's
+        keyword capability ranks them and memory scores nothing. Returns (item ids best first, report);
+        the ranking is None, with the reason in the report, when the supplier cannot answer or no
+        candidate has text. A failed words ranking never fails the search: the models' own merge stands.
+        """
+        settings = self.settings
+        if settings is None or settings.words_capability is None or self.numbers is None:
+            raise RuntimeError(
+                "A words ranking needs the declared words_capability and the supplier"
+            )
+        candidates: dict[str, str] = {}
+        for label in used:
+            for hit in kept[label]:
+                text = hit.get("text") or hit.get("memory") or hit.get("content")
+                if isinstance(text, str) and text.strip():
+                    candidates.setdefault(hit["item_id"], text)
+        if not candidates:
+            return None, {"applied": False, "reason": "no candidate hit carries text"}
+        capability = settings.words_capability
+        try:
+            ranked = await self.numbers.word_ranking(
+                capability, query, [{"id": item, "text": text} for item, text in candidates.items()]
+            )
+        except NumbersNotYetSupplied as pending:
+            return None, {"applied": False, "capability": capability, "reason": str(pending)}
+        return ranked, {
+            "applied": True,
+            "capability": capability,
+            "ranked": len(ranked),
+            "candidates": len(candidates),
+        }
+
     async def _combine(
-        self, combiner: CombinerRow, kept: dict[str, list[dict[str, Any]]], used: list[str]
+        self,
+        combiner: CombinerRow,
+        kept: dict[str, list[dict[str, Any]]],
+        used: list[str],
+        words: list[str] | None = None,
     ) -> list[tuple[str, float]]:
         """Return (item id, score) best first from the combiner's rule over the used rankings.
 
-        Reciprocal rank fusion is computed here. A trained artifact is asked through
-        the supplied object, never run by memory; its order is kept and its scores
-        are the rank positions' reciprocals only for reporting. Raises RuntimeError
-        for an artifact combiner whose artifact was not supplied.
+        Reciprocal rank fusion is computed here, with the supplier's keyword ranking added as one more
+        ranking when there is one. A trained artifact is asked through the supplied object, never run
+        by memory; its order is kept and its scores are the rank positions' reciprocals only for
+        reporting. Raises RuntimeError for an artifact combiner whose artifact was not supplied.
         """
         rankings = {label: [h["item_id"] for h in kept[label]] for label in used}
         if combiner.rule == RULE_RRF:
             if self.settings is None:
                 raise RuntimeError("Merging rankings needs the declared search settings")
+            if words:
+                rankings[f"words:{self.settings.words_capability}"] = words
             return reciprocal_rank_fusion(rankings, self.settings.merging_constant)
         if combiner.rule == RULE_ARTIFACT:
             artifact = self.artifacts.get(combiner.combiner_id)

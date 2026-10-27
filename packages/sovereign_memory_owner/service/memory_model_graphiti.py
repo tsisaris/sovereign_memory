@@ -501,8 +501,10 @@ class GraphitiModel:
             _drive(driver.episode_node_ops.save(driver, episode))
 
         await self.database.write(save)
+        owed = await self._owe_fact_numbers(event_id, [edge.fact for edge in entity_edges])
         return {
             "event_id": event_id,
+            "fact_numbers_owed": owed,
             "candidates": mode,
             "candidate_facts_shown_per_new_fact": shown,
             "stored_facts_before": len(loaded["edges"]),
@@ -511,6 +513,26 @@ class GraphitiModel:
             "ended_facts": [self._fact(e, False) for e in invalidated],
             **clock,
         }
+
+    async def _owe_fact_numbers(self, event_id: str, facts: list[str]) -> dict[str, Any]:
+        """Record that the supplier owes numbers for each stored fact, once per registered embedding model.
+
+        It takes the event the facts came from and their words. The next numbers sync fetches each
+        fact whole from the supplier's door and stores it as a derived piece of that event, which is
+        what ranks the fact by meaning. It returns how many requests were made and for how many
+        models; with no numbers services it says so. It makes no number and never changes a fact.
+        """
+        numbers = self.database.numbers
+        if numbers is None:
+            return {"requests": 0, "reason": "the service has no numbers services"}
+        models = await numbers.store.models("embedding")
+        wanted = list(dict.fromkeys(fact for fact in facts if fact.strip()))
+        for model in models:
+            for fact in wanted:
+                await numbers.request(
+                    model.model_id, model.revision, event_id, fact, "numbers for a Graphiti fact"
+                )
+        return {"requests": len(models) * len(wanted), "models": len(models)}
 
     @staticmethod
     def _fact(edge: EntityEdge, new: bool) -> dict[str, Any]:

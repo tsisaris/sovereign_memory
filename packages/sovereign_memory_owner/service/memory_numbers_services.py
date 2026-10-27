@@ -122,6 +122,21 @@ class NumbersServices:
         vector = await self.supplier.question_numbers(model_id, revision, text)
         return check_vector(vector, model.width)
 
+    async def word_ranking(
+        self, capability: str, query: str, passages: list[dict[str, str]]
+    ) -> list[str]:
+        """Ask the supplier which candidate passages share words with the question, best first.
+
+        Raises NumbersNotYetSupplied when the supplier offers no keyword ranking or cannot answer.
+        Memory never scores words itself.
+        """
+        ask = getattr(self.supplier, "word_ranking", None)
+        if ask is None:
+            raise NumbersNotYetSupplied(
+                f"{PENDING_WORK}: this supplier offers no keyword ranking ({capability})"
+            )
+        return await ask(capability, query, passages)
+
     async def request_derived(
         self, model_id: str, revision: str, event_id: str, texts: list[str], reason: str
     ) -> list[str]:
