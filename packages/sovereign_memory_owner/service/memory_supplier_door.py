@@ -200,6 +200,40 @@ class EmbeddingDoorSupplier:
         )
         return list(vectors["question"])
 
+    async def word_ranking(
+        self, capability: str, query: str, passages: list[dict[str, str]]
+    ) -> list[str]:
+        """Ask the door's keyword capability which of the passages share rare words with the question.
+
+        It takes the capability id (for example words.bm25), the question and the candidate passages
+        (id and text). It sends the question and the candidates as one complete set, as the capability
+        requires, and returns the candidate ids that share at least one term with the question, best
+        first; a candidate with a zero score is left out, because no shared word is an absence of
+        evidence, not a rank. It raises the sentinel when the door cannot answer or answers without
+        the question's own row. It never scores anything itself.
+        """
+        if not passages:
+            return []
+        asked = {"id": "question", "text": query}
+        ids = [asked["id"], *[passage["id"] for passage in passages]]
+        if len(set(ids)) != len(ids):
+            raise ValueError("candidate passage ids must be unique and not 'question'")
+        reply = await asyncio.to_thread(
+            self._call,
+            "POST",
+            f"/feature/{capability}",
+            {"declared_ids": ids, "passages": [asked, *passages]},
+        )
+        values = reply.get("values") if isinstance(reply, dict) else None
+        scores = values.get(asked["id"]) if isinstance(values, dict) else None
+        if not isinstance(scores, dict):
+            raise NumbersNotYetSupplied(
+                f"{PENDING_WORK}: agent_embedding's {capability} sent no scores for the question"
+            )
+        ranked = [(score, name) for name, score in scores.items() if score and score > 0]
+        ranked.sort(key=lambda pair: (-pair[0], pair[1]))
+        return [name for _, name in ranked]
+
     async def recompute(
         self,
         collection: str,

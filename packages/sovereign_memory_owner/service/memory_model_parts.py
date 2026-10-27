@@ -159,6 +159,10 @@ class DatabaseAccess(Protocol):
     def path(self) -> Path:
         """The path of the memory database file, for a part that must open a connection of its own."""
 
+    @property
+    def numbers(self) -> Any:
+        """The service's numbers services (to owe numbers for a derived text), or None when it has none."""
+
     async def read(self, work: Callable[[Any], Any]) -> Any:
         """Run work(handle) on the owner's handle and return what it returns."""
 

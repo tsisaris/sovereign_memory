@@ -29,6 +29,7 @@ OPTIONAL_SETTING_NAMES = (
     "decay_time_constant_seconds",
     "decay_lower_bound",
     "decay_upper_bound",
+    "words_capability",
 )
 
 SETTINGS_SCHEMA = """
@@ -63,6 +64,7 @@ class SearchSettings:
     decay_time_constant_seconds: float | None = None
     decay_lower_bound: float | None = None
     decay_upper_bound: float | None = None
+    words_capability: str | None = None
 
     @classmethod
     def from_mapping(cls, table: Any, known_scores: tuple[str, ...]) -> "SearchSettings":
@@ -121,6 +123,9 @@ class SearchSettings:
                 raise ValueError(f"{name} must be a finite number, zero or above")
         if lower is not None and upper is not None and lower > upper:
             raise ValueError("decay_lower_bound must not be above decay_upper_bound")
+        words = table.get("words_capability")
+        if words is not None and (not isinstance(words, str) or not words.strip()):
+            raise ValueError("words_capability must be the supplier's capability id, as text")
         return cls(
             score,
             float(share),
@@ -129,6 +134,7 @@ class SearchSettings:
             None if decay is None else float(decay),
             None if lower is None else float(lower),
             None if upper is None else float(upper),
+            words,
         )
 
     def report(self) -> dict[str, Any]:
