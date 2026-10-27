@@ -175,8 +175,9 @@ class MemoryRetrievalService:
         combiner named as current merges the rankings of the models it uses.
         The answer says which models were used, which were ranked but are not in
         the combiner, and which were left out and why; when no model could rank
-        the status is "unavailable", never an empty success. Hits roll up to
-        events. Raises RuntimeError when no search settings were declared.
+        the status is "unavailable", never an empty success. The answer also lists
+        each used model's own order ("rankings") beside the merged hits. Hits roll
+        up to events. Raises RuntimeError when no search settings were declared.
         """
         if self.settings is None:
             raise RuntimeError("Merging rankings needs the declared search settings")
@@ -292,6 +293,7 @@ class MemoryRetrievalService:
             "capability": capability,
             "ranked": len(ranked),
             "candidates": len(candidates),
+            "order": ranked,
         }
 
     async def _combine(
