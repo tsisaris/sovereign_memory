@@ -148,6 +148,11 @@ class _ServiceDatabase:
         """The path of the memory database file."""
         return self.service.db_path
 
+    @property
+    def numbers(self) -> NumbersServices | None:
+        """The service's numbers services, through which a part owes numbers for a derived text."""
+        return self.service.numbers
+
     async def read(self, work: Callable[[Any], Any]) -> Any:
         """Run work(handle) on the owner's worker and return its result."""
         conn = self.service.lifetime_conn

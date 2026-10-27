@@ -21,7 +21,11 @@ import duckdb
 from graphiti_core.nodes import EpisodeType, EpisodicNode
 from graphiti_duckdb.duckdb_driver import DuckDBDriver
 
-from service.memory_event_ranking import question_numbers_for_events, rank_events
+from service.memory_event_ranking import (
+    permitted_producers,
+    question_numbers_for_events,
+    rank_events,
+)
 from service.memory_numbers_services import NumbersServices
 from service.memory_owner_core import parse_instant
 from service.memory_processor_seam import (
@@ -248,8 +252,83 @@ class GraphitiEpisodeTier:
                         "ranking": f"cosine distance of {label}'s own numbers for the event",
                     }
                 )
-            rankings[label] = hits
+            facts = GraphitiEpisodeTier._ranked_facts(
+                native_handle, scope, prepared_query["vectors"][label], prepared_query["limit"]
+            )
+            rankings[label] = sorted(hits + facts, key=lambda hit: hit["distance"])[
+                : prepared_query["limit"]
+            ]
         return TierRankings(rankings, dict(prepared_query["left_out"]))
+
+    @staticmethod
+    def _ranked_facts(
+        native_handle: duckdb.DuckDBPyConnection,
+        scope: RetrievalScope,
+        vector_of_model: Any,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Return the stored facts nearest the question by one model's numbers for the fact's words.
+
+        The numbers are the derived pieces the supplier gave for each fact (keyed by the event the
+        fact came from and the fingerprint of its words); a fact without numbers is not ranked. Each
+        hit carries the fact, its four timestamps, the event it came from and the cosine distance.
+        Only events the scope's visibility permits, and not removed, count. It never writes.
+        """
+        model, vector = vector_of_model
+        permitted = permitted_producers(scope)
+        if permitted is None:
+            return []
+        condition, params = permitted
+        rows = native_handle.execute(
+            "SELECT p.event_id, e.actor_agent_id, g.uuid, "
+            "json_extract_string(g.properties, '$.fact'), "
+            "json_extract_string(g.properties, '$.valid_at'), "
+            "json_extract_string(g.properties, '$.invalid_at'), "
+            "json_extract_string(g.properties, '$.expired_at'), "
+            "json_extract_string(e.raw_event, '$.source_revision'), "
+            f"array_cosine_distance(n.numbers, CAST(? AS FLOAT[{model.width}])) AS distance "
+            f"FROM {model.numbers_table} n JOIN memory_pieces p ON p.piece_id = n.piece_id "
+            "JOIN memory_events e ON e.event_id = p.event_id "
+            "JOIN graphiti.graph_edge g ON sha256(json_extract_string(g.properties, '$.fact')) "
+            "= p.text_fingerprint "
+            "LEFT JOIN memory_removals r ON r.target_event_id = p.event_id "
+            "LEFT JOIN memory_piece_retirements x ON x.piece_id = p.piece_id "
+            "WHERE NOT n.stale AND p.source = 'derived' AND r.target_event_id IS NULL "
+            f"AND x.piece_id IS NULL AND {condition} ORDER BY distance, g.uuid",
+            [vector, *params],
+        ).fetchall()
+        facts: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for (
+            event_id,
+            actor,
+            uuid_,
+            fact,
+            valid_at,
+            invalid_at,
+            expired_at,
+            revision,
+            distance,
+        ) in rows:
+            if uuid_ in seen:
+                continue
+            seen.add(uuid_)
+            facts.append(
+                {
+                    "event_id": event_id,
+                    "item_id": uuid_,
+                    "actor_agent_id": actor,
+                    "fact": fact,
+                    "text": fact,
+                    "valid_at": valid_at,
+                    "invalid_at": invalid_at,
+                    "expired_at": expired_at,
+                    "source_revision": revision,
+                    "distance": distance,
+                    "ranking": f"cosine distance of {model.label}'s own numbers for the fact",
+                }
+            )
+        return facts[:limit]
 
     def retrieve(
         self,
