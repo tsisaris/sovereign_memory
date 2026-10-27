@@ -111,16 +111,22 @@ def _embedding_model(table: Any, where: str) -> tuple[str, str]:
 def _ranking(table: Any) -> dict[str, Any]:
     """Read the search settings table; the four main settings are required and none has a default.
 
-    The three decay settings are optional and go together. Types and ranges are
+    The three decay settings are optional and go together; words_capability (the
+    supplier's keyword-ranking capability id) is optional alone. Types and ranges are
     checked by the Owner when it is built, which raises a named error; here the
-    shape (the four keys, plus only the decay keys) is enforced.
+    shape (the four keys, plus only the optional keys) is enforced.
     """
     return dict(
         _take(
             table,
             "ranking",
             ("comparison_score", "held_back_share", "smallest_held_back_set", "merging_constant"),
-            ("decay_time_constant_seconds", "decay_lower_bound", "decay_upper_bound"),
+            (
+                "decay_time_constant_seconds",
+                "decay_lower_bound",
+                "decay_upper_bound",
+                "words_capability",
+            ),
         )
     )
 

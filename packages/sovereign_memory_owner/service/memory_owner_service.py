@@ -263,7 +263,12 @@ class OwnerService:
             await self._initialize_search_storage()
             self.dispatcher = MemoryDispatcher(self.lifetime_conn, self.registry, self.numbers)
             self.retrieval = MemoryRetrievalService(
-                self.lifetime_conn, self.retrievers, self.policy, self.settings, self.artifacts
+                self.lifetime_conn,
+                self.retrievers,
+                self.policy,
+                self.settings,
+                self.artifacts,
+                self.numbers,
             )
             self.review = ReviewScreen(self.lifetime_conn, self.retrieval.policy)
             if self._model_parts_factory is not None:
