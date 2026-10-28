@@ -232,10 +232,13 @@ class CorpusHttpSupplier:
         piece = SuppliedPiece(unit_id, event_id, 0, text, text_fingerprint(text))
         return SuppliedNumbers(model_id, revision, width, (piece,), {unit_id: vector})
 
-    async def question_numbers(self, model_id: str, revision: str, text: str) -> list[float]:
+    async def question_numbers(
+        self, model_id: str, revision: str, text: str, role: str = "question"
+    ) -> list[float]:
         """Return one model revision's numbers for a text, from agent_corpus's question door.
 
-        Goes in: the model label and the text. Comes out: that label's vector from the reply
+        Goes in: the model label and the text (the role is accepted and ignored: this door reads
+        every text the same way). Comes out: that label's vector from the reply
         for the whole text. The door answers for every model at once and saves each ask, so
         the latest reply is kept and reused for the same text. A model the door lists as
         unreached, or a label it did not return, raises the sentinel with the door's reason.

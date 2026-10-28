@@ -727,10 +727,11 @@ class Mem0Tier:
 
 @dataclass(frozen=True)
 class _TierRankings:
-    """Per-model rankings and the models left out, matching the owner's TierRankings by shape."""
+    """Per-model rankings, the models left out and the facts held back, matching the owner's TierRankings by shape."""
 
     rankings: Dict[str, List[Dict[str, Any]]]
     left_out: Dict[str, str]
+    not_current: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def _scope(work: PreparedWork) -> str:
