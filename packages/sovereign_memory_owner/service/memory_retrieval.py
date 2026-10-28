@@ -508,21 +508,26 @@ class MemoryRetrievalService:
             event["items"].append({**hit, "score": score})
         return list(events.values())
 
-    async def _record_disagreement(
+    async def _record_case(
         self,
         tier: str,
         principal: AuthenticatedPrincipal,
         query: str,
         combiner: CombinerRow,
         kept: dict[str, list[dict[str, Any]]],
-        merged: list[tuple[str, float]],
+        stages: dict[str, Any],
     ) -> tuple[str | None, str | None]:
-        """Record a ground-truth case when the models' first answers differ; return (case id, error).
+        """Record a ground-truth case when the models disagree or the question has a known answer.
 
-        The case id is derived from the question, the rankings and the combiner,
-        so asking the same thing twice records one case. The case points to the
-        events involved and copies none of their text. A failure to record is
-        returned, never raised or hidden, so the search itself still answers.
+        stages holds the run's other orders and reports: "merged" and "final" (item, score) lists,
+        "words" (item ids or None), "rerank" (the second stage's report) and "report" (what else the
+        search measured). The case keeps every reader's ranking, the keyword ranking, the merged
+        order and the order after the second stage, the settings in force and the reports, so that
+        whether each was right can be read against the known answer, now or after a correction.
+        The case id is derived from the question, every order and the combiner, so asking the same
+        thing twice records one case. The case points to the events involved and copies none of
+        their text. A failure to record is returned, never raised or hidden, so the search itself
+        still answers. Returns (case id, error); (None, None) when nothing needed recording.
         """
 
         settings = self.settings
@@ -530,11 +535,12 @@ class MemoryRetrievalService:
             raise RuntimeError("Recording a case needs the declared search settings")
 
         def output(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            """Shape a ranking for the ground-truth record: ids and native scores, no text."""
+            """Shape a ranking for the ground-truth record: ids, kind and native scores, no text."""
             return [
                 {
                     "item_id": h["item_id"],
                     "event_id": h["event_id"],
+                    "item_kind": item_kind(h),
                     "score": h.get("distance", h.get("score")),
                 }
                 for h in hits
@@ -544,7 +550,8 @@ class MemoryRetrievalService:
             {"key": label, "role": MODEL_OUTPUT, "output": output(hits)}
             for label, hits in sorted(kept.items())
         ]
-        if not disagree(outputs):
+        known = await self.conn.run(lambda: latest_known(self.conn.native, query))
+        if known is None and not disagree(outputs):
             return None, None
         involved = sorted({h["event_id"] for hits in kept.values() for h in hits})
         digest = hashlib.sha256(
@@ -555,17 +562,40 @@ class MemoryRetrievalService:
                     combiner.combiner_id,
                     settings.merging_constant,
                     {label: [h["item_id"] for h in hits] for label, hits in sorted(kept.items())},
+                    [item for item, _ in stages["merged"]],
+                    [item for item, _ in stages["final"]],
+                    stages["words"],
                 ],
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
         case_id = f"case-{digest}"
         now = datetime.now(timezone.utc).isoformat()
-        item_event = {h["item_id"]: h["event_id"] for hits in kept.values() for h in hits}
-        combined = [
-            {"item_id": item, "event_id": item_event[item], "score": score}
-            for item, score in merged
+        by_item = {h["item_id"]: h for hits in kept.values() for h in hits}
+
+        def scored(pairs: list[tuple[str, float]], cross: dict[str, float] | None = None):
+            """Shape an (item, score) order for the record, with the cross-scorer's score when given."""
+            return [
+                {
+                    "item_id": item,
+                    "event_id": by_item[item]["event_id"],
+                    "item_kind": item_kind(by_item[item]),
+                    "score": score,
+                    **({} if cross is None else {"cross_score": cross.get(item)}),
+                }
+                for item, score in pairs
+            ]
+
+        extra: list[tuple[str, list[dict[str, Any]]]] = [
+            (COMBINED_OUTPUT, scored(stages["merged"]))
         ]
+        if stages["words"]:
+            extra.append(
+                (WORDS_OUTPUT, scored([(item, 1.0 / rank) for rank, item in enumerate(stages["words"], 1)]))
+            )
+        if stages["rerank"].get("applied"):
+            cross = {row["item_id"]: row["cross_score"] for row in stages["rerank"]["ordered"]}
+            extra.append((RERANKED_OUTPUT, scored(stages["final"], cross)))
 
         def write() -> None:
             """Record the case and every output in one transaction on the owner's worker."""
