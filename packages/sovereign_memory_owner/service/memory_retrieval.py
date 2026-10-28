@@ -14,7 +14,8 @@ visibility permits and that has been neither removed (expired or forgotten
 through the owner) nor let expire, or it is withheld and counted. Removal is
 recorded when it is captured, so a removed source is withheld even while a tier
 has not yet deleted its projection. When two or more models' first answers
-differ, the search records the disagreement as a ground-truth case.
+differ, or the question has a known answer, the search records the run as a ground-truth case
+holding every reader's ranking, the keyword, merged and second-stage orders and the settings.
 """
 
 import hashlib
@@ -35,7 +36,16 @@ from service.memory_combiners import (
     reciprocal_rank_fusion,
 )
 from service.memory_context_assembler import ContextAssembler
-from service.memory_ground_truth import COMBINED_OUTPUT, MODEL_OUTPUT, record_case, record_output
+from service.memory_ground_truth import (
+    COMBINED_OUTPUT,
+    MODEL_OUTPUT,
+    RERANKED_OUTPUT,
+    WORDS_OUTPUT,
+    latest_known,
+    record_case,
+    record_output,
+    record_run,
+)
 from service.memory_numbers_services import NumbersServices
 from service.memory_owner_core import TIERS, OwnerCore
 from service.memory_processor_seam import (
@@ -50,6 +60,22 @@ from service.memory_supplier import NumbersNotYetSupplied
 from service.memory_visibility import RestrictedPolicy
 
 logger = logging.getLogger(__name__)
+
+
+def item_kind(hit: dict[str, Any]) -> str:
+    """Name what kind of thing a hit is ("fact", "memory", "episode" or "other"); pure.
+
+    It takes a tier's hit and reads only which keys it carries. It returns the kind so the
+    ground-truth record can tell a Graphiti fact from a Mem0 memory or an episode. It never
+    reads the hit's text.
+    """
+    if "fact" in hit:
+        return "fact"
+    if "memory" in hit:
+        return "memory"
+    if "episode_uuid" in hit:
+        return "episode"
+    return "other"
 
 
 class MemoryRetrievalService:
@@ -267,9 +293,29 @@ class MemoryRetrievalService:
         if self.settings.rerank_capability is not None:
             merged, rerank = await self._rerank(query, merged, kept, used)
         events = self._roll_up(merged, kept, used)
-        case_id, error = await self._record_disagreement(
-            tier, principal, query, combiner, kept, merged
-        )
+        stages = {
+            "merged": first_stage,
+            "final": merged,
+            "words": words,
+            "rerank": rerank,
+            "report": {
+                "models": models,
+                "words": words_report,
+                "decay": decay,
+                "rerank": {key: value for key, value in rerank.items() if key != "ordered"}
+                | {
+                    "cross_scores": {
+                        row["item_id"]: row["cross_score"] for row in rerank.get("ordered", [])
+                    }
+                },
+                "not_current": [
+                    {key: value for key, value in fact.items() if key != "fact"}
+                    for fact in result.not_current
+                ],
+                "withheld": withheld,
+            },
+        }
+        case_id, error = await self._record_case(tier, principal, query, combiner, kept, stages)
         answer = {
             **base,
             "status": "ok" if len(used) == len(combiner.models) else "partial",
@@ -573,7 +619,9 @@ class MemoryRetrievalService:
         now = datetime.now(timezone.utc).isoformat()
         by_item = {h["item_id"]: h for hits in kept.values() for h in hits}
 
-        def scored(pairs: list[tuple[str, float]], cross: dict[str, float] | None = None):
+        def scored(
+            pairs: list[tuple[str, float | None]], cross: dict[str, float] | None = None
+        ) -> list[dict[str, Any]]:
             """Shape an (item, score) order for the record, with the cross-scorer's score when given."""
             return [
                 {
@@ -590,9 +638,7 @@ class MemoryRetrievalService:
             (COMBINED_OUTPUT, scored(stages["merged"]))
         ]
         if stages["words"]:
-            extra.append(
-                (WORDS_OUTPUT, scored([(item, 1.0 / rank) for rank, item in enumerate(stages["words"], 1)]))
-            )
+            extra.append((WORDS_OUTPUT, scored([(item, None) for item in stages["words"]])))
         if stages["rerank"].get("applied"):
             cross = {row["item_id"]: row["cross_score"] for row in stages["rerank"]["ordered"]}
             extra.append((RERANKED_OUTPUT, scored(stages["final"], cross)))
@@ -626,15 +672,25 @@ class MemoryRetrievalService:
                         combiner_id=combiner.combiner_id,
                         recorded_at=now,
                     )
-                record_output(
+                for role, ranking in extra:
+                    record_output(
+                        handle,
+                        case_id=case_id,
+                        role=role,
+                        model_id=None,
+                        revision=None,
+                        output=ranking,
+                        combiner_id=combiner.combiner_id,
+                        recorded_at=now,
+                    )
+                record_run(
                     handle,
                     case_id=case_id,
-                    role=COMBINED_OUTPUT,
-                    model_id=None,
-                    revision=None,
-                    output=combined,
-                    combiner_id=combiner.combiner_id,
-                    recorded_at=now,
+                    query=query,
+                    tier=tier,
+                    ran_at=now,
+                    settings=settings.report(),
+                    report=stages["report"],
                 )
                 handle.commit()
             except BaseException:
@@ -644,6 +700,6 @@ class MemoryRetrievalService:
         try:
             await self.conn.run(write)
         except ValueError as error:
-            logger.exception("Recording the disagreement case failed")
+            logger.exception("Recording the ground-truth case failed")
             return None, f"{type(error).__name__}: {error}"
         return case_id, None

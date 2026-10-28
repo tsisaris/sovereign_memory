@@ -338,7 +338,9 @@ def record_known(
     Raises ValueError for an empty question, answer, basis or event list, or an unknown event.
     """
     if not query or not answer or not basis or not said_by or not right_events:
-        raise ValueError("A known answer needs a question, an answer, a basis, who said it and events")
+        raise ValueError(
+            "A known answer needs a question, an answer, a basis, who said it and events"
+        )
     unique = sorted(set(right_events))
     for event_id in unique:
         if (
@@ -374,7 +376,16 @@ def latest_known(handle: duckdb.DuckDBPyConnection, query: str) -> dict[str, Any
     ).fetchone()
     if row is None:
         return None
-    keys = ("known_id", "query", "answer", "right_events", "basis", "said_by", "recorded_by", "recorded_at")
+    keys = (
+        "known_id",
+        "query",
+        "answer",
+        "right_events",
+        "basis",
+        "said_by",
+        "recorded_by",
+        "recorded_at",
+    )
     known = dict(zip(keys, row, strict=True))
     known["right_events"] = json.loads(known["right_events"])
     return known
