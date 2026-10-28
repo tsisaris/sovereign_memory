@@ -2,7 +2,8 @@
 
 One framed JSON request per connection, with "op" one of: "capture" (store an
 event and its pending receipts, then process it in the background),
-"retrieve" (scoped retrieval across the tiers), "forget" (durably remove an
+"retrieve" (scoped retrieval across the tiers), "retrieve_batch" (several questions at once, each
+model asked once for all of them), "forget" (durably remove an
 event the principal produced, then remove its projections) and "status" (an
 event's durable receipts and whether every tier finished). The review screen adds
 "review_list", "review_show", "review_page", "review_judge" and "review_select",
@@ -72,6 +73,7 @@ logger = logging.getLogger(__name__)
 OPERATIONS = (
     "capture",
     "retrieve",
+    "retrieve_batch",
     "forget",
     "status",
     "models",
@@ -554,6 +556,8 @@ class OwnerService:
                     response = await self._capture(principal, event_data, payload_content)
                 elif operation == "retrieve":
                     response = await self._retrieve(principal, payload)
+                elif operation == "retrieve_batch":
+                    response = await self._retrieve_batch(principal, payload)
                 elif operation == "forget":
                     response = await self._forget(principal, payload)
                 elif operation == "status":
@@ -705,6 +709,32 @@ class OwnerService:
             raise ValueError("Invalid retrieval request: query and limit required")
         answers = await self.retrieval.retrieve(principal, query, limit)
         return {"status": "success", "tiers": answers}
+
+    async def _retrieve_batch(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Answer several scoped retrievals at once so each model is asked for all of them in one request.
+
+        Goes in: queries (a non-empty list of text) and limit. Comes out: one answer per query, in order,
+        each exactly as retrieve answers. Raises ValueError for a malformed list or limit.
+        """
+        queries, limit = request.get("queries"), request.get("limit")
+        if (
+            not isinstance(queries, list)
+            or not queries
+            or any(not isinstance(query, str) for query in queries)
+            or not isinstance(limit, int)
+            or limit < 1
+        ):
+            raise ValueError(
+                "Invalid batch retrieval request: queries (text list) and limit required"
+            )
+        answers = await self.retrieval.retrieve_many(principal, queries, limit)
+        return {
+            "status": "success",
+            "answers": [
+                {"query": query, "tiers": tiers}
+                for query, tiers in zip(queries, answers, strict=True)
+            ],
+        }
 
     async def _context(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
         """Answer "what do you know that matters for this" as a context block for a prompt.

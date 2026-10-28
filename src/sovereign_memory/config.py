@@ -112,7 +112,8 @@ def _ranking(table: Any) -> dict[str, Any]:
     """Read the search settings table; the four main settings are required and none has a default.
 
     The three decay settings are optional and go together; words_capability (the
-    supplier's keyword-ranking capability id) is optional alone. Types and ranges are
+    supplier's keyword-ranking capability id) is optional alone; model_weights with
+    words_weight, and the three rerank settings, each go together. Types and ranges are
     checked by the Owner when it is built, which raises a named error; here the
     shape (the four keys, plus only the optional keys) is enforced.
     """
@@ -126,6 +127,11 @@ def _ranking(table: Any) -> dict[str, Any]:
                 "decay_lower_bound",
                 "decay_upper_bound",
                 "words_capability",
+                "model_weights",
+                "words_weight",
+                "rerank_capability",
+                "rerank_candidates",
+                "rerank_weight",
             ),
         )
     )
@@ -150,15 +156,29 @@ def _models(rows: Any) -> tuple[dict[str, Any], ...]:
     return tuple(result)
 
 
-def _door(table: Any, where: str) -> dict[str, Any]:
+def _door(table: Any, where: str, optional: tuple[str, ...] = ()) -> dict[str, Any]:
     """Read a number-source table: where it answers, who memory says it is, the time limit.
 
     Every key is required and none has a default; the time limit must be a positive number.
+    The caller names any optional keys; "prefixes" (the words a model's authors put before a
+    question and before a passage, by model id) is checked here for its shape.
     """
-    table = dict(_take(table, where, ("base_url", "requester_agent_id", "timeout_seconds")))
+    table = dict(
+        _take(table, where, ("base_url", "requester_agent_id", "timeout_seconds"), optional)
+    )
     _text(table, where, "base_url")
     _text(table, where, "requester_agent_id")
     _positive(table, where, "timeout_seconds", False)
+    if "prefixes" in table:
+        if not isinstance(table["prefixes"], dict):
+            raise ConfigurationError(f"{where}.prefixes must be a table of model ids")
+        for model_id, roles in table["prefixes"].items():
+            if not isinstance(roles, dict) or not roles or set(roles) - {"question", "passage"}:
+                raise ConfigurationError(
+                    f"{where}.prefixes.{model_id} must hold question and/or passage"
+                )
+            if any(not isinstance(words, str) for words in roles.values()):
+                raise ConfigurationError(f"{where}.prefixes.{model_id} words must be text")
     return table
 
 
@@ -391,7 +411,9 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
     models = _models(data.get("models", []))
     supplier = _supplier(data["supplier"]) if "supplier" in data else None
     embedding_door = (
-        _door(data["embedding_door"], "embedding_door") if "embedding_door" in data else None
+        _door(data["embedding_door"], "embedding_door", ("prefixes",))
+        if "embedding_door" in data
+        else None
     )
     if supplier is not None and embedding_door is not None:
         raise ConfigurationError(
