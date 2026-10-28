@@ -95,21 +95,29 @@ class CombinerRow:
 
 
 def reciprocal_rank_fusion(
-    rankings: dict[str, list[str]], merging_constant: float
+    rankings: dict[str, list[str]],
+    merging_constant: float,
+    weights: dict[str, float] | None = None,
 ) -> list[tuple[str, float]]:
     """Merge rankings by reciprocal rank fusion; pure.
 
-    Goes in: model label -> item ids best first, and the merging constant. Comes
-    out: (item id, score) best first, where an item's score is the sum over
-    models of 1 / (merging_constant + rank) with rank counting from 1 and an
-    item absent from a model adding nothing for it. Ties are broken by the best
-    rank any model gave the item, then by item id, so the order is repeatable.
+    Goes in: model label -> item ids best first, the merging constant and, when
+    the deployment declared them, each ranking's weight. Comes out: (item id,
+    score) best first, where an item's score is the sum over rankings of the
+    ranking's weight (1 without weights) times 1 / (merging_constant + rank) with
+    rank counting from 1 and an item absent from a ranking adding nothing for it.
+    Ties are broken by the best rank any ranking gave the item, then by item id,
+    so the order is repeatable. Raises ValueError for a ranking with no weight when
+    weights are given.
     """
+    if weights is not None and set(rankings) - set(weights):
+        raise ValueError(f"No weight is declared for: {sorted(set(rankings) - set(weights))}")
     scores: dict[str, float] = {}
     best: dict[str, int] = {}
-    for items in rankings.values():
+    for label, items in rankings.items():
+        weight = 1.0 if weights is None else weights[label]
         for rank, item in enumerate(items, start=1):
-            scores[item] = scores.get(item, 0.0) + 1.0 / (merging_constant + rank)
+            scores[item] = scores.get(item, 0.0) + weight / (merging_constant + rank)
             best[item] = min(best.get(item, rank), rank)
     return sorted(scores.items(), key=lambda pair: (-pair[1], best[pair[0]], pair[0]))
 

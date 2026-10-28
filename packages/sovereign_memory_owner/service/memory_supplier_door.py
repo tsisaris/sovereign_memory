@@ -225,6 +225,79 @@ class EmbeddingDoorSupplier:
         )
         return list(vectors["question"])
 
+    async def question_numbers_many(
+        self, model_id: str, revision: str, texts: list[str], role: str = "question"
+    ) -> list[list[float]]:
+        """Return the door's numbers for several texts from one reader in a single request.
+
+        It takes the model label, the texts and their role, and sends them all in one call so the
+        door loads that reader once however many texts there are. It returns the vectors in the
+        order of the texts. It raises the sentinel when the door lists no such capability, answers
+        with another label or leaves out a text. Duplicate texts are asked once.
+        """
+        capability = next(
+            (
+                row["capability_id"]
+                for row in await self._capabilities()
+                if row.get("occupant_id") == model_id and row.get("revision") == revision
+            ),
+            None,
+        )
+        if capability is None:
+            raise NumbersNotYetSupplied(
+                f"{PENDING_WORK}: agent_embedding lists no reader that is {model_id} {revision}"
+            )
+        distinct = list(dict.fromkeys(texts))
+        vectors = await self._embed(
+            capability,
+            model_id,
+            revision,
+            [
+                {"id": f"question{index}", "text": self._prefixed(model_id, role, text)}
+                for index, text in enumerate(distinct)
+            ],
+        )
+        by_text = {text: vectors[f"question{index}"] for index, text in enumerate(distinct)}
+        return [list(by_text[text]) for text in texts]
+
+    async def pair_scores(
+        self, capability: str, query: str, passages: list[dict[str, str]]
+    ) -> dict[str, float]:
+        """Ask the door's cross-scorer how well each passage answers the question, read together.
+
+        It takes the capability id (for example pairs.cross_score), the question and the candidate
+        passages (id and text), and sends each candidate paired with the question in one request. It
+        returns the score the door gave each candidate id; a higher score answers the question
+        better. It raises the sentinel when the door cannot answer or leaves out a candidate. It never
+        scores anything itself.
+        """
+        if not passages:
+            return {}
+        ids = [passage["id"] for passage in passages]
+        if len(set(ids)) != len(ids):
+            raise ValueError("candidate passage ids must be unique")
+        reply = await asyncio.to_thread(
+            self._call,
+            "POST",
+            f"/feature/{capability}",
+            {
+                "declared_ids": ids,
+                "pairs": [
+                    {"id": passage["id"], "text_a": query, "text_b": passage["text"]}
+                    for passage in passages
+                ],
+            },
+        )
+        values = reply.get("values") if isinstance(reply, dict) else None
+        if not isinstance(values, dict) or any(
+            isinstance(values.get(name), bool) or not isinstance(values.get(name), (int, float))
+            for name in ids
+        ):
+            raise NumbersNotYetSupplied(
+                f"{PENDING_WORK}: agent_embedding's {capability} sent no score for every candidate"
+            )
+        return {name: float(values[name]) for name in ids}
+
     async def word_ranking(
         self, capability: str, query: str, passages: list[dict[str, str]]
     ) -> list[str]:

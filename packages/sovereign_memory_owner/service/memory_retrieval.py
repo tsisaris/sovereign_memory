@@ -20,6 +20,7 @@ differ, the search records the disagreement as a ground-truth case.
 import hashlib
 import json
 import logging
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Any
 
@@ -85,10 +86,35 @@ class MemoryRetrievalService:
         """Return tier -> {"status", "hits", "withheld"/"reason", ...} for the authenticated principal.
 
         A tier that ranks by models also reports "combiner", "models" (used,
-        ranked_not_combined, left_out) and "settings_used". The scope comes only
-        from the principal. Apart from recording a disagreement case it never
+        ranked_not_combined, left_out), "settings_used", the merged order, the second
+        stage ("rerank") and the facts it held back as no longer true ("not_current").
+        The question's numbers are fetched once per model for all tiers. The scope comes
+        only from the principal. Apart from recording a disagreement case it never
         writes, and it never returns another actor's hits.
         """
+        return (await self.retrieve_many(principal, [query], limit))[0]
+
+    async def retrieve_many(
+        self, principal: AuthenticatedPrincipal, queries: list[str], limit: int
+    ) -> list[dict[str, dict[str, Any]]]:
+        """Answer several questions, asking each model for all their numbers in one request.
+
+        Goes in: the principal, the questions and the limit. Comes out: one answer per question, in
+        order, each as retrieve describes. Each model's numbers for every question are fetched first,
+        once per model, so a supplier that loads a model when asked loads it once for the whole
+        batch; the second-stage scorer is asked after, question by question. It never answers one
+        principal's question with another's scope.
+        """
+        context = (
+            nullcontext() if self.numbers is None else self.numbers.question_batch(list(queries))
+        )
+        async with context:
+            return [await self._retrieve_one(principal, query, limit) for query in queries]
+
+    async def _retrieve_one(
+        self, principal: AuthenticatedPrincipal, query: str, limit: int
+    ) -> dict[str, dict[str, Any]]:
+        """Answer one question tier by tier, using numbers the batch already fetched."""
         visibility = await self.policy.resolve(principal)
         scope = RetrievalScope(
             agent_id=principal.agent_id, scope=principal.scope, visibility=visibility
@@ -204,6 +230,13 @@ class MemoryRetrievalService:
         for label in combiner.models:
             if label not in kept and label not in left_out:
                 left_out[label] = "the tier returned no ranking for this model"
+        if self.settings.model_weights is not None:
+            for label in used:
+                if label not in self.settings.model_weights:
+                    left_out[label] = (
+                        "no weight is declared for this model in ranking.model_weights"
+                    )
+            used = [label for label in used if label in self.settings.model_weights]
         models = {
             "used": used,
             "ranked_not_combined": sorted(label for label in kept if label not in combiner.models),
@@ -229,6 +262,10 @@ class MemoryRetrievalService:
         decay = {"applied": False, "reason": "no decay_time_constant_seconds is declared"}
         if self.settings.decay_time_constant_seconds is not None:
             merged, decay = await self._apply_decay(merged, kept, used)
+        first_stage = merged
+        rerank: dict[str, Any] = {"applied": False, "reason": "no rerank_capability is declared"}
+        if self.settings.rerank_capability is not None:
+            merged, rerank = await self._rerank(query, merged, kept, used)
         events = self._roll_up(merged, kept, used)
         case_id, error = await self._record_disagreement(
             tier, principal, query, combiner, kept, merged
@@ -241,6 +278,8 @@ class MemoryRetrievalService:
             "models": models,
             "decay": decay,
             "words": words_report,
+            "merged_order": [item for item, _ in first_stage],
+            "rerank": rerank,
             "not_current": result.not_current,
             "rankings": {
                 label: [
@@ -315,9 +354,16 @@ class MemoryRetrievalService:
         if combiner.rule == RULE_RRF:
             if self.settings is None:
                 raise RuntimeError("Merging rankings needs the declared search settings")
+            weights = None
+            if self.settings.model_weights is not None:
+                weights = {label: self.settings.model_weights[label] for label in used}
             if words:
                 rankings[f"words:{self.settings.words_capability}"] = words
-            return reciprocal_rank_fusion(rankings, self.settings.merging_constant)
+                if weights is not None:
+                    if self.settings.words_weight is None:
+                        raise RuntimeError("model_weights are declared without a words_weight")
+                    weights[f"words:{self.settings.words_capability}"] = self.settings.words_weight
+            return reciprocal_rank_fusion(rankings, self.settings.merging_constant, weights)
         if combiner.rule == RULE_ARTIFACT:
             artifact = self.artifacts.get(combiner.combiner_id)
             if artifact is None:
@@ -327,6 +373,72 @@ class MemoryRetrievalService:
             order = (await artifact.merge([{"case_id": None, "rankings": rankings}]))[None]
             return [(item, 1.0 / rank) for rank, item in enumerate(order, start=1)]
         raise RuntimeError(f"Unknown combiner rule {combiner.rule!r}")
+
+    async def _rerank(
+        self,
+        query: str,
+        merged: list[tuple[str, float]],
+        kept: dict[str, list[dict[str, Any]]],
+        used: list[str],
+    ) -> tuple[list[tuple[str, float]], dict[str, Any]]:
+        """Second stage: the supplier's cross-scorer reads the question beside each best result.
+
+        The first rerank_candidates results of the merged order that carry text are each paired with
+        the question and scored by the supplier's cross-scorer. The merged order and the
+        cross-scorer's order are then fused with the declared weights (the cross-scorer has
+        rerank_weight, the merged order the rest). Results below those candidates keep their order
+        and first-stage scores after them; the scores of the candidates are the second fusion's.
+        When the supplier cannot score, the merged order stands and the report says why. Returns
+        (order, report); the report lists the candidates in final order with their cross-scores.
+        """
+        settings = self.settings
+        if (
+            settings is None
+            or settings.rerank_capability is None
+            or settings.rerank_candidates is None
+            or settings.rerank_weight is None
+            or self.numbers is None
+        ):
+            raise RuntimeError("A second stage needs the declared rerank settings and the supplier")
+        capability = settings.rerank_capability
+        text_of: dict[str, str] = {}
+        for label in used:
+            for hit in kept[label]:
+                text = hit.get("text") or hit.get("memory") or hit.get("content")
+                if isinstance(text, str) and text.strip():
+                    text_of.setdefault(hit["item_id"], text)
+        head = [item for item, _ in merged[: settings.rerank_candidates] if item in text_of]
+        if len(head) < 2:
+            return merged, {
+                "applied": False,
+                "capability": capability,
+                "reason": "fewer than two of the best results carry text",
+            }
+        try:
+            scores = await self.numbers.pair_scores(
+                capability, query, [{"id": item, "text": text_of[item]} for item in head]
+            )
+        except NumbersNotYetSupplied as pending:
+            return merged, {"applied": False, "capability": capability, "reason": str(pending)}
+        by_score = sorted(head, key=lambda item: (-scores[item], head.index(item)))
+        fused = reciprocal_rank_fusion(
+            {"merged": head, "cross_scorer": by_score},
+            settings.merging_constant,
+            {"merged": 1.0 - settings.rerank_weight, "cross_scorer": settings.rerank_weight},
+        )
+        covered = set(head)
+        order = fused + [pair for pair in merged if pair[0] not in covered]
+        return order, {
+            "applied": True,
+            "capability": capability,
+            "candidates": len(head),
+            "weight": settings.rerank_weight,
+            "cross_scorer_order": by_score,
+            "ordered": [
+                {"item_id": item, "cross_score": scores[item], "text": text_of[item][:80]}
+                for item, _ in fused
+            ],
+        }
 
     async def _apply_decay(
         self,

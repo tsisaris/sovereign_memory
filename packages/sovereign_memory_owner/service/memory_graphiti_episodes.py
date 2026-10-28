@@ -265,7 +265,9 @@ class GraphitiEpisodeTier:
                 : prepared_query["limit"]
             ]
         return TierRankings(
-            rankings, dict(prepared_query["left_out"]), [not_current[key] for key in sorted(not_current)]
+            rankings,
+            dict(prepared_query["left_out"]),
+            [not_current[key] for key in sorted(not_current)],
         )
 
     @staticmethod

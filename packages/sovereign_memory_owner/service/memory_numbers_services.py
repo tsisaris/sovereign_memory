@@ -10,6 +10,8 @@ text; a missing number is always reported, never replaced by a vector.
 """
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from service.memory_models import ModelRow, check_vector, get_model, list_models, model_state
@@ -44,6 +46,8 @@ class NumbersServices:
         self.supplier = supplier
         self._reader: OwnerReader | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._questions: dict[tuple[str, str, str, str], list[float] | str] = {}
+        self._scopes = 0
 
     def attach_reader(self, reader: OwnerReader) -> None:
         """Receive the owner's reader and remember the event loop it runs on."""
@@ -123,8 +127,84 @@ class NumbersServices:
         never embeds the question itself.
         """
         model = await self.model(model_id, revision)
-        vector = await self.supplier.question_numbers(model_id, revision, text, role)
-        return check_vector(vector, model.width)
+        key = (model_id, revision, role, text)
+        if key in self._questions:
+            kept = self._questions[key]
+            if isinstance(kept, str):
+                raise NumbersNotYetSupplied(kept)
+            return kept
+        vector = check_vector(
+            await self.supplier.question_numbers(model_id, revision, text, role), model.width
+        )
+        if self._scopes:
+            self._questions[key] = vector
+        return vector
+
+    @asynccontextmanager
+    async def question_batch(self, texts: list[str]) -> AsyncIterator[None]:
+        """Fetch the numbers of every question once per model, keep them while the block runs.
+
+        Goes in: the questions of one batch. While the block is open every tier that asks for a
+        question's numbers is answered from what was fetched, so each model is asked once per
+        batch (the supplier may load a model only when it is asked) and never once per question or
+        per tier. A model the supplier cannot answer for is remembered with its reason for the same
+        time. Nothing outlives the last open block, so a later search always asks again and sees a
+        newer revision. Raises ValueError when the supplier sends a wrong-width or non-finite vector.
+        """
+        self._scopes += 1
+        try:
+            if self._scopes == 1:
+                await self._prefetch(texts)
+            yield
+        finally:
+            self._scopes -= 1
+            if self._scopes == 0:
+                self._questions.clear()
+
+    async def _prefetch(self, texts: list[str]) -> None:
+        """Ask the supplier, once per fresh model, for all the questions' numbers and keep them.
+
+        A supplier that can take several texts in one request is asked once per model; any other is
+        asked text by text. Each failure to supply is kept as that model's reason for those texts.
+        """
+        fresh, _ = await self.fresh_models("event")
+        for model in fresh:
+            many = getattr(self.supplier, "question_numbers_many", None)
+            try:
+                if many is not None:
+                    vectors = await many(model.model_id, model.revision, texts, "question")
+                else:
+                    vectors = [
+                        await self.supplier.question_numbers(
+                            model.model_id, model.revision, text, "question"
+                        )
+                        for text in texts
+                    ]
+            except NumbersNotYetSupplied as pending:
+                for text in texts:
+                    self._questions[(model.model_id, model.revision, "question", text)] = str(
+                        pending
+                    )
+                continue
+            for text, vector in zip(texts, vectors, strict=True):
+                self._questions[(model.model_id, model.revision, "question", text)] = check_vector(
+                    vector, model.width
+                )
+
+    async def pair_scores(
+        self, capability: str, query: str, passages: list[dict[str, str]]
+    ) -> dict[str, float]:
+        """Ask the supplier's cross-scorer how well each candidate passage answers the question.
+
+        Raises NumbersNotYetSupplied when the supplier offers no cross-scorer or cannot answer.
+        Memory never scores a pair itself.
+        """
+        ask = getattr(self.supplier, "pair_scores", None)
+        if ask is None:
+            raise NumbersNotYetSupplied(
+                f"{PENDING_WORK}: this supplier offers no cross-scorer ({capability})"
+            )
+        return await ask(capability, query, passages)
 
     async def word_ranking(
         self, capability: str, query: str, passages: list[dict[str, str]]
