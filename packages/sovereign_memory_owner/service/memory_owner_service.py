@@ -801,29 +801,68 @@ class OwnerService:
         """Return the rows of one ground-truth table or view, whole, for a decision model or AutoML.
 
         Goes in: table (one of GROUND_TRUTH_TABLES) and limit (most rows to return). Comes out: the
-        column names and the rows, in storage order. Only a principal that sees the whole shared pool
-        may read it, because cases name events of every producer. Raises ValueError for an unknown
-        table or a bad limit and PermissionError otherwise. It never writes.
+        column names and the rows, in storage order, keeping only the cases and known answers whose
+        events the principal's visibility permits (a case naming any other event is left out and
+        counted in "withheld"). Raises ValueError for an unknown table or a bad limit. It never writes.
         """
         table, limit = request.get("table"), request.get("limit")
         if table not in GROUND_TRUTH_TABLES or not isinstance(limit, int) or limit < 1:
             raise ValueError(
                 f"table must be one of {GROUND_TRUTH_TABLES} and limit a positive integer"
             )
-        if (await self.retrieval.policy.resolve(principal)).mode != "pool":
-            raise PermissionError(
-                "Ground-truth tables are readable only with the whole shared pool"
-            )
 
         def read() -> dict:
-            """Read the table's columns and rows on the owner's worker."""
-            cursor = self.lifetime_conn.native.execute(f"SELECT * FROM {table} LIMIT ?", [limit])
+            """Read the table's columns and rows, and the events each case and known answer names."""
+            handle = self.lifetime_conn.native
+            cursor = handle.execute(f"SELECT * FROM {table}")
             return {
                 "columns": [column[0] for column in cursor.description],
                 "rows": [list(row) for row in cursor.fetchall()],
+                "case_events": handle.execute(
+                    "SELECT case_id, event_id FROM memory_gt_case_events"
+                ).fetchall(),
             }
 
-        return {"status": "success", "table": table, **(await self.lifetime_conn.run(read))}
+        read_back = await self.lifetime_conn.run(read)
+        columns, rows = read_back["columns"], read_back["rows"]
+        events_of_case: dict[str, set[str]] = {}
+        for case_id, event_id in read_back["case_events"]:
+            events_of_case.setdefault(case_id, set()).add(event_id)
+        known_events = (
+            [set(json.loads(row[columns.index("right_events")])) for row in rows]
+            if "right_events" in columns
+            else []
+        )
+        every_event = sorted(
+            {event for events in events_of_case.values() for event in events}.union(*known_events)
+        )
+        visibility = await self.retrieval.policy.resolve(principal)
+        producers = await OwnerCore(self.lifetime_conn).live_producers(every_event)
+
+        def allowed(events: set[str]) -> bool:
+            """Say whether every event is live and permitted to this principal."""
+            return all(
+                event in producers and visibility.permits(producers[event], principal.agent_id)
+                for event in events
+            )
+
+        kept = []
+        for row in rows:
+            if "right_events" in columns:
+                events = set(json.loads(row[columns.index("right_events")]))
+            elif "case_id" in columns:
+                events = events_of_case.get(row[columns.index("case_id")], set())
+            else:
+                events = set()
+            if allowed(events):
+                kept.append(row)
+        return {
+            "status": "success",
+            "table": table,
+            "columns": columns,
+            "rows": kept[:limit],
+            "withheld": len(rows) - len(kept),
+        }
 
     async def _context(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
         """Answer "what do you know that matters for this" as a context block for a prompt.
