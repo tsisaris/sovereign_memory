@@ -8,6 +8,14 @@
 - `retrieve_batch` (socket operation): the numbers of all questions are fetched once per model, so the door loads each reader once per batch.
 - Store settings added: `ranking.model_weights`, `ranking.words_weight`, `ranking.rerank_capability`, `ranking.rerank_candidates`, `ranking.rerank_weight`. Weights are equal (1.0) for now. To be learned: once hand-verified ground-truth questions exist, learn the weights with ranx's optimiser against qrels (ranx MIT, `optimize_fusion`); the starting rerank values (8 candidates, weight 0.6) are guesses to be tuned the same way.
 
+## Ground-truth store (Shawn's ruling 13.1: memory starts learning; no decision model yet)
+
+- Built on the existing `memory_gt_*` tables, in the memory database. New: `memory_gt_known` (the answer known to be right for a test question, as the events that state it; append-only, a later row supersedes, so every correction from Shawn is a new row with `said_by`, `basis`, `recorded_by`, `recorded_at`) and `memory_gt_runs` (the settings in force and the reports of each run: cross-scores, keyword ranking, decay, facts held back, models used or left out; no event text).
+- Every search of a known question, and every disagreement, now records a case holding each reader's ranking, the keyword ranking (`words`), the merged order (`combined`) and the order after the second stage (`reranked`), each item with its event, kind and score (cross-score for the second stage).
+- Views, recomputed from the stored rankings against the current known answer, so a correction re-scores everything with no rewrite: `memory_gt_current_known`, `memory_gt_ranking_items` (one row per ranked item) and `memory_gt_ranking_scores` (per ranking: first right rank, right first, reciprocal rank).
+- Socket operations: `record_known` (add or correct a known answer) and `ground_truth_table` (any ground-truth table or view, whole, filtered to what the caller may see). The Ada set of eight questions is recorded as known by construction (`basis` "construction").
+- Not built, by the ruling: the decision model (designed after agent_uagent_builder's prior-art research). The data is complete and exposed for it and for AutoML; the hand verdicts of the review screen stay in `memory_gt_judgments`.
+
 ## Measured
 
 - Batch of three questions: 206 s and 368 s on two runs (a lone question took 700 to 824 s before).

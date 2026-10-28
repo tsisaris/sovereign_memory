@@ -3,7 +3,8 @@
 One framed JSON request per connection, with "op" one of: "capture" (store an
 event and its pending receipts, then process it in the background),
 "retrieve" (scoped retrieval across the tiers), "retrieve_batch" (several questions at once, each
-model asked once for all of them), "forget" (durably remove an
+model asked once for all of them), "record_known" (the known-right answer to a test question, or a
+correction), "ground_truth_table" (a ground-truth table or view, whole), "forget" (durably remove an
 event the principal produced, then remove its projections) and "status" (an
 event's durable receipts and whether every tier finished). The review screen adds
 "review_list", "review_show", "review_page", "review_judge" and "review_select",
@@ -51,6 +52,7 @@ from service.memory_ground_truth import (
     export_manifest,
     initialize_ground_truth_schema,
     record_case,
+    record_known,
     verify_export,
 )
 from service.memory_model_parts import OPINIONS, DatabaseAccess, ModelParts
@@ -74,6 +76,8 @@ OPERATIONS = (
     "capture",
     "retrieve",
     "retrieve_batch",
+    "record_known",
+    "ground_truth_table",
     "forget",
     "status",
     "models",
@@ -88,6 +92,17 @@ OPERATIONS = (
     "load",
     "record_claim",
     "record_get",
+)
+GROUND_TRUTH_TABLES = (
+    "memory_gt_known",
+    "memory_gt_current_known",
+    "memory_gt_cases",
+    "memory_gt_case_events",
+    "memory_gt_outputs",
+    "memory_gt_runs",
+    "memory_gt_judgments",
+    "memory_gt_ranking_items",
+    "memory_gt_ranking_scores",
 )
 SETTINGS_SOURCE = "memory_runtime_settings table, [ranking]"
 SUPPLIER_ABSENT_REASON = (
@@ -558,6 +573,10 @@ class OwnerService:
                     response = await self._retrieve(principal, payload)
                 elif operation == "retrieve_batch":
                     response = await self._retrieve_batch(principal, payload)
+                elif operation == "record_known":
+                    response = await self._record_known(principal, payload)
+                elif operation == "ground_truth_table":
+                    response = await self._ground_truth_table(principal, payload)
                 elif operation == "forget":
                     response = await self._forget(principal, payload)
                 elif operation == "status":
@@ -734,6 +753,115 @@ class OwnerService:
                 {"query": query, "tiers": tiers}
                 for query, tiers in zip(queries, answers, strict=True)
             ],
+        }
+
+    async def _record_known(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Record the known-right answer to a test question, or a correction of an earlier one.
+
+        Goes in: query, answer (in words), events (the events whose statements give the answer),
+        basis ("construction" or the reason for a correction) and said_by (who says it is right).
+        Comes out: the new known answer's id. A later record for the same question supersedes the
+        earlier one; nothing is edited. Raises ValueError for a malformed request or an unknown
+        event, and PermissionError when an event is not visible to the principal.
+        """
+        query, answer = request.get("query"), request.get("answer")
+        events, basis, said_by = request.get("events"), request.get("basis"), request.get("said_by")
+        if (
+            not all(isinstance(value, str) and value for value in (query, answer, basis, said_by))
+            or not isinstance(events, list)
+            or not events
+            or any(not isinstance(event, str) for event in events)
+        ):
+            raise ValueError(
+                "Invalid known answer: query, answer, basis, said_by (text) and events (list) required"
+            )
+        visibility = await self.retrieval.policy.resolve(principal)
+        producers = await OwnerCore(self.lifetime_conn).live_producers(events)
+        if not all(
+            event in producers and visibility.permits(producers[event], principal.agent_id)
+            for event in events
+        ):
+            raise PermissionError("An event of the known answer is not visible to this principal")
+        now = datetime.now(timezone.utc).isoformat()
+        known_id = await self.store.run_in_transaction(
+            lambda handle: record_known(
+                handle,
+                query=query,
+                answer=answer,
+                right_events=events,
+                basis=basis,
+                said_by=said_by,
+                recorded_by=principal.agent_id,
+                recorded_at=now,
+            )
+        )
+        return {"status": "success", "known_id": known_id}
+
+    async def _ground_truth_table(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Return the rows of one ground-truth table or view, whole, for a decision model or AutoML.
+
+        Goes in: table (one of GROUND_TRUTH_TABLES) and limit (most rows to return). Comes out: the
+        column names and the rows, in storage order, keeping only the cases and known answers whose
+        events the principal's visibility permits (a case naming any other event is left out and
+        counted in "withheld"). Raises ValueError for an unknown table or a bad limit. It never writes.
+        """
+        table, limit = request.get("table"), request.get("limit")
+        if table not in GROUND_TRUTH_TABLES or not isinstance(limit, int) or limit < 1:
+            raise ValueError(
+                f"table must be one of {GROUND_TRUTH_TABLES} and limit a positive integer"
+            )
+
+        def read() -> dict:
+            """Read the table's columns and rows, and the events each case and known answer names."""
+            handle = self.lifetime_conn.native
+            cursor = handle.execute(f"SELECT * FROM {table}")
+            return {
+                "columns": [column[0] for column in cursor.description],
+                "rows": [list(row) for row in cursor.fetchall()],
+                "case_events": handle.execute(
+                    "SELECT case_id, event_id FROM memory_gt_case_events"
+                ).fetchall(),
+            }
+
+        read_back = await self.lifetime_conn.run(read)
+        columns, rows = read_back["columns"], read_back["rows"]
+        events_of_case: dict[str, set[str]] = {}
+        for case_id, event_id in read_back["case_events"]:
+            events_of_case.setdefault(case_id, set()).add(event_id)
+        known_events = (
+            [set(json.loads(row[columns.index("right_events")])) for row in rows]
+            if "right_events" in columns
+            else []
+        )
+        every_event = sorted(
+            {event for events in events_of_case.values() for event in events}.union(*known_events)
+        )
+        visibility = await self.retrieval.policy.resolve(principal)
+        producers = await OwnerCore(self.lifetime_conn).live_producers(every_event)
+
+        def allowed(events: set[str]) -> bool:
+            """Say whether every event is live and permitted to this principal."""
+            return all(
+                event in producers and visibility.permits(producers[event], principal.agent_id)
+                for event in events
+            )
+
+        kept = []
+        for row in rows:
+            if "right_events" in columns:
+                events = set(json.loads(row[columns.index("right_events")]))
+            elif "case_id" in columns:
+                events = events_of_case.get(row[columns.index("case_id")], set())
+            else:
+                events = set()
+            if allowed(events):
+                kept.append(row)
+        return {
+            "status": "success",
+            "table": table,
+            "columns": columns,
+            "rows": kept[:limit],
+            "withheld": len(rows) - len(kept),
         }
 
     async def _context(self, principal: AuthenticatedPrincipal, request: dict) -> dict:

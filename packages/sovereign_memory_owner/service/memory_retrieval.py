@@ -14,7 +14,8 @@ visibility permits and that has been neither removed (expired or forgotten
 through the owner) nor let expire, or it is withheld and counted. Removal is
 recorded when it is captured, so a removed source is withheld even while a tier
 has not yet deleted its projection. When two or more models' first answers
-differ, the search records the disagreement as a ground-truth case.
+differ, or the question has a known answer, the search records the run as a ground-truth case
+holding every reader's ranking, the keyword, merged and second-stage orders and the settings.
 """
 
 import hashlib
@@ -35,7 +36,16 @@ from service.memory_combiners import (
     reciprocal_rank_fusion,
 )
 from service.memory_context_assembler import ContextAssembler
-from service.memory_ground_truth import COMBINED_OUTPUT, MODEL_OUTPUT, record_case, record_output
+from service.memory_ground_truth import (
+    COMBINED_OUTPUT,
+    MODEL_OUTPUT,
+    RERANKED_OUTPUT,
+    WORDS_OUTPUT,
+    latest_known,
+    record_case,
+    record_output,
+    record_run,
+)
 from service.memory_numbers_services import NumbersServices
 from service.memory_owner_core import TIERS, OwnerCore
 from service.memory_processor_seam import (
@@ -50,6 +60,22 @@ from service.memory_supplier import NumbersNotYetSupplied
 from service.memory_visibility import RestrictedPolicy
 
 logger = logging.getLogger(__name__)
+
+
+def item_kind(hit: dict[str, Any]) -> str:
+    """Name what kind of thing a hit is ("fact", "memory", "episode" or "other"); pure.
+
+    It takes a tier's hit and reads only which keys it carries. It returns the kind so the
+    ground-truth record can tell a Graphiti fact from a Mem0 memory or an episode. It never
+    reads the hit's text.
+    """
+    if "fact" in hit:
+        return "fact"
+    if "memory" in hit:
+        return "memory"
+    if "episode_uuid" in hit:
+        return "episode"
+    return "other"
 
 
 class MemoryRetrievalService:
@@ -267,9 +293,29 @@ class MemoryRetrievalService:
         if self.settings.rerank_capability is not None:
             merged, rerank = await self._rerank(query, merged, kept, used)
         events = self._roll_up(merged, kept, used)
-        case_id, error = await self._record_disagreement(
-            tier, principal, query, combiner, kept, merged
-        )
+        stages = {
+            "merged": first_stage,
+            "final": merged,
+            "words": words,
+            "rerank": rerank,
+            "report": {
+                "models": models,
+                "words": words_report,
+                "decay": decay,
+                "rerank": {key: value for key, value in rerank.items() if key != "ordered"}
+                | {
+                    "cross_scores": {
+                        row["item_id"]: row["cross_score"] for row in rerank.get("ordered", [])
+                    }
+                },
+                "not_current": [
+                    {key: value for key, value in fact.items() if key != "fact"}
+                    for fact in result.not_current
+                ],
+                "withheld": withheld,
+            },
+        }
+        case_id, error = await self._record_case(tier, principal, query, combiner, kept, stages)
         answer = {
             **base,
             "status": "ok" if len(used) == len(combiner.models) else "partial",
@@ -508,21 +554,26 @@ class MemoryRetrievalService:
             event["items"].append({**hit, "score": score})
         return list(events.values())
 
-    async def _record_disagreement(
+    async def _record_case(
         self,
         tier: str,
         principal: AuthenticatedPrincipal,
         query: str,
         combiner: CombinerRow,
         kept: dict[str, list[dict[str, Any]]],
-        merged: list[tuple[str, float]],
+        stages: dict[str, Any],
     ) -> tuple[str | None, str | None]:
-        """Record a ground-truth case when the models' first answers differ; return (case id, error).
+        """Record a ground-truth case when the models disagree or the question has a known answer.
 
-        The case id is derived from the question, the rankings and the combiner,
-        so asking the same thing twice records one case. The case points to the
-        events involved and copies none of their text. A failure to record is
-        returned, never raised or hidden, so the search itself still answers.
+        stages holds the run's other orders and reports: "merged" and "final" (item, score) lists,
+        "words" (item ids or None), "rerank" (the second stage's report) and "report" (what else the
+        search measured). The case keeps every reader's ranking, the keyword ranking, the merged
+        order and the order after the second stage, the settings in force and the reports, so that
+        whether each was right can be read against the known answer, now or after a correction.
+        The case id is derived from the question, every order and the combiner, so asking the same
+        thing twice records one case. The case points to the events involved and copies none of
+        their text. A failure to record is returned, never raised or hidden, so the search itself
+        still answers. Returns (case id, error); (None, None) when nothing needed recording.
         """
 
         settings = self.settings
@@ -530,11 +581,12 @@ class MemoryRetrievalService:
             raise RuntimeError("Recording a case needs the declared search settings")
 
         def output(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            """Shape a ranking for the ground-truth record: ids and native scores, no text."""
+            """Shape a ranking for the ground-truth record: ids, kind and native scores, no text."""
             return [
                 {
                     "item_id": h["item_id"],
                     "event_id": h["event_id"],
+                    "item_kind": item_kind(h),
                     "score": h.get("distance", h.get("score")),
                 }
                 for h in hits
@@ -544,7 +596,8 @@ class MemoryRetrievalService:
             {"key": label, "role": MODEL_OUTPUT, "output": output(hits)}
             for label, hits in sorted(kept.items())
         ]
-        if not disagree(outputs):
+        known = await self.conn.run(lambda: latest_known(self.conn.native, query))
+        if known is None and not disagree(outputs):
             return None, None
         involved = sorted({h["event_id"] for hits in kept.values() for h in hits})
         digest = hashlib.sha256(
@@ -555,17 +608,40 @@ class MemoryRetrievalService:
                     combiner.combiner_id,
                     settings.merging_constant,
                     {label: [h["item_id"] for h in hits] for label, hits in sorted(kept.items())},
+                    [item for item, _ in stages["merged"]],
+                    [item for item, _ in stages["final"]],
+                    stages["words"],
                 ],
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
         case_id = f"case-{digest}"
         now = datetime.now(timezone.utc).isoformat()
-        item_event = {h["item_id"]: h["event_id"] for hits in kept.values() for h in hits}
-        combined = [
-            {"item_id": item, "event_id": item_event[item], "score": score}
-            for item, score in merged
+        by_item = {h["item_id"]: h for hits in kept.values() for h in hits}
+
+        def scored(
+            pairs: list[tuple[str, float | None]], cross: dict[str, float] | None = None
+        ) -> list[dict[str, Any]]:
+            """Shape an (item, score) order for the record, with the cross-scorer's score when given."""
+            return [
+                {
+                    "item_id": item,
+                    "event_id": by_item[item]["event_id"],
+                    "item_kind": item_kind(by_item[item]),
+                    "score": score,
+                    **({} if cross is None else {"cross_score": cross.get(item)}),
+                }
+                for item, score in pairs
+            ]
+
+        extra: list[tuple[str, list[dict[str, Any]]]] = [
+            (COMBINED_OUTPUT, scored(stages["merged"]))
         ]
+        if stages["words"]:
+            extra.append((WORDS_OUTPUT, scored([(item, None) for item in stages["words"]])))
+        if stages["rerank"].get("applied"):
+            cross = {row["item_id"]: row["cross_score"] for row in stages["rerank"]["ordered"]}
+            extra.append((RERANKED_OUTPUT, scored(stages["final"], cross)))
 
         def write() -> None:
             """Record the case and every output in one transaction on the owner's worker."""
@@ -596,15 +672,25 @@ class MemoryRetrievalService:
                         combiner_id=combiner.combiner_id,
                         recorded_at=now,
                     )
-                record_output(
+                for role, ranking in extra:
+                    record_output(
+                        handle,
+                        case_id=case_id,
+                        role=role,
+                        model_id=None,
+                        revision=None,
+                        output=ranking,
+                        combiner_id=combiner.combiner_id,
+                        recorded_at=now,
+                    )
+                record_run(
                     handle,
                     case_id=case_id,
-                    role=COMBINED_OUTPUT,
-                    model_id=None,
-                    revision=None,
-                    output=combined,
-                    combiner_id=combiner.combiner_id,
-                    recorded_at=now,
+                    query=query,
+                    tier=tier,
+                    ran_at=now,
+                    settings=settings.report(),
+                    report=stages["report"],
                 )
                 handle.commit()
             except BaseException:
@@ -614,6 +700,6 @@ class MemoryRetrievalService:
         try:
             await self.conn.run(write)
         except ValueError as error:
-            logger.exception("Recording the disagreement case failed")
+            logger.exception("Recording the ground-truth case failed")
             return None, f"{type(error).__name__}: {error}"
         return case_id, None
