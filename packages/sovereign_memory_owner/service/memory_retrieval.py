@@ -241,6 +241,7 @@ class MemoryRetrievalService:
             "models": models,
             "decay": decay,
             "words": words_report,
+            "not_current": result.not_current,
             "rankings": {
                 label: [
                     {

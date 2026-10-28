@@ -112,7 +112,8 @@ def _ranking(table: Any) -> dict[str, Any]:
     """Read the search settings table; the four main settings are required and none has a default.
 
     The three decay settings are optional and go together; words_capability (the
-    supplier's keyword-ranking capability id) is optional alone. Types and ranges are
+    supplier's keyword-ranking capability id) is optional alone; model_weights with
+    words_weight, and the three rerank settings, each go together. Types and ranges are
     checked by the Owner when it is built, which raises a named error; here the
     shape (the four keys, plus only the optional keys) is enforced.
     """
@@ -126,6 +127,11 @@ def _ranking(table: Any) -> dict[str, Any]:
                 "decay_lower_bound",
                 "decay_upper_bound",
                 "words_capability",
+                "model_weights",
+                "words_weight",
+                "rerank_capability",
+                "rerank_candidates",
+                "rerank_weight",
             ),
         )
     )

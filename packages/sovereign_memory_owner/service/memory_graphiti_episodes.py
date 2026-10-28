@@ -225,6 +225,7 @@ class GraphitiEpisodeTier:
             native_handle, scope, prepared_query["vectors"], prepared_query["limit"]
         )
         rankings: dict[str, list[dict[str, Any]]] = {}
+        not_current: dict[str, dict[str, Any]] = {}
         for label, events in ranked.items():
             found = {
                 episode.uuid: episode
@@ -252,13 +253,20 @@ class GraphitiEpisodeTier:
                         "ranking": f"cosine distance of {label}'s own numbers for the event",
                     }
                 )
-            facts = GraphitiEpisodeTier._ranked_facts(
-                native_handle, scope, prepared_query["vectors"][label], prepared_query["limit"]
+            facts, ended = GraphitiEpisodeTier._ranked_facts(
+                native_handle,
+                scope,
+                prepared_query["vectors"][label],
+                prepared_query["limit"],
+                prepared_query["reference_time"],
             )
+            not_current.update({fact["item_id"]: fact for fact in ended})
             rankings[label] = sorted(hits + facts, key=lambda hit: hit["distance"])[
                 : prepared_query["limit"]
             ]
-        return TierRankings(rankings, dict(prepared_query["left_out"]))
+        return TierRankings(
+            rankings, dict(prepared_query["left_out"]), [not_current[key] for key in sorted(not_current)]
+        )
 
     @staticmethod
     def _ranked_facts(
@@ -266,18 +274,21 @@ class GraphitiEpisodeTier:
         scope: RetrievalScope,
         vector_of_model: Any,
         limit: int,
-    ) -> list[dict[str, Any]]:
-        """Return the stored facts nearest the question by one model's numbers for the fact's words.
+        reference_time: datetime,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return (facts nearest the question, facts no longer true) by one model's numbers.
 
         The numbers are the derived pieces the supplier gave for each fact (keyed by the event the
         fact came from and the fingerprint of its words); a fact without numbers is not ranked. Each
         hit carries the fact, its four timestamps, the event it came from and the cosine distance.
-        Only events the scope's visibility permits, and not removed, count. It never writes.
+        A fact Graphiti has ended before the question's reference time (or that begins after it) is
+        not ranked and is returned in the second list so it can be reported. Only events the
+        scope's visibility permits, and not removed, count. It never writes.
         """
         model, vector = vector_of_model
         permitted = permitted_producers(scope)
         if permitted is None:
-            return []
+            return [], []
         condition, params = permitted
         rows = native_handle.execute(
             "SELECT p.event_id, e.actor_agent_id, g.uuid, "
@@ -298,6 +309,7 @@ class GraphitiEpisodeTier:
             [vector, *params],
         ).fetchall()
         facts: list[dict[str, Any]] = []
+        not_current: list[dict[str, Any]] = []
         seen: set[str] = set()
         for (
             event_id,
@@ -313,6 +325,21 @@ class GraphitiEpisodeTier:
             if uuid_ in seen:
                 continue
             seen.add(uuid_)
+            began = parse_instant(valid_at) if valid_at else None
+            ended = parse_instant(invalid_at) if invalid_at else None
+            if (began is not None and began > reference_time) or (
+                ended is not None and ended <= reference_time
+            ):
+                not_current.append(
+                    {
+                        "item_id": uuid_,
+                        "event_id": event_id,
+                        "fact": fact,
+                        "valid_at": valid_at,
+                        "invalid_at": invalid_at,
+                    }
+                )
+                continue
             facts.append(
                 {
                     "event_id": event_id,
@@ -328,7 +355,7 @@ class GraphitiEpisodeTier:
                     "ranking": f"cosine distance of {model.label}'s own numbers for the fact",
                 }
             )
-        return facts[:limit]
+        return facts[:limit], not_current
 
     def retrieve(
         self,

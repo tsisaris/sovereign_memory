@@ -30,7 +30,14 @@ OPTIONAL_SETTING_NAMES = (
     "decay_lower_bound",
     "decay_upper_bound",
     "words_capability",
+    "model_weights",
+    "words_weight",
+    "rerank_capability",
+    "rerank_candidates",
+    "rerank_weight",
 )
+
+RERANK_NAMES = ("rerank_capability", "rerank_candidates", "rerank_weight")
 
 SETTINGS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_settings (
@@ -40,6 +47,17 @@ CREATE TABLE IF NOT EXISTS memory_settings (
     recorded_at VARCHAR NOT NULL
 );
 """
+
+
+def _weight(name: str, value: Any) -> None:
+    """Refuse a weight that is not a finite number above zero, naming the setting; it returns nothing."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(f"{name} must be a finite number above 0")
 
 
 @dataclass(frozen=True)
@@ -54,7 +72,13 @@ class SearchSettings:
     the deployment declares it, search scores are biased by the age of their event;
     when it does not, search ordering is exactly what the combiner gave. The decay
     bias is held between decay_lower_bound and decay_upper_bound, so the three decay
-    settings are declared together or not at all.
+    settings are declared together or not at all. model_weights (model label to a
+    weight above 0) and words_weight (the keyword ranking's weight) are declared
+    together; when absent every ranking counts alike. rerank_capability,
+    rerank_candidates and rerank_weight are declared together: they turn on the
+    second stage in which the supplier's cross-scorer reads the question beside each
+    of the best rerank_candidates results, and rerank_weight (strictly between 0 and
+    1) is the share the cross-scorer's order has against the merged order.
     """
 
     comparison_score: str
@@ -65,6 +89,11 @@ class SearchSettings:
     decay_lower_bound: float | None = None
     decay_upper_bound: float | None = None
     words_capability: str | None = None
+    model_weights: dict[str, float] | None = None
+    words_weight: float | None = None
+    rerank_capability: str | None = None
+    rerank_candidates: int | None = None
+    rerank_weight: float | None = None
 
     @classmethod
     def from_mapping(cls, table: Any, known_scores: tuple[str, ...]) -> "SearchSettings":
@@ -126,6 +155,32 @@ class SearchSettings:
         words = table.get("words_capability")
         if words is not None and (not isinstance(words, str) or not words.strip()):
             raise ValueError("words_capability must be the supplier's capability id, as text")
+        weights = table.get("model_weights")
+        words_weight = table.get("words_weight")
+        if weights is not None:
+            if not isinstance(weights, Mapping) or not weights:
+                raise ValueError("model_weights must be a table of model label to weight")
+            for label, weight in weights.items():
+                _weight(f"model_weights.{label}", weight)
+        if words_weight is not None:
+            _weight("words_weight", words_weight)
+        if (weights is None) != (words_weight is None):
+            raise ValueError("model_weights and words_weight must be declared together")
+        rerank = [table.get(name) for name in RERANK_NAMES]
+        if any(value is not None for value in rerank) and any(value is None for value in rerank):
+            raise ValueError(f"{', '.join(RERANK_NAMES)} must be declared together")
+        capability, candidates, share_of_rerank = rerank
+        if capability is not None:
+            if not isinstance(capability, str) or not capability.strip():
+                raise ValueError("rerank_capability must be the supplier's capability id, as text")
+            if isinstance(candidates, bool) or not isinstance(candidates, int) or candidates < 2:
+                raise ValueError("rerank_candidates must be an integer of at least 2")
+            if (
+                isinstance(share_of_rerank, bool)
+                or not isinstance(share_of_rerank, (int, float))
+                or not 0 < share_of_rerank < 1
+            ):
+                raise ValueError("rerank_weight must be a number strictly between 0 and 1")
         return cls(
             score,
             float(share),
@@ -135,6 +190,11 @@ class SearchSettings:
             None if lower is None else float(lower),
             None if upper is None else float(upper),
             words,
+            None if weights is None else {label: float(w) for label, w in weights.items()},
+            None if words_weight is None else float(words_weight),
+            capability,
+            candidates,
+            None if share_of_rerank is None else float(share_of_rerank),
         )
 
     def report(self) -> dict[str, Any]:
