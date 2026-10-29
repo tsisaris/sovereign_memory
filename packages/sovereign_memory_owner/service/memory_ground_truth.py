@@ -32,6 +32,10 @@ VERDICTS = ("right", "wrong", "pick", "typed", "none_correct")
 SCORABLE_VERDICTS = ("right", "pick")
 COMBINED_OUTPUT = "combined"
 MODEL_OUTPUT = "model"
+WORDS_OUTPUT = "words"
+RERANKED_OUTPUT = "reranked"
+# Outputs that belong to no single registered model; each is stored under its own role name.
+UNMODELLED_OUTPUTS = (COMBINED_OUTPUT, WORDS_OUTPUT, RERANKED_OUTPUT)
 EXPORT_PURPOSES = ("training", "held_back_inputs")
 
 GROUND_TRUTH_SCHEMA = """
@@ -87,6 +91,54 @@ CREATE TABLE IF NOT EXISTS memory_gt_exports (
     created_at VARCHAR NOT NULL,
     created_by VARCHAR NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memory_gt_known (
+    known_id VARCHAR PRIMARY KEY,
+    query VARCHAR NOT NULL,
+    answer VARCHAR NOT NULL,
+    right_events VARCHAR NOT NULL,
+    basis VARCHAR NOT NULL,
+    said_by VARCHAR NOT NULL,
+    recorded_by VARCHAR NOT NULL,
+    recorded_at VARCHAR NOT NULL,
+    supersedes VARCHAR
+);
+CREATE TABLE IF NOT EXISTS memory_gt_runs (
+    case_id VARCHAR PRIMARY KEY,
+    query VARCHAR NOT NULL,
+    tier VARCHAR NOT NULL,
+    ran_at VARCHAR NOT NULL,
+    settings VARCHAR NOT NULL,
+    report VARCHAR NOT NULL,
+    FOREIGN KEY (case_id) REFERENCES memory_gt_cases(case_id)
+);
+CREATE OR REPLACE VIEW memory_gt_current_known AS
+SELECT k.* FROM memory_gt_known k
+WHERE NOT EXISTS (SELECT 1 FROM memory_gt_known n WHERE n.supersedes = k.known_id);
+CREATE OR REPLACE VIEW memory_gt_ranking_items AS
+SELECT o.case_id, o.output_key, o.role, o.model_id, o.revision,
+       CAST(j.key AS INTEGER) + 1 AS rank,
+       json_extract_string(j.value, '$.item_id') AS item_id,
+       json_extract_string(j.value, '$.event_id') AS event_id,
+       json_extract_string(j.value, '$.item_kind') AS item_kind,
+       TRY_CAST(json_extract_string(j.value, '$.score') AS DOUBLE) AS score,
+       TRY_CAST(json_extract_string(j.value, '$.cross_score') AS DOUBLE) AS cross_score
+FROM memory_gt_outputs o, json_each(o.output) j
+WHERE json_type(o.output) = 'ARRAY';
+CREATE OR REPLACE VIEW memory_gt_ranking_scores AS
+SELECT i.case_id, c.input AS query, c.memory_kind AS tier, i.output_key, i.role,
+       k.known_id, k.recorded_by AS truth_by,
+       min(i.rank) FILTER (WHERE list_contains(from_json(k.right_events, '["VARCHAR"]'), i.event_id))
+           AS first_right_rank,
+       coalesce(min(i.rank) FILTER (
+           WHERE list_contains(from_json(k.right_events, '["VARCHAR"]'), i.event_id)) = 1, false)
+           AS right_at_1,
+       coalesce(1.0 / min(i.rank) FILTER (
+           WHERE list_contains(from_json(k.right_events, '["VARCHAR"]'), i.event_id)), 0.0)
+           AS reciprocal_rank
+FROM memory_gt_ranking_items i
+JOIN memory_gt_cases c ON c.case_id = i.case_id
+JOIN memory_gt_current_known k ON k.query = c.input
+GROUP BY i.case_id, c.input, c.memory_kind, i.output_key, i.role, k.known_id, k.recorded_by;
 """
 
 
@@ -231,7 +283,8 @@ def record_output(
     """Record what one model (or the combined answer) answered for a case; never overwrites.
 
     A "model" output carries the registered model id and revision; its width is
-    read from the registry. The "combined" output has none. output is a JSON-able
+    read from the registry. The "combined" (merged), "words" (keyword) and "reranked" (after the
+    second stage) outputs have none. output is a JSON-able
     ranking (a list of {"item_id", "event_id", "score"}) or class scores. Recording
     the same output again is a no-op; a different output for the same participant
     raises ValueError, because nothing is overwritten.
@@ -241,8 +294,8 @@ def record_output(
         if model is None:
             raise ValueError("A model output must name a registered model revision")
         key, width = model_label(model.model_id, model.revision), model.width
-    elif role == COMBINED_OUTPUT:
-        key, width, model_id, revision = COMBINED_OUTPUT, None, None, None
+    elif role in UNMODELLED_OUTPUTS:
+        key, width, model_id, revision = role, None, None, None
     else:
         raise ValueError(f"Unknown output role {role!r}")
     if (
@@ -262,6 +315,115 @@ def record_output(
     handle.execute(
         "INSERT INTO memory_gt_outputs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [case_id, key, role, model_id, revision, width, encoded, combiner_id, recorded_at],
+    )
+
+
+def record_known(
+    handle: duckdb.DuckDBPyConnection,
+    *,
+    query: str,
+    answer: str,
+    right_events: list[str],
+    basis: str,
+    said_by: str,
+    recorded_by: str,
+    recorded_at: str,
+) -> str:
+    """Append the known-right answer to a test question and return its id; a later one supersedes.
+
+    Goes in: the question, the answer in words, the events whose statements give that answer (an item
+    is right when it comes from one of them), the basis ("construction" for a set built to have one
+    answer, or who corrected it), who said so, who recorded it and when. Nothing earlier is edited:
+    the new row points at the row it supersedes, and scoring reads only the row nothing supersedes.
+    Raises ValueError for an empty question, answer, basis or event list, or an unknown event.
+    """
+    if not query or not answer or not basis or not said_by or not right_events:
+        raise ValueError(
+            "A known answer needs a question, an answer, a basis, who said it and events"
+        )
+    unique = sorted(set(right_events))
+    for event_id in unique:
+        if (
+            handle.execute("SELECT 1 FROM memory_events WHERE event_id = ?", [event_id]).fetchone()
+            is None
+        ):
+            raise ValueError(f"Known answer names unknown event {event_id}")
+    previous = latest_known(handle, query)
+    known_id = str(uuid.uuid4())
+    handle.execute(
+        "INSERT INTO memory_gt_known VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            known_id,
+            query,
+            answer,
+            json.dumps(unique),
+            basis,
+            said_by,
+            recorded_by,
+            recorded_at,
+            None if previous is None else previous["known_id"],
+        ],
+    )
+    return known_id
+
+
+def latest_known(handle: duckdb.DuckDBPyConnection, query: str) -> dict[str, Any] | None:
+    """Return the known answer for a question that no later row supersedes, or None. Reads only."""
+    row = handle.execute(
+        "SELECT known_id, query, answer, right_events, basis, said_by, recorded_by, recorded_at "
+        "FROM memory_gt_current_known WHERE query = ?",
+        [query],
+    ).fetchone()
+    if row is None:
+        return None
+    keys = (
+        "known_id",
+        "query",
+        "answer",
+        "right_events",
+        "basis",
+        "said_by",
+        "recorded_by",
+        "recorded_at",
+    )
+    known = dict(zip(keys, row, strict=True))
+    known["right_events"] = json.loads(known["right_events"])
+    return known
+
+
+def record_run(
+    handle: duckdb.DuckDBPyConnection,
+    *,
+    case_id: str,
+    query: str,
+    tier: str,
+    ran_at: str,
+    settings: dict[str, Any],
+    report: dict[str, Any],
+) -> None:
+    """Record, once, the settings in force and the reports (words, second stage, held-back facts) of a run.
+
+    Goes in: the case id, the question, the tier, the time, the search settings and a report holding
+    whatever else the search measured (the cross-scorer's scores, the keyword ranking, decay, facts held
+    back). Recording the identical run again is a no-op; a different one for the same case raises
+    ValueError because nothing is overwritten. Raises ValueError for an unknown case.
+    """
+    if (
+        handle.execute("SELECT 1 FROM memory_gt_cases WHERE case_id = ?", [case_id]).fetchone()
+        is None
+    ):
+        raise ValueError(f"Unknown case {case_id}")
+    encoded = (json.dumps(settings, sort_keys=True), json.dumps(report, sort_keys=True))
+    stored = handle.execute(
+        "SELECT settings, report FROM memory_gt_runs WHERE case_id = ?", [case_id]
+    ).fetchone()
+    if stored is not None:
+        if tuple(stored) != encoded:
+            raise ValueError(f"Case {case_id} already has a different run record")
+        return
+    handle.execute(
+        "INSERT INTO memory_gt_runs VALUES (?, ?, ?, ?, ?, ?)",
+        [case_id, query, tier, ran_at, *encoded],
     )
 
 

@@ -5,10 +5,13 @@ Letta agent), stored through the maintained LettaMemoryStore on the owner's
 borrowed native transaction handle, so the messages and the receipt commit
 together. Message ids are derived from the event id and each message's otid is
 the event id, so a replay never adds a second copy and removal finds exactly
-the messages an event created. Retrieval is Letta's own recall search: a
-case-insensitive substring match on message text, newest first. No model is
-called and none is needed; Letta's archival passages (embeddings) are a
-separate memory this tier does not fill.
+the messages an event created. Retrieval is Letta's own recall search: when
+the supplier's numbers exist it ranks the events by meaning, one ranking per
+model from that model's own numbers, and returns each event's messages; when
+they do not it is a case-insensitive substring match on message text, newest
+first. No model is called by this tier and the question's numbers come from
+the supplier; Letta's archival passages (embeddings) are a separate memory this
+tier does not fill.
 """
 
 import uuid
@@ -20,7 +23,9 @@ import duckdb
 from letta_memory_model.letta_duckdb_store import LettaMemoryStore
 from letta_memory_model.schemas.message import Message
 
-from service.memory_processor_seam import ProcessorResult, RetrievalScope
+from service.memory_event_ranking import question_numbers_for_events, rank_events
+from service.memory_numbers_services import NumbersServices
+from service.memory_processor_seam import ProcessorResult, RetrievalScope, TierRankings
 from service.memory_tier_support import actor_of, event_text, is_removal, removal_target
 
 TIER_NAME = "episodic"
@@ -74,6 +79,15 @@ class LettaRecallTier:
         self.organization_id = organization_id
         self._store: LettaMemoryStore | None = None
         self._handle: duckdb.DuckDBPyConnection | None = None
+        self._services: NumbersServices | None = None
+
+    def attach_numbers(self, services: NumbersServices) -> None:
+        """Receive the owner's numbers services, used only to get the numbers of a search question."""
+        self._services = services
+
+    def model_labels(self) -> list[str]:
+        """Return the model labels a rebuild of this tier covers: none, as it holds no numbers."""
+        return []
 
     def _store_for(self, handle: duckdb.DuckDBPyConnection) -> LettaMemoryStore:
         """Return the store bound to the owner's handle, creating it on first use.
@@ -154,23 +168,77 @@ class LettaRecallTier:
     # ---- read seam --------------------------------------------------------------
 
     async def prepare_query(self, scope: RetrievalScope, query: str, limit: int) -> dict[str, Any]:
-        """Keep the query and limit; recall search needs no model."""
-        return {"query": query, "limit": limit}
+        """Keep the query and limit, and fetch the question's numbers once per fresh model.
+
+        Letta ranks recall by meaning when numbers exist: a model that is stale, or whose question
+        numbers the supplier cannot give, is left out with its reason. When no model has numbers to
+        rank with, retrieve answers with Letta's substring search as before. Memory never embeds the
+        question itself.
+        """
+        vectors, left_out = await question_numbers_for_events(self._services, query)
+        return {"query": query, "limit": limit, "vectors": vectors, "left_out": left_out}
+
+    def _ranked_messages(
+        self,
+        native_handle: duckdb.DuckDBPyConnection,
+        scope: RetrievalScope,
+        prepared_query: dict[str, Any],
+    ) -> TierRankings:
+        """Rank the permitted events by each model's numbers and return each event's Letta messages.
+
+        Per model the events come nearest first (cosine distance of that model's own numbers); each
+        event contributes the recall messages Letta holds for it, in message order, every one carrying
+        the event's distance. An event with no recall message is left out of the ranking. It never
+        writes and never ranks across models.
+        """
+        store = self._store_for(native_handle) if _has_recall_schema(native_handle) else None
+        rankings: dict[str, list[dict[str, Any]]] = {}
+        ranked = rank_events(
+            native_handle, scope, prepared_query["vectors"], prepared_query["limit"]
+        )
+        for label, events in ranked.items():
+            hits: list[dict[str, Any]] = []
+            for event in events:
+                if store is None:
+                    continue
+                for message in store.list_messages(
+                    self.organization_id,
+                    event["actor_agent_id"],
+                    otid=event["event_id"],
+                    limit=prepared_query["limit"],
+                ):
+                    hits.append(
+                        {
+                            "event_id": event["event_id"],
+                            "item_id": message.id,
+                            "actor_agent_id": message.agent_id,
+                            "message_id": message.id,
+                            "role": message.role,
+                            "text": message.text,
+                            "sequence_id": message.sequence_id,
+                            "distance": event["distance"],
+                            "ranking": f"cosine distance of {label}'s own numbers for the event",
+                        }
+                    )
+            rankings[label] = hits[: prepared_query["limit"]]
+        return TierRankings(rankings, dict(prepared_query["left_out"]))
 
     def retrieve(
         self,
         native_handle: duckdb.DuckDBPyConnection,
         scope: RetrievalScope,
         prepared_query: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Return the newest recall messages containing the query that the visibility permits.
+    ) -> list[dict[str, Any]] | TierRankings:
+        """Return recall messages ranked by meaning when numbers exist, else by substring, newest first.
 
-        This is Letta's recall search (case-insensitive substring of the whole
-        query; an empty query matches everything), not semantic relevance: each
-        hit says so in "ranking". Before anything was stored there is no
-        Letta schema and the answer is no messages. Raises ValueError for an
-        unknown visibility mode; it never writes.
+        With question numbers for at least one fresh model the answer is one ranking per model (see
+        _ranked_messages). Without, it is Letta's recall search (case-insensitive substring of the
+        whole query; an empty query matches everything), not semantic relevance: each hit says so in
+        "ranking". Before anything was stored there is no Letta schema and the answer is no messages.
+        Raises ValueError for an unknown visibility mode; it never writes.
         """
+        if prepared_query.get("vectors"):
+            return self._ranked_messages(native_handle, scope, prepared_query)
         visibility = scope.visibility
         if visibility.mode == "own":
             agents: list[str] | None = [scope.agent_id]

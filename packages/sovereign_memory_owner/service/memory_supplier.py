@@ -109,8 +109,14 @@ class NumbersSupplier(Protocol):
         """Return the pieces of one event with the saved numbers of one model revision."""
         ...
 
-    async def question_numbers(self, model_id: str, revision: str, text: str) -> list[float]:
-        """Return one model revision's numbers for a short search question (the single-text door)."""
+    async def question_numbers(
+        self, model_id: str, revision: str, text: str, role: str = "question"
+    ) -> list[float]:
+        """Return one model revision's numbers for a short text (the single-text door).
+
+        role is "question" for a search question and "passage" for a text memory keeps, so a
+        supplier whose model reads the two differently can treat each as its model requires.
+        """
         ...
 
     async def recompute(
@@ -152,7 +158,9 @@ class UnavailableSupplier:
         """Refuse: no saved numbers can be handed over."""
         raise self._refuse()
 
-    async def question_numbers(self, model_id: str, revision: str, text: str) -> list[float]:
+    async def question_numbers(
+        self, model_id: str, revision: str, text: str, role: str = "question"
+    ) -> list[float]:
         """Refuse: the single-question door does not exist or is not reachable."""
         raise self._refuse()
 

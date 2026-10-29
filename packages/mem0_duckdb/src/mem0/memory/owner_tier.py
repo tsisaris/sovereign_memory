@@ -17,6 +17,7 @@ refused with a terminal failure rather than reported as processed.
 """
 
 import asyncio
+import copy
 import json
 import math
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from mem0.memory.main import (
     _build_session_scope,
     _payload_is_expired,
 )
+from mem0.utils.factory import LlmFactory
 
 TIER_NAME = "personalization"
 PROJECTION_VERSION = "mem0-history-vector-1"
@@ -192,6 +194,19 @@ class Mem0Tier:
     def attach_reader(self, reader: Callable[..., Any]) -> None:
         """Receive the owner's reader; every read before a decision goes through it."""
         self._reader = reader
+
+    async def memory_with_language_model(self, llm_section: Dict[str, Any]) -> Memory:
+        """Return the tier's Memory with its language model replaced by one built from llm_section.
+
+        It takes an llm section ({"provider", "config"}), reads the tier's Memory through the
+        owner's reader and returns a shallow copy that shares the storage and replaces only
+        the model client, so a caller can run Mem0's own model steps with another model. It
+        never stores anything and never changes the tier's own Memory.
+        """
+        memory = await self._read(lambda m: m)
+        replaced = copy.copy(memory)
+        replaced.llm = LlmFactory.create(llm_section["provider"], llm_section["config"])
+        return replaced
 
     def attach_numbers(self, services: Any) -> None:
         """Receive the owner's numbers services: lookup of received numbers, owed requests, question door."""
@@ -712,10 +727,11 @@ class Mem0Tier:
 
 @dataclass(frozen=True)
 class _TierRankings:
-    """Per-model rankings and the models left out, matching the owner's TierRankings by shape."""
+    """Per-model rankings, the models left out and the facts held back, matching the owner's TierRankings by shape."""
 
     rankings: Dict[str, List[Dict[str, Any]]]
     left_out: Dict[str, str]
+    not_current: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def _scope(work: PreparedWork) -> str:

@@ -4,7 +4,7 @@ This defines the interface that each downstream engine (Letta, Zep/Graphiti, Cog
 must implement to participate in the unified Owner Service transaction lifecycle.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, TypeVar
 
 import duckdb
@@ -179,11 +179,15 @@ class TierRankings:
     rankings maps a model label ("id@revision") to that model's hits, best
     first, ranked only from that model's own numbers; left_out maps the label of
     each model that could not rank to the reason. A model left out is never an
-    empty ranking. Every hit carries "event_id" and "item_id".
+    empty ranking. Every hit carries "event_id" and "item_id". not_current lists
+    the facts a tier held back because they were no longer true at the question's
+    time (the fact, when it began and when it ended); a fact held back is
+    reported here, never dropped unseen.
     """
 
     rankings: Dict[str, List[Dict[str, Any]]]
     left_out: Dict[str, str]
+    not_current: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class MemoryRetriever(Protocol):

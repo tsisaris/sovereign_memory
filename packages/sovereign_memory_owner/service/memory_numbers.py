@@ -738,7 +738,9 @@ class NumbersStore:
         )
         for event_id, text in wanted:
             try:
-                vector = await supplier.question_numbers(model.model_id, model.revision, text)
+                vector = await supplier.question_numbers(
+                    model.model_id, model.revision, text, "passage"
+                )
             except NumbersNotYetSupplied as pending:
                 await self.request(model, event_id, text, str(pending))
                 summary["pending"] = str(pending)
