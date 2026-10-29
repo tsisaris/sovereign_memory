@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from ..prompts.models import Message
+from .cache import OwnerConnection
 from .client import LLMClient
 from .config import DEFAULT_MAX_TOKENS, LLMConfig, ModelSize
 from .errors import RateLimitError
@@ -70,6 +71,7 @@ class GLiNER2Client(LLMClient):
         threshold: float = DEFAULT_THRESHOLD,
         include_confidence: bool = False,
         llm_client: LLMClient | None = None,
+        cache_connection: OwnerConnection | None = None,
     ) -> None:
         if llm_client is None:
             raise ValueError(
@@ -81,7 +83,7 @@ class GLiNER2Client(LLMClient):
         if config is None:
             config = LLMConfig()
 
-        super().__init__(config, cache)
+        super().__init__(config, cache, cache_connection)
 
         self.threshold = threshold
         self.include_confidence = include_confidence
@@ -301,7 +303,7 @@ class GLiNER2Client(LLMClient):
             # Check cache
             if self.cache_enabled and self.cache_dir is not None:
                 cache_key = self._get_cache_key(messages)
-                cached_response = self.cache_dir.get(cache_key)
+                cached_response = await self.cache_dir.get(cache_key)
                 if cached_response is not None:
                     logger.debug("Cache hit for %s", cache_key)
                     span.add_attributes({"cache.hit": True})
@@ -326,6 +328,6 @@ class GLiNER2Client(LLMClient):
             # Cache response
             if self.cache_enabled and self.cache_dir is not None:
                 cache_key = self._get_cache_key(messages)
-                self.cache_dir.set(cache_key, response)
+                await self.cache_dir.set(cache_key, response)
 
             return response

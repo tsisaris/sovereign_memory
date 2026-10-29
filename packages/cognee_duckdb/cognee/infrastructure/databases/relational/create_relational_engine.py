@@ -36,7 +36,10 @@ def create_relational_engine(
     pool_args = dict(pool_args) if pool_args else {}
 
     if db_provider == "sqlite":
-        connection_string = f"sqlite+aiosqlite:///{db_path}/{db_name}"
+        raise ConnectionError(
+            "DB_PROVIDER=sqlite is not supported: this memory system keeps its relational "
+            "data in DuckDB. Set DB_PROVIDER=duckdb."
+        )
 
     elif db_provider == "postgres":
         try:
