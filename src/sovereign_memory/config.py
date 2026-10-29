@@ -7,17 +7,15 @@ rows of data), the search settings and the supplier. Only the path of that file
 is given from outside. Nothing here has a default for a model, a bound or a
 tuning number: a missing or unknown setting, a wrong type or a tier that cannot
 be built is a ConfigurationError that names the setting, and the service never
-starts on half-valid settings. A readable TOML file is turned into table rows
-only by load_settings_file; this module never edits the table any other way,
+starts on half-valid settings. Parsed values are checked here, and the table is changed
+only by the set-setting command (settings_store.py); this module never edits the table,
 calls a model or touches the network.
 """
 
 import json
 import math
 import os
-import tomllib
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,6 +50,7 @@ class RuntimeConfig:
     models: tuple[dict[str, Any], ...]
     personalization: "MemoryConfig | None"
     supplier: dict[str, Any] | None
+    language_model: dict[str, Any] | None
 
 
 def _take(
@@ -105,16 +104,18 @@ def _embedding_model(table: Any, where: str) -> tuple[str, str]:
 
 
 def _ranking(table: Any) -> dict[str, Any]:
-    """Read the four search settings table; every setting is required and none has a default.
+    """Read the search settings table; the four main settings are required and none has a default.
 
-    Types and ranges are checked by the Owner when it is built, which raises a
-    named error; here the shape (exactly these four keys) is enforced.
+    The three decay settings are optional and go together. Types and ranges are
+    checked by the Owner when it is built, which raises a named error; here the
+    shape (the four keys, plus only the decay keys) is enforced.
     """
     return dict(
         _take(
             table,
             "ranking",
             ("comparison_score", "held_back_share", "smallest_held_back_set", "merging_constant"),
+            ("decay_time_constant_seconds", "decay_lower_bound", "decay_upper_bound"),
         )
     )
 
@@ -150,12 +151,71 @@ def _supplier(table: Any) -> dict[str, Any]:
     return table
 
 
-def _personalization(table: Any) -> "MemoryConfig":
-    """Read the Mem0 table: llm, embedder and vector_store are required, the vector store is DuckDB."""
+MODEL_OPTIONS_FOR_MEM0 = ("temperature", "max_tokens", "top_p", "reasoning_effort")
+
+
+def _language_model(table: Any) -> dict[str, Any]:
+    """Read the language_model table: which model, where it answers, and its options.
+
+    Every key is required and none has a default. The provider must be ollama (the
+    local server this round uses); the model name, the address it answers on, the
+    key the client sends (a local server ignores it), the time limit of one request
+    and the options object are all settings, so changing models changes settings only.
+    """
+    where = "language_model"
+    table = dict(
+        _take(
+            table,
+            where,
+            ("provider", "model", "base_url", "api_key", "request_timeout_seconds", "options"),
+        )
+    )
+    if _text(table, where, "provider") != "ollama":
+        raise ConfigurationError(f"{where}.provider must be ollama")
+    for key in ("model", "base_url", "api_key"):
+        _text(table, where, key)
+    _positive(table, where, "request_timeout_seconds", False)
+    if not isinstance(table["options"], dict):
+        raise ConfigurationError(f"{where}.options must be a table of model options")
+    return table
+
+
+def _mem0_llm(language_model: dict[str, Any]) -> dict[str, Any]:
+    """Return Mem0's llm section made from the language_model settings (Ollama's OpenAI-style door)."""
+    config = {
+        "model": language_model["model"],
+        "api_key": language_model["api_key"],
+        "openai_base_url": language_model["base_url"].rstrip("/") + "/v1",
+        "request_timeout_seconds": language_model["request_timeout_seconds"],
+    }
+    config.update(
+        {
+            key: value
+            for key, value in language_model["options"].items()
+            if key in MODEL_OPTIONS_FOR_MEM0
+        }
+    )
+    return {"provider": "openai", "config": config}
+
+
+def _personalization(table: Any, language_model: dict[str, Any] | None) -> "MemoryConfig":
+    """Read the Mem0 table: embedder and vector_store are required, the vector store is DuckDB.
+
+    Mem0's language model is never set here: it is made from the language_model
+    settings, so a stored llm section is refused and a missing language_model is named.
+    """
     where = "tiers.personalization"
     table = _take(table, where, ("memory",))
+    if isinstance(table["memory"], dict) and "llm" in table["memory"]:
+        raise ConfigurationError(
+            f"{where}.memory.llm is not a setting: the model is set in language_model"
+        )
+    if language_model is None:
+        raise ConfigurationError(f"{where} needs the language_model settings")
     memory = _take(
-        table["memory"],
+        {**table["memory"], "llm": _mem0_llm(language_model)}
+        if isinstance(table["memory"], dict)
+        else table["memory"],
         f"{where}.memory",
         ("llm", "embedder", "vector_store", "enable_update_delete_branches"),
         ("custom_fact_extraction_prompt", "custom_update_memory_prompt", "custom_instructions"),
@@ -219,7 +279,10 @@ def _personalization(table: Any) -> "MemoryConfig":
 def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
     """Validate parsed TOML and return the RuntimeConfig; relative paths resolve against base."""
     data = _take(
-        data, "file", ("service", "tiers"), ("visibility", "ranking", "models", "supplier")
+        data,
+        "file",
+        ("service", "tiers"),
+        ("visibility", "ranking", "models", "supplier", "language_model"),
     )
     service = _take(
         data["service"],
@@ -256,7 +319,12 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
             embedding_model = _embedding_model(
                 relational["embedding_model"], "tiers.relational.embedding_model"
             )
-    memory = _personalization(tiers["personalization"]) if "personalization" in tiers else None
+    language_model = _language_model(data["language_model"]) if "language_model" in data else None
+    memory = (
+        _personalization(tiers["personalization"], language_model)
+        if "personalization" in tiers
+        else None
+    )
     ranks_by_models = "relational" in tiers or "personalization" in tiers
     if ranks_by_models and "ranking" not in data:
         raise ConfigurationError(
@@ -294,11 +362,16 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         models=models,
         personalization=memory,
         supplier=supplier,
+        language_model=language_model,
     )
 
 
 SETTINGS_TABLE = "memory_runtime_settings"
-LOAD_COMMAND = "python -m sovereign_memory load-settings <settings file> <memory database>"
+HISTORY_TABLE = "memory_runtime_settings_history"
+SET_COMMAND = (
+    "python -m sovereign_memory set-setting <memory database> <setting>=<value> "
+    '--describe <setting>="what it does"'
+)
 
 
 def _flatten(value: Any, prefix: str = "") -> list[tuple[str, Any]]:
@@ -370,7 +443,7 @@ def load(database_path: str | os.PathLike[str]) -> RuntimeConfig:
     path = Path(database_path).resolve()
     if not path.is_file():
         raise ConfigurationError(
-            f"Memory database {path} does not exist; create its settings with: {LOAD_COMMAND}"
+            f"Memory database {path} does not exist; create its settings with: {SET_COMMAND}"
         )
     try:
         connection = duckdb.connect(str(path), read_only=True)
@@ -385,8 +458,8 @@ def load(database_path: str | os.PathLike[str]) -> RuntimeConfig:
         ).fetchone()
         if present is None:
             raise ConfigurationError(
-                f"Memory database {path} has no {SETTINGS_TABLE} table; load settings with: "
-                f"{LOAD_COMMAND}"
+                f"Memory database {path} has no {SETTINGS_TABLE} table; set settings with: "
+                f"{SET_COMMAND}"
             )
         rows = connection.execute(
             f"SELECT path, value FROM {SETTINGS_TABLE} ORDER BY path"
@@ -397,64 +470,6 @@ def load(database_path: str | os.PathLike[str]) -> RuntimeConfig:
         connection.close()
     if not rows:
         raise ConfigurationError(
-            f"{SETTINGS_TABLE} in {path} is empty; load settings with: {LOAD_COMMAND}"
+            f"{SETTINGS_TABLE} in {path} is empty; set settings with: {SET_COMMAND}"
         )
     return parse(_with_database(_unflatten(rows), path), path.parent)
-
-
-def load_settings_file(
-    settings_file: str | os.PathLike[str], database_path: str | os.PathLike[str]
-) -> list[str]:
-    """Check a readable TOML settings file and store it as the settings table of the memory database.
-
-    The file is validated exactly as the service would validate it before anything is
-    written; then the table is created if absent and all its rows replaced in one
-    transaction, so a failed load leaves the earlier settings untouched. Returns the
-    dotted path of every setting stored. Raises ConfigurationError for an unreadable
-    or invalid file or a database in use. It never edits individual rows and never
-    starts the service.
-    """
-    source = Path(settings_file).resolve()
-    database = Path(database_path).resolve()
-    try:
-        with open(source, "rb") as handle:
-            data = tomllib.load(handle)
-    except OSError as error:
-        raise ConfigurationError(f"Cannot read settings file {source}: {error}") from error
-    except tomllib.TOMLDecodeError as error:
-        raise ConfigurationError(f"Settings file {source} is not valid TOML: {error}") from error
-    parse(_with_database(data, database), database.parent)
-    leaves = _flatten(data)
-    rows = []
-    for path, value in leaves:
-        try:
-            rows.append((path, json.dumps(value, allow_nan=False)))
-        except (TypeError, ValueError) as error:
-            raise ConfigurationError(
-                f"setting {path} in {source} cannot be stored as JSON: {error}"
-            ) from error
-    loaded_at = datetime.now(timezone.utc).isoformat()
-    try:
-        connection = duckdb.connect(str(database))
-    except duckdb.Error as error:
-        raise ConfigurationError(
-            f"Cannot open memory database {database} to store settings "
-            f"(stop the memory service first): {error}"
-        ) from error
-    try:
-        connection.execute("BEGIN")
-        connection.execute(
-            f"CREATE TABLE IF NOT EXISTS {SETTINGS_TABLE} (path VARCHAR PRIMARY KEY, "
-            "value VARCHAR NOT NULL, source_file VARCHAR NOT NULL, loaded_at VARCHAR NOT NULL)"
-        )
-        connection.execute(f"DELETE FROM {SETTINGS_TABLE}")
-        connection.executemany(
-            f"INSERT INTO {SETTINGS_TABLE} VALUES (?, ?, ?, ?)",
-            [(path, text, str(source), loaded_at) for path, text in rows],
-        )
-        connection.execute("COMMIT")
-    except duckdb.Error as error:
-        connection.close()
-        raise ConfigurationError(f"Cannot store settings in {database}: {error}") from error
-    connection.close()
-    return [path for path, _ in rows]

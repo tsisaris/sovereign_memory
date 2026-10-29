@@ -18,8 +18,14 @@ def _resolve_cache_db_url(backend: str, cache_db_url: str | None) -> str:
     CACHE_DB_URL wins when set. Otherwise "duckdb" uses the relational DuckDB file,
     "turso" mirrors the relational engine's databases directory (a dedicated cache.db
     file opened on the Turso rewrite engine), "postgres" falls back to the relational
-    DB_* settings when DB_PROVIDER=postgres, and "sqlite" is refused with a plain message.
+    DB_* settings when DB_PROVIDER=postgres, and "sqlite" and "turso" are refused with a
+    plain message naming duckdb, even when CACHE_DB_URL is set.
     """
+    if backend in ("sqlite", "turso"):
+        raise CacheConnectionError(
+            f"CACHE_BACKEND={backend} is not supported: this memory system keeps its session "
+            "cache in DuckDB. Set CACHE_BACKEND=duckdb."
+        )
     if cache_db_url:
         return cache_db_url
 
@@ -30,30 +36,6 @@ def _resolve_cache_db_url(backend: str, cache_db_url: str | None) -> str:
     if backend == "duckdb":
         os.makedirs(relational_config.db_path, exist_ok=True)
         return f"duckdb+aio:///{relational_config.db_path}/{relational_config.db_name}"
-
-    if backend == "sqlite":
-        raise CacheConnectionError(
-            "CACHE_BACKEND=sqlite is not supported: this memory system keeps its session "
-            "cache in DuckDB. Set CACHE_BACKEND=duckdb."
-        )
-
-    if backend == "turso":
-        db_path = relational_config.db_path
-        if "s3://" in db_path:
-            raise CacheConnectionError(
-                f"CACHE_BACKEND={backend} cannot store cache.db on S3; "
-                "set CACHE_DB_URL or CACHE_BACKEND=postgres"
-            )
-        os.makedirs(db_path, exist_ok=True)
-        from cognee.infrastructure.databases.turso import require_turso, turso_url
-
-        try:
-            require_turso()
-        except ImportError as error:
-            raise CacheConnectionError(
-                f"CACHE_BACKEND=turso requires the turso extra: {error}"
-            ) from error
-        return turso_url(f"{db_path}/cache.db")
 
     if relational_config.db_provider == "postgres":
         from sqlalchemy import URL

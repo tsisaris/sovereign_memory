@@ -41,21 +41,111 @@ def csv_source_name(filename: str) -> str:
     return safe or "csv_source"
 
 
+def _attached_sqlite(path: str):
+    """Return an in-memory DuckDB connection with the SQLite file attached read-only as ``external``.
+
+    The file is read through DuckDB's own sqlite extension, so no SQLite package is
+    needed. A path that is not an existing file is refused, because attaching it would
+    otherwise be an error that does not name the file. The caller closes the connection.
+    """
+    import duckdb
+
+    if not os.path.isfile(path):
+        raise ValueError(f"The sqlite file {path} does not exist")
+    connection = duckdb.connect(":memory:")
+    try:
+        connection.execute("LOAD sqlite")
+        quoted = path.replace("'", "''")
+        connection.execute(f"ATTACH '{quoted}' AS external (TYPE sqlite, READ_ONLY)")
+        connection.execute("USE external")
+    except duckdb.Error:
+        connection.close()
+        raise
+    return connection
+
+
+def _sqlite_rows(path: str, table: str, where_clause: str):
+    """Yield the rows of one SQLite table as dicts, one at a time, filtered by a WHERE text."""
+    connection = _attached_sqlite(path)
+    try:
+        quoted_table = '"' + table.replace('"', '""') + '"'
+        cursor = connection.execute(f"SELECT * FROM {quoted_table} WHERE {where_clause}")
+        names = [column[0] for column in cursor.description]
+        while (row := cursor.fetchone()) is not None:
+            yield dict(zip(names, row))
+    finally:
+        connection.close()
+
+
+def create_dlt_source_from_sqlite_file(path: str, query: str | None = None):
+    """Build a dlt source from a SQLite file, read through DuckDB's sqlite extension.
+
+    Goes in: the file's path and optionally a ``SELECT ... FROM table WHERE ...`` text
+    that picks one table and a filter. Comes out: a dlt source named ``sql_database``
+    with one resource per table (primary keys carried over). A query naming a table the
+    file lacks, or a schema other than ``main``, raises ValueError. It never writes the file.
+    """
+    import dlt
+
+    connection = _attached_sqlite(path)
+    try:
+        tables = [
+            row[0]
+            for row in connection.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_catalog = 'external' "
+                "AND table_type = 'BASE TABLE' ORDER BY table_name"
+            ).fetchall()
+        ]
+        keys = {
+            row[0]: list(row[1])
+            for row in connection.execute(
+                "SELECT table_name, constraint_column_names FROM duckdb_constraints() "
+                "WHERE database_name = 'external' AND constraint_type = 'PRIMARY KEY'"
+            ).fetchall()
+        }
+    finally:
+        connection.close()
+    wanted = {name: "1=1" for name in tables}
+    if query:
+        table_name, where_clause = _parse_sql_query(query)
+        schema_name, bare_table_name = _split_schema_and_table(table_name)
+        if schema_name not in (None, "main"):
+            raise ValueError(f"A sqlite file has only the schema main, not {schema_name}: {query}")
+        if bare_table_name not in tables:
+            raise ValueError(f"The sqlite file {path} has no table {bare_table_name}: {query}")
+        wanted = {bare_table_name: where_clause}
+
+    def resource_of(table: str, where_clause: str):
+        """Return the dlt resource that reads one table, so every run reads the file afresh."""
+
+        @dlt.resource(name=table, primary_key=keys.get(table) or None)
+        def rows():
+            """Yield the table's rows."""
+            yield from _sqlite_rows(path, table, where_clause)
+
+        return rows
+
+    @dlt.source(name="sql_database")
+    def sqlite_source():
+        """Return one dlt resource per wanted table."""
+        return [resource_of(table, where_clause) for table, where_clause in wanted.items()]
+
+    return sqlite_source()
+
+
 def create_dlt_source_from_connection_string(
     connection_string: str,
     query: str | None = None,
 ):
     """Auto-generate a dlt source from a database connection string with optional SQL query filtering."""
+    # sqlite:/// = relative, sqlite://// = absolute; a SQLite file is read through DuckDB.
+    if connection_string.startswith("sqlite:///"):
+        return create_dlt_source_from_sqlite_file(
+            os.path.abspath(connection_string[len("sqlite:///") :]), query
+        )
+
     import sqlalchemy
     from dlt.sources.sql_database import sql_database
-
-    # SQLite paths must be absolute for SQLAlchemy to find the file.
-    # sqlite:/// = relative, sqlite://// = absolute
-    if connection_string.startswith("sqlite:///") and not connection_string.startswith(
-        "sqlite:////"
-    ):
-        relative_path = connection_string[len("sqlite:///") :]
-        connection_string = "sqlite:///" + os.path.abspath(relative_path)
 
     if query:
         table_name, where_clause = _parse_sql_query(query)
@@ -163,7 +253,7 @@ def _parse_sql_query(query: str) -> tuple:
     the single-table source cannot express.
     """
     # Words that can follow a table name without being an alias.
-    _RESERVED_AFTER_TABLE = (
+    reserved_after_table = (
         "WHERE",
         "JOIN",
         "INNER",
@@ -178,7 +268,7 @@ def _parse_sql_query(query: str) -> tuple:
         "OFFSET",
         "HAVING",
     )
-    alias_pattern = "|".join(_RESERVED_AFTER_TABLE)
+    alias_pattern = "|".join(reserved_after_table)
     match = re.match(
         r"SELECT\s+.+?\s+FROM\s+"
         r"(?P<table>\w+(?:\.\w+)*)"
