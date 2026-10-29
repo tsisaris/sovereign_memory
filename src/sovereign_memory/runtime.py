@@ -22,8 +22,11 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from service.memory_dispatcher import ProcessorRegistry
+from service.memory_owner_core import OwnerCore
 from service.memory_owner_service import OwnerService
 from service.memory_processor_seam import TerminalProcessingError
+from service.memory_supplier_http import CorpusHttpSupplier
+from service.memory_tier_support import event_text
 from service.memory_visibility import RestrictedPolicy, ScopeLabelPolicy
 
 from .config import TIER_KEYS, ConfigurationError, RuntimeConfig, load
@@ -98,8 +101,23 @@ def build_service(config: RuntimeConfig, only_tier: str | None = None) -> OwnerS
         if config.pool_scope_labels
         else RestrictedPolicy()
     )
+    holder: list[OwnerService] = []
+    supplier = None
+    if config.supplier is not None:
+
+        async def original_text(event_id: str) -> str | None:
+            """Return the original text of one of this service's events, read from its own file."""
+            envelope, payload = await OwnerCore(holder[0].lifetime_conn).load_event(event_id)
+            return event_text(envelope, payload)[0]
+
+        supplier = CorpusHttpSupplier(
+            config.supplier["base_url"],
+            config.supplier["requester_agent_id"],
+            float(config.supplier["timeout_seconds"]),
+            original_text,
+        )
     try:
-        return OwnerService(
+        service = OwnerService(
             config.socket_path,
             config.database_path,
             registry=registry,
@@ -109,9 +127,12 @@ def build_service(config: RuntimeConfig, only_tier: str | None = None) -> OwnerS
             drain_timeout_seconds=config.drain_timeout_seconds,
             ranking=config.ranking,
             models=config.models,
+            supplier=supplier,
         )
     except ValueError as error:
         raise ConfigurationError(f"ranking: {error}") from error
+    holder.append(service)
+    return service
 
 
 async def maintain(service: OwnerService, interval: float, stop: asyncio.Event) -> None:
