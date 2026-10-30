@@ -1,3 +1,5 @@
+"""Persist Mem0 history and messages in DuckDB with explicit connection ownership."""
+
 import logging
 import threading
 import uuid
@@ -12,12 +14,15 @@ logger = logging.getLogger(__name__)
 class DuckDBManager:
     """DuckDB implementation of the Mem0 history and message storage."""
 
-    def __init__(self, db_path: str, connection: Optional[duckdb.DuckDBPyConnection] = None):
+    def __init__(
+        self, db_path: str = ":memory:", connection: Optional[duckdb.DuckDBPyConnection] = None
+    ):
         """Initialize the DuckDBManager.
 
         Args:
             db_path: The database path or ':memory:'.
-            connection: An optional existing DuckDB connection for transaction sharing.
+            connection: An optional caller-owned DuckDB connection. Its caller must
+                begin and finish shared transactions; this manager never commits them.
         """
         self.db_path = db_path
         self._lock = threading.RLock()
@@ -33,16 +38,6 @@ class DuckDBManager:
         self._create_history_table()
         self._create_messages_table()
         self._run_migrations()
-
-    def _in_txn(self) -> bool:
-        # DuckDB 1.x has current_transaction_id()
-        try:
-            return (
-                self.connection.execute("SELECT current_transaction_id()").fetchone()[0] is not None
-            )
-        except duckdb.CatalogException:
-            # Fallback if function doesn't exist
-            return False
 
     def _run_migrations(self) -> None:
         """Migrate legacy schema to current schema if needed."""
@@ -75,8 +70,8 @@ class DuckDBManager:
                 if old_cols == expected_cols:
                     return
 
-                in_txn = self._in_txn()
-                if not in_txn:
+                owns_transaction = self._owns_connection
+                if owns_transaction:
                     self.connection.execute("BEGIN TRANSACTION")
 
                 try:
@@ -107,11 +102,11 @@ class DuckDBManager:
                         )
 
                     self.connection.execute("DROP TABLE history_old")
-                    if not in_txn:
+                    if owns_transaction:
                         self.connection.execute("COMMIT")
                     logger.info("History table migration completed successfully.")
                 except Exception as e:
-                    if not in_txn:
+                    if owns_transaction:
                         self.connection.execute("ROLLBACK")
                     raise e
             except Exception as e:
@@ -173,6 +168,7 @@ class DuckDBManager:
         actor_id: Optional[str] = None,
         role: Optional[str] = None,
     ) -> None:
+        """Store one event without committing a caller-owned transaction."""
         with self._lock:
             try:
                 self.connection.execute(
@@ -201,12 +197,13 @@ class DuckDBManager:
                 raise
 
     def batch_add_history(self, records: List[Dict[str, Any]]) -> None:
+        """Store an atomic owned batch or join the supplied caller's transaction."""
         if not records:
             return
         with self._lock:
             try:
-                in_txn = self._in_txn()
-                if not in_txn:
+                owns_transaction = self._owns_connection
+                if owns_transaction:
                     self.connection.execute("BEGIN TRANSACTION")
 
                 try:
@@ -236,10 +233,10 @@ class DuckDBManager:
                         """,
                         rows,
                     )
-                    if not in_txn:
+                    if owns_transaction:
                         self.connection.execute("COMMIT")
                 except Exception as e:
-                    if not in_txn:
+                    if owns_transaction:
                         self.connection.execute("ROLLBACK")
                     raise e
             except Exception as e:
@@ -247,6 +244,7 @@ class DuckDBManager:
                 raise
 
     def get_history(self, memory_id: str) -> List[Dict[str, Any]]:
+        """Return the stored events for one memory in timestamp order."""
         with self._lock:
             cur = self.connection.execute(
                 """
@@ -290,6 +288,7 @@ class DuckDBManager:
         return result
 
     def save_messages(self, messages: List[Dict[str, Any]], session_scope: str) -> None:
+        """Store messages and retain the latest ten within the supplied session."""
         if not messages:
             return
         with self._lock:
@@ -325,6 +324,7 @@ class DuckDBManager:
                 raise
 
     def get_last_messages(self, session_scope: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Return the requested session's latest stored messages in chronological order."""
         with self._lock:
             cur = self.connection.execute(
                 """
@@ -354,6 +354,7 @@ class DuckDBManager:
         ]
 
     def reset(self) -> None:
+        """Drop history and messages in this connection's current namespace."""
         if not self.connection:
             raise RuntimeError("Cannot reset a closed DuckDBManager")
         with self._lock:
@@ -365,9 +366,11 @@ class DuckDBManager:
                 raise
 
     def close(self) -> None:
+        """Close only a connection created by this manager, preserving caller ownership."""
         if self.connection and self._owns_connection:
             self.connection.close()
             self.connection = None
 
     def __del__(self):
+        """Release an owned connection when this manager is collected."""
         self.close()
