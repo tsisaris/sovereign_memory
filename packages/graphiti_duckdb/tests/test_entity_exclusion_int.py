@@ -20,6 +20,7 @@ import pytest
 from graphiti_core.graphiti import Graphiti
 from graphiti_core.helpers import validate_excluded_entity_types
 from pydantic import BaseModel, Field
+
 from tests.helpers_test import drivers, get_driver
 
 pytestmark = pytest.mark.integration

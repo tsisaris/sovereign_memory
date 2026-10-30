@@ -24,6 +24,7 @@ from graphiti_core.nodes import (
     EpisodeType,
     EpisodicNode,
 )
+
 from tests.helpers_test import (
     assert_community_node_equals,
     assert_entity_node_equals,

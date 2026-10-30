@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 from graphiti_core.edges import CommunityEdge, EntityEdge, EpisodicEdge
 from graphiti_core.nodes import CommunityNode, EntityNode, EpisodeType, EpisodicNode
+
 from tests.helpers_test import assert_datetimes_equal, get_edge_count, get_node_count, group_id
 
 pytest_plugins = ("pytest_asyncio",)
