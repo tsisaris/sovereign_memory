@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "graphiti-duckdb"
+version = "0.1.0"
+description = "Graphiti DuckDB Driver Backend"
+dependencies = [
+    "duckdb>=1.5.0",
+    "pydantic>=2.0.0"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/graphiti_duckdb"]
