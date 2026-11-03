@@ -56,6 +56,7 @@ class RuntimeConfig:
     cognee: dict[str, Any] | None
     letta: dict[str, Any] | None
     graphiti: dict[str, Any] | None
+    kinds: dict[str, dict[str, str]]
 
 
 def _take(
@@ -106,6 +107,25 @@ def _embedding_model(table: Any, where: str) -> tuple[str, str]:
     """
     table = _take(table, where, ("model_id", "revision"))
     return _text(table, where, "model_id"), _text(table, where, "revision")
+
+
+def _kinds(table: Any) -> dict[str, dict[str, str]]:
+    """Read the kinds of memory the settings add to the tiers: name to {tier, module, class}.
+
+    A kind is a class named by its module and class name (see memory_kinds.py in the owner); the tier
+    must be one of the four. It checks the shape only and imports nothing: the runtime builds the
+    classes when it builds the tiers. An empty table is no kinds.
+    """
+    if not isinstance(table, dict):
+        raise ConfigurationError("[kinds] must be a table")
+    kinds: dict[str, dict[str, str]] = {}
+    for name, spec in table.items():
+        where = f"kinds.{name}"
+        spec = _take(spec, where, ("tier", "module", "class"))
+        if spec["tier"] not in TIER_KEYS:
+            raise ConfigurationError(f"{where}.tier must be one of {', '.join(TIER_KEYS)}")
+        kinds[name] = {key: _text(spec, where, key) for key in ("tier", "module", "class")}
+    return kinds
 
 
 def _ranking(table: Any) -> dict[str, Any]:
@@ -358,8 +378,10 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
             "cognee",
             "letta",
             "graphiti",
+            "kinds",
         ),
     )
+    kinds = _kinds(data.get("kinds", {}))
     service = _take(
         data["service"],
         "service",
@@ -431,10 +453,27 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         else None
     )
     graphiti = (
-        dict(_take(data["graphiti"], "graphiti", ("contradiction_candidates",)))
+        dict(
+            _take(
+                data["graphiti"],
+                "graphiti",
+                ("contradiction_candidates",),
+                ("embedding_model", "node_match_minimum_similarity"),
+            )
+        )
         if "graphiti" in data
         else None
     )
+    if graphiti is not None and ("embedding_model" in graphiti) != (
+        "node_match_minimum_similarity" in graphiti
+    ):
+        raise ConfigurationError(
+            "graphiti.embedding_model and graphiti.node_match_minimum_similarity go together"
+        )
+    if graphiti is not None and "embedding_model" in graphiti:
+        _embedding_model(graphiti["embedding_model"], "graphiti.embedding_model")
+        if _positive(graphiti, "graphiti", "node_match_minimum_similarity", False) > 1:
+            raise ConfigurationError("graphiti.node_match_minimum_similarity must be at most 1")
     if "temporal" in tiers and graphiti is None:
         raise ConfigurationError(
             "tiers.temporal needs the graphiti settings: contradiction_candidates"
@@ -473,6 +512,7 @@ def parse(data: dict[str, Any], base: Path) -> RuntimeConfig:
         cognee=cognee,
         letta=letta,
         graphiti=graphiti,
+        kinds=kinds,
     )
 
 

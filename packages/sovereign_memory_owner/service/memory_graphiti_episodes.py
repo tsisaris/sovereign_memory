@@ -26,6 +26,7 @@ from service.memory_event_ranking import (
     question_numbers_for_events,
     rank_events,
 )
+from service.memory_kinds import RankingKind
 from service.memory_numbers_services import NumbersServices
 from service.memory_owner_core import parse_instant
 from service.memory_processor_seam import (
@@ -115,6 +116,10 @@ class GraphitiEpisodeTier:
 
     tier_name = TIER_NAME
 
+    def __init__(self, kinds: tuple[RankingKind, ...] = ()) -> None:
+        """Keep the kinds of memory the settings name for this tier (such as Zep's summaries)."""
+        self.kinds = kinds
+
     # ---- write seam -------------------------------------------------------------
 
     async def prepare(
@@ -201,14 +206,15 @@ class GraphitiEpisodeTier:
         """
         vectors, left_out = await question_numbers_for_events(self._services, query)
         return {
+            "query": query,
             "reference_time": datetime.now(timezone.utc),
             "limit": limit,
             "vectors": vectors,
             "left_out": left_out,
         }
 
-    @staticmethod
     def _ranked_episodes(
+        self,
         native_handle: duckdb.DuckDBPyConnection,
         scope: RetrievalScope,
         prepared_query: dict[str, Any],
@@ -223,6 +229,9 @@ class GraphitiEpisodeTier:
         ops = driver.episode_node_ops
         ranked = rank_events(
             native_handle, scope, prepared_query["vectors"], prepared_query["limit"]
+        )
+        validity = GraphitiEpisodeTier.episode_validity(
+            native_handle, prepared_query["reference_time"]
         )
         rankings: dict[str, list[dict[str, Any]]] = {}
         not_current: dict[str, dict[str, Any]] = {}
@@ -239,6 +248,17 @@ class GraphitiEpisodeTier:
                 if episode is None:
                     continue
                 metadata = episode.episode_metadata or {}
+                state = validity.get(episode.uuid)
+                if state is not None and state["state"] == "ended":
+                    not_current[episode.uuid] = {
+                        "item_id": episode.uuid,
+                        "event_id": event["event_id"],
+                        "episode_content": episode.content,
+                        "valid_at": episode.valid_at.isoformat(),
+                        "invalid_at": state["invalid_at"],
+                        "validity": state,
+                    }
+                    continue
                 hits.append(
                     {
                         "event_id": event["event_id"],
@@ -248,6 +268,11 @@ class GraphitiEpisodeTier:
                         "content": episode.content,
                         "source": episode.source.value,
                         "valid_at": episode.valid_at.isoformat(),
+                        "validity": state
+                        or {
+                            "state": "no_facts",
+                            "reason": "no fact was extracted from this episode",
+                        },
                         "source_revision": metadata.get("source_revision"),
                         "distance": event["distance"],
                         "ranking": f"cosine distance of {label}'s own numbers for the event",
@@ -261,7 +286,14 @@ class GraphitiEpisodeTier:
                 prepared_query["reference_time"],
             )
             not_current.update({fact["item_id"]: fact for fact in ended})
-            rankings[label] = sorted(hits + facts, key=lambda hit: hit["distance"])[
+            held = [
+                hit
+                for kind in self.kinds
+                for hit in kind.rank(
+                    native_handle, scope, "", prepared_query["vectors"][label], label
+                )
+            ]
+            rankings[label] = sorted(hits + facts + held, key=lambda hit: hit["distance"])[
                 : prepared_query["limit"]
             ]
         return TierRankings(
@@ -269,6 +301,50 @@ class GraphitiEpisodeTier:
             dict(prepared_query["left_out"]),
             [not_current[key] for key in sorted(not_current)],
         )
+
+    @staticmethod
+    def episode_validity(
+        native_handle: duckdb.DuckDBPyConnection, reference_time: datetime
+    ) -> dict[str, dict[str, Any]]:
+        """Say, for every episode that has facts, whether it still holds at the reference time.
+
+        An episode's validity is read from the facts Graphiti extracted from it (the facts that list
+        the episode as a source). It is "current" while none of them has ended, "partly_ended" while
+        some have ended and some still hold, and "ended" once every one of them has ended; an ended
+        episode carries the moment its last fact ended as its own invalid_at. An episode with no
+        extracted facts has no entry here (nothing can be said, and it is not held back). It reads
+        only and invents no end: it uses the invalid_at times Graphiti itself recorded.
+        """
+        if not _has_graphiti_schema(native_handle):
+            return {}
+        rows = native_handle.execute(
+            "SELECT episode, count(*), count(*) FILTER (WHERE ended), "
+            "max(invalid_at) FILTER (WHERE ended) FROM ("
+            "SELECT unnest(from_json(json_extract(properties, '$.episodes'), '[\"VARCHAR\"]')) "
+            "AS episode, "
+            "try_cast(json_extract_string(properties, '$.invalid_at') AS TIMESTAMPTZ) AS invalid_at, "
+            "coalesce(try_cast(json_extract_string(properties, '$.invalid_at') AS TIMESTAMPTZ) "
+            "<= CAST(? AS TIMESTAMPTZ), false) AS ended "
+            "FROM graphiti.graph_edge WHERE label = 'RELATES_TO') GROUP BY episode",
+            [reference_time],
+        ).fetchall()
+        states: dict[str, dict[str, Any]] = {}
+        for episode, facts, ended, last_end in rows:
+            if ended == facts:
+                state = "ended"
+            elif ended:
+                state = "partly_ended"
+            else:
+                state = "current"
+            states[episode] = {
+                "state": state,
+                "facts": facts,
+                "ended_facts": ended,
+                "invalid_at": (
+                    last_end.astimezone(timezone.utc).isoformat() if state == "ended" else None
+                ),
+            }
+        return states
 
     @staticmethod
     def _ranked_facts(
@@ -409,5 +485,9 @@ class GraphitiEpisodeTier:
                     "source_revision": metadata.get("source_revision"),
                     "ranking": "most recent episodes, not query relevance",
                 }
+            )
+        for kind in self.kinds:
+            hits += kind.find(
+                native_handle, scope, "", prepared_query["query"], prepared_query["limit"]
             )
         return hits
