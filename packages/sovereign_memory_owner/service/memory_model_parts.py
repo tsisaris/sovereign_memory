@@ -44,14 +44,20 @@ def thinking_off_models(language_model: Mapping[str, Any]) -> frozenset[str]:
     """Return the names of the models the settings say must never think.
 
     It takes the validated language_model settings and returns every model named by a
-    language_model.step_models entry whose think is false. It reads settings only and calls no model.
+    language_model.step_models entry whose think is false, and, when language_model.think is
+    false, the main and the second-opinion model. It reads settings only and calls no model.
     """
-    return frozenset(
+    quiet = {
         entry["model"]
         for by_step in language_model.get("step_models", {}).values()
         for entry in by_step.values()
         if entry.get("think") is False
-    )
+    }
+    if language_model.get("think") is False:
+        quiet.add(language_model["model"])
+        if "second_opinion_model" in language_model:
+            quiet.add(language_model["second_opinion_model"])
+    return frozenset(quiet)
 
 
 def without_thinking(arguments: dict[str, Any]) -> dict[str, Any]:

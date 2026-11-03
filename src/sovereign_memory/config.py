@@ -291,7 +291,8 @@ def _language_model(table: Any) -> dict[str, Any]:
 
     Every key is required and none has a default, except second_opinion_model, which is
     optional and, when present, names the model a caller may ask for instead of the main
-    one. The provider must be ollama (the local server this round uses); the model name,
+    one. think is also optional: false means every request to the main and the second-opinion
+    model carries thinking switched off. The provider must be ollama (the local server this round uses); the model name,
     the address it answers on, the key the client sends (a local server ignores it), the
     time limit of one request and the options object are all settings, so changing models
     changes settings only.
@@ -302,9 +303,11 @@ def _language_model(table: Any) -> dict[str, Any]:
             table,
             where,
             ("provider", "model", "base_url", "api_key", "request_timeout_seconds", "options"),
-            ("second_opinion_model", "step_opinions", "step_models"),
+            ("second_opinion_model", "step_opinions", "step_models", "think"),
         )
     )
+    if "think" in table and not isinstance(table["think"], bool):
+        raise ConfigurationError(f"{where}.think must be true or false")
     if "step_opinions" in table:
         _step_opinions(table, where)
     if "step_models" in table:
