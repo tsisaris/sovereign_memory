@@ -1,0 +1,1 @@
+Spain Warehouse B is a origin_warehouse in Spain. It supports domestic shipping, cold chain support is True, and hazardous materials support is False.

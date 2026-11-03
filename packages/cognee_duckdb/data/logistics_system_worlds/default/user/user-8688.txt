@@ -1,0 +1,1 @@
+Ava Chen is a enterprise customer in US North. Weekend delivery eligibility is True, and the default shipping range is domestic.

@@ -1,0 +1,1 @@
+Jonah Patel is a enterprise customer in Spain. Weekend delivery eligibility is True, and the default shipping range is regional.

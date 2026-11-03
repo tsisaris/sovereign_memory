@@ -1,0 +1,1 @@
+Daniel Brooks is a business customer in France. Weekend delivery eligibility is True, and the default shipping range is domestic.

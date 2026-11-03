@@ -1,0 +1,1 @@
+Priya Nair is a standard customer in US South. Weekend delivery eligibility is True, and the default shipping range is intercontinental.

@@ -1,0 +1,1 @@
+Omar Hassan is a business customer in Germany. Weekend delivery eligibility is False, and the default shipping range is intercontinental.
