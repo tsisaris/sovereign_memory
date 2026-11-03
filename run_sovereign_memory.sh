@@ -43,6 +43,11 @@ if [ -z "${SOVEREIGN_PYTHON:-}" ] || [ ! -x "$SOVEREIGN_PYTHON" ]; then
 fi
 
 export PYTHONDONTWRITEBYTECODE=1
+# The user's own package folder (~/.local/lib/python3.12/site-packages) holds 71 packages for other
+# programs, among them duckdb 1.5.2 and pydantic 2.12.5, which come BEFORE the environment's own on
+# the import path and so replaced the declared duckdb 1.5.6 and pydantic 2.14.1 (measured
+# 2026-11-02). The service runs on the environment's packages only.
+export PYTHONNOUSERSITE=1
 
 # exec, not a call: the launcher becomes this process, so the process that holds
 # the address is running the launcher's own path. That is what take_port matches

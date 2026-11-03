@@ -814,7 +814,9 @@ class OwnerService:
     async def _search(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
         """Run one named search type (Cognee's) over the memory the principal may see.
 
-        Goes in: search_type (CHUNKS, CHUNKS_LEXICAL, SUMMARIES, RAG_COMPLETION, GRAPH_COMPLETION or
+        Goes in: search_type (CHUNKS, CHUNKS_LEXICAL, SUMMARIES, RAG_COMPLETION, HYBRID_COMPLETION,
+        GRAPH_COMPLETION, TRIPLET_COMPLETION, GRAPH_SUMMARY_COMPLETION, GRAPH_COMPLETION_COT,
+        GRAPH_COMPLETION_CONTEXT_EXTENSION, GRAPH_COMPLETION_DECOMPOSITION, FEELING_LUCKY or
         TEMPORAL), query, limit, optionally opinion ("main" or "second", the model that writes an
         answer) and the same narrowing fields as retrieve. Comes out: the search type's own reply (see
         memory_cognee_search). Raises ValueError for a malformed request, an unknown or refused

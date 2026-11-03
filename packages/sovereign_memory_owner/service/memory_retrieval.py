@@ -82,6 +82,8 @@ def item_kind(hit: dict[str, Any]) -> str:
         return "passage"
     if "summary_id" in hit:
         return "summary"
+    if "note_id" in hit:
+        return "note"
     return "other"
 
 
