@@ -109,13 +109,16 @@ class PreparedChunks:
     """The chunks of one event's pieces to store, or (removal_target set) the chunks to delete.
 
     chunks lists the chunks to store; delete_ids names every chunk id a removal
-    deletes. Holds plain data only, never a database handle.
+    deletes; kind_work is (kind name, actor, event id, the kind's prepared work) for an
+    event one of the tier's kinds claimed, which the kind stores instead of chunks.
+    Holds plain data only, never a database handle.
     """
 
     chunks: tuple[PreparedChunk, ...] = ()
     removal_target: str | None = None
     delete_ids: tuple[str, ...] = ()
     embedding_engine: Any = None
+    kind_work: tuple[str, str, str, Any] | None = None
 
 
 class CogneeChunkTier:
@@ -131,13 +134,18 @@ class CogneeChunkTier:
     tier_name = TIER_NAME
 
     def __init__(
-        self, database_name: str, *, embedding_model: tuple[str, str] | None = None
+        self,
+        database_name: str,
+        *,
+        embedding_model: tuple[str, str] | None = None,
+        kinds: tuple[Any, ...] = (),
     ) -> None:
-        """Keep the schema name and the optional embedder binding; nothing is opened yet."""
+        """Keep the schema name, the optional embedder binding and the kinds the settings name; nothing is opened."""
         if not isinstance(database_name, str) or not database_name:
             raise ValueError("CogneeChunkTier needs a non-empty database_name")
         self.database_name = database_name
         self.embedding_model = embedding_model
+        self.kinds = kinds
         self._reader: OwnerReader | None = None
         self._services: NumbersServices | None = None
 
@@ -265,6 +273,11 @@ class CogneeChunkTier:
             return PreparedChunks(removal_target=target, delete_ids=ids)
         event_id = event_envelope["event_id"]
         actor = actor_of(event_envelope)
+        for kind in self.kinds:
+            claims = getattr(kind, "claims", None)
+            if claims is not None and claims(event_envelope):
+                work = await kind.prepare(services, event_envelope, verified_payload_bytes)
+                return PreparedChunks(kind_work=(kind.name, actor, event_id, work))
         pieces, retired = await reader(
             lambda handle: (
                 pieces_of_event(handle, event_id),
@@ -320,6 +333,16 @@ class CogneeChunkTier:
 
         A removal of chunks that were never stored reports processed_no_new_fact.
         """
+        if prepared_work.kind_work is not None:
+            name, actor, event_id, work = prepared_work.kind_work
+            writer = next(kind for kind in self.kinds if kind.name == name)
+            stored = writer.apply(native_tx_handle, "", actor, event_id, work)
+            return ProcessorResult(
+                "processed" if stored else "processed_no_new_fact",
+                PROCESSOR_ID,
+                version("cognee"),
+                PROJECTION_VERSION,
+            )
         adapter = self._adapter(native_tx_handle, prepared_work.embedding_engine)
         asyncio.run(adapter.initialize())
         if prepared_work.removal_target is not None:
@@ -328,6 +351,10 @@ class CogneeChunkTier:
                 for identifier in prepared_work.delete_ids
             )
             asyncio.run(adapter.delete_nodes(list(prepared_work.delete_ids)))
+            for kind in self.kinds:
+                remove = getattr(kind, "remove", None)
+                if remove is not None:
+                    existed = remove(native_tx_handle, "", prepared_work.removal_target) or existed
             status = "processed" if existed else "processed_no_new_fact"
         else:
             if prepared_work.delete_ids:
@@ -410,4 +437,13 @@ class CogneeChunkTier:
                 }
                 for row in rows
             ]
+            if self.kinds:
+                held = [
+                    hit
+                    for kind in self.kinds
+                    for hit in kind.rank(native_handle, scope, "", (model, vector), label)
+                ]
+                rankings[label] = sorted(rankings[label] + held, key=lambda hit: hit["distance"])[
+                    : prepared_query["limit"]
+                ]
         return TierRankings(rankings, dict(prepared_query["left_out"]))

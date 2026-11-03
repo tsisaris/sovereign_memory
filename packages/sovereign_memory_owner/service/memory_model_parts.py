@@ -40,6 +40,39 @@ def model_for(language_model: Mapping[str, Any], opinion: str) -> str:
     raise ValueError(f"opinion must be one of {', '.join(OPINIONS)}, not {opinion!r}")
 
 
+def thinking_off_models(language_model: Mapping[str, Any]) -> frozenset[str]:
+    """Return the names of the models the settings say must never think.
+
+    It takes the validated language_model settings and returns every model named by a
+    language_model.step_models entry whose think is false, and, when language_model.think is
+    false, the main and the second-opinion model. It reads settings only and calls no model.
+    """
+    quiet = {
+        entry["model"]
+        for by_step in language_model.get("step_models", {}).values()
+        for entry in by_step.values()
+        if entry.get("think") is False
+    }
+    if language_model.get("think") is False:
+        quiet.add(language_model["model"])
+        if "second_opinion_model" in language_model:
+            quiet.add(language_model["second_opinion_model"])
+    return frozenset(quiet)
+
+
+def without_thinking(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Return request arguments with thinking switched off the two ways Ollama honours.
+
+    "think": false is what Ollama's own door takes; its OpenAI-style door ignores that field and
+    takes reasoning_effort "none" instead (measured 2026-11-02 against Ollama 0.40.9: with think
+    false alone the model still thought for 127 s, with reasoning_effort none it answered in
+    1.2 s). Both are sent. The caller's other arguments are kept.
+    """
+    extra = dict(arguments.get("extra_body") or {})
+    extra["think"] = False
+    return {**arguments, "reasoning_effort": "none", "extra_body": extra}
+
+
 class AchievedRecorder:
     """Remembers the model name the server reported in its latest answer.
 
@@ -90,20 +123,24 @@ def build_door(language_model: Mapping[str, Any], recorder: AchievedRecorder) ->
         if key in DEFAULTED_REQUEST_OPTIONS
     }
     cap = language_model["options"].get("max_tokens")
-    if defaults or cap is not None:
+    quiet = thinking_off_models(language_model)
+    if defaults or cap is not None or quiet:
         original = client.chat.completions.create
 
         async def create(*args: Any, **kwargs: Any) -> Any:
             """Send a chat request with the settings' request options filled in where the caller gave none.
 
             The max_tokens setting is a ceiling: a caller that asks for more is cut to it, and a
-            caller that names none gets it.
+            caller that names none gets it. A request to a model the settings say must not think
+            always carries thinking switched off.
             """
             for key, value in defaults.items():
                 kwargs.setdefault(key, value)
             if cap is not None:
                 asked = kwargs.get("max_tokens")
                 kwargs["max_tokens"] = cap if asked is None else min(asked, cap)
+            if kwargs.get("model") in quiet:
+                kwargs = without_thinking(kwargs)
             return await original(*args, **kwargs)
 
         client.chat.completions.create = create
@@ -217,13 +254,39 @@ class ModelParts:
             },
         }
 
+    def step_model(self, part: str, step: str) -> dict[str, Any] | None:
+        """Return the language_model.step_models entry (model, optionally think) of a step, or None."""
+        return self.language_model.get("step_models", {}).get(part, {}).get(step)
+
+    def model_of(self, part: str, step: str, opinion: str) -> str:
+        """Return the model name a step runs on for an opinion already resolved by opinion_for.
+
+        The opinion "step_model" gives the model the step's step_models setting names; "main" and
+        "second" give the settings' main and second-opinion models. It calls no model.
+        """
+        if opinion == "step_model":
+            entry = self.step_model(part, step)
+            if entry is None:
+                raise ValueError(f"the step {part}.{step} has no language_model.step_models entry")
+            return entry["model"]
+        return model_for(self.language_model, opinion)
+
     def opinion_for(self, part: str, step: str, asked: str | None) -> str:
         """Return the opinion a step runs with: the one the settings fix for it, else the one asked, else "main".
 
-        A step listed in language_model.step_opinions is fixed to the model the setting names; a caller
-        that asks for the other opinion is refused with ValueError, naming the setting. A step not
-        listed takes the caller's opinion, "main" when none is given. It calls no model.
+        A step listed in language_model.step_models runs on the model that setting names and its opinion
+        is "step_model"; a caller that asks for any opinion is refused. A step listed in
+        language_model.step_opinions is fixed to that opinion; a caller that asks for the other is
+        refused with ValueError, naming the setting. A step in neither takes the caller's opinion,
+        "main" when none is given. It calls no model.
         """
+        if self.step_model(part, step) is not None:
+            if asked is not None:
+                raise ValueError(
+                    f"the step {part}.{step} runs on the model named by the setting "
+                    f"language_model.step_models.{part}.{step}; it cannot run with {asked}"
+                )
+            return "step_model"
         fixed = self.language_model.get("step_opinions", {}).get(part, {}).get(step)
         if fixed is not None and asked is not None and asked != fixed:
             raise ValueError(
@@ -251,7 +314,7 @@ class ModelParts:
                 f"part {part!r} has no step {step!r}; its steps are {', '.join(target.steps())}"
             )
         opinion = self.opinion_for(part, step, opinion)
-        model = model_for(self.language_model, opinion)
+        model = self.model_of(part, step, opinion)
         started = time.monotonic()
         output = await target.run_step(step, args, model)
         seconds = round(time.monotonic() - started, 2)

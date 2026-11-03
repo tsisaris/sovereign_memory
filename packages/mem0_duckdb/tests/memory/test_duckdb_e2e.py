@@ -51,9 +51,12 @@ def memory(temp_db_dir):
     mem.embedding_model.embed = lambda text, purpose="add": [0.1, 0.2, 0.3]
     mem.embedding_model.embed_batch = lambda texts, purpose="add": [[0.1, 0.2, 0.3]] * len(texts)
 
-    # Mock LLM to return an ADD action for "I like apples"
+    # Mock LLM: one answer holds both what the two stages read, the extracted facts and the ADD action
     def mock_generate_response(*args, **kwargs):
-        return '{"memory": [{"id": "1", "text": "User likes apples", "event": "ADD"}]}'
+        return (
+            '{"facts": ["User likes apples"], '
+            '"memory": [{"id": "1", "text": "User likes apples", "event": "ADD"}]}'
+        )
 
     mem.llm.generate_response = mock_generate_response
 

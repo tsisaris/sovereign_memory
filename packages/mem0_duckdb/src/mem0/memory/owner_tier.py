@@ -22,7 +22,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from importlib.metadata import version
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import duckdb
 
@@ -132,6 +132,7 @@ class PreparedWork:
     target_actor: Optional[str] = None
     actor: Optional[str] = None
     entity_embeddings: Dict[Any, List[float]] = field(default_factory=dict)
+    kind_work: Optional[Tuple[str, Any]] = None
 
 
 class Mem0Tier:
@@ -152,6 +153,7 @@ class Mem0Tier:
         terminal_error: type[Exception] = TerminalCaptureError,
         scope_of: Callable[[str], str] = lambda actor: actor,
         may_modify: Callable[[str, Optional[str]], bool] = lambda actor, author: actor == author,
+        kinds: Tuple[Any, ...] = (),
     ) -> None:
         """Keep the configuration; nothing is opened until the first owner call.
 
@@ -170,7 +172,12 @@ class Mem0Tier:
         delete a memory authored by another actor. The default refuses anything
         but one's own memory (fail closed); a shared-pool deployment passes the
         rule its permission owner defines. A refused change is a terminal failure.
+
+        kinds are the kinds of memory the settings name for this tier (objects with claims, prepare,
+        apply, remove, rank and find); an event a kind claims is stored by the kind and not by Mem0's
+        own flow, and a search ranks what the kinds hold beside Mem0's memories.
         """
+        self.kinds = kinds
         if config.vector_store.provider != "duckdb":
             raise ValueError("Mem0Tier needs the duckdb vector store provider")
         if config.embedder.provider != "received_numbers":
@@ -392,7 +399,7 @@ class Mem0Tier:
         except NumbersMissing as missing:
             await self._owe(event_id, missing)
             raise
-        if prepared.kind != "remove":
+        if prepared.kind not in ("remove", "kind"):
             await self._need_services().derived_complete(self.model_id, self.revision, event_id)
         return prepared
 
@@ -407,6 +414,25 @@ class Mem0Tier:
             return self._prepare_removal(
                 event_id, event_envelope, verified_payload_bytes, operation
             )
+        for kind in self.kinds:
+            claims = getattr(kind, "claims", None)
+            if claims is not None and claims(event_envelope):
+                actor = event_envelope.get("actor_agent_id", event_envelope.get("agent_id"))
+                work = await kind.prepare(self._services, event_envelope, verified_payload_bytes)
+                return PreparedWork(
+                    kind="kind",
+                    scope_id=self.scope_of(actor),
+                    event_id=event_id,
+                    messages=[],
+                    metadata={},
+                    filters={},
+                    embeddings={},
+                    decisions={},
+                    mapping={},
+                    raw_embeddings=[],
+                    actor=actor,
+                    kind_work=(kind.name, work),
+                )
         if not self.config.enable_update_delete_branches:
             raise self.terminal_error(
                 "Mem0Tier requires enable_update_delete_branches (the action flow)"
@@ -575,13 +601,27 @@ class Mem0Tier:
         No model call, cursor, commit or close happens here. Every UPDATE and
         DELETE re-reads its target and re-checks identity scope first.
         """
-        memory = self._memory_for(native_tx_handle)
         work = prepared_work
+        if work.kind == "kind":
+            name, kind_work = work.kind_work
+            writer = next(kind for kind in self.kinds if kind.name == name)
+            stored = writer.apply(native_tx_handle, "", work.actor, work.event_id, kind_work)
+            return TierResult(
+                "processed" if stored else "processed_no_new_fact",
+                "mem0-duckdb",
+                version("mem0_duckdb"),
+                PROJECTION_VERSION,
+            )
+        memory = self._memory_for(native_tx_handle)
         if work.kind != "remove":
             self._require_matching_index(memory)
         with memory.use_planned_embeddings(work.entity_embeddings):
             if work.kind == "remove":
                 removed = self._remove(memory, work)
+                for kind in self.kinds:
+                    remove = getattr(kind, "remove", None)
+                    if remove is not None:
+                        removed = remove(native_tx_handle, "", work.target_event_id) or removed
                 status = "processed" if removed else "processed_no_new_fact"
             elif work.kind == "raw":
                 texts = [m for m in work.messages if m.get("role") != "system"]
@@ -717,6 +757,16 @@ class Mem0Tier:
                         "source_artifact_id": payload.get("source_artifact_id"),
                         "source_revision": payload.get("source_revision"),
                     }
+                )
+            if self.kinds:
+                hits = sorted(
+                    hits
+                    + [
+                        hit
+                        for kind in self.kinds
+                        for hit in kind.rank(native_handle, scope, "", (model, vector), label)
+                    ],
+                    key=lambda hit: hit["distance"],
                 )
             rankings[label] = hits[: prepared_query["limit"]]
         return self._rankings(rankings, dict(prepared_query["left_out"]))
