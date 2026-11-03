@@ -2,7 +2,7 @@
 
 One framed JSON request per connection, with "op" one of: "capture" (store an
 event and its pending receipts, then process it in the background),
-"retrieve" (scoped retrieval across the tiers, narrowed by tags, a time window or a phrase such as
+"change_settings" (change settings through the service, for its own user only), "retrieve" (scoped retrieval across the tiers, narrowed by tags, a time window or a phrase such as
 "last week" when the request carries them), "search" (one of Cognee's search types: CHUNKS,
 CHUNKS_LEXICAL, SUMMARIES, RAG_COMPLETION, GRAPH_COMPLETION or TEMPORAL), "rebuild_model" (replace one
 registered model's numbers from the supplier, that model only), "retrieve_batch" (several questions at
@@ -100,7 +100,9 @@ OPERATIONS = (
     "record_get",
     "rebuild_model",
     "search",
+    "change_settings",
 )
+SettingsChanger = Callable[[dict[str, Any], dict[str, str], list[str], str], list[str]]
 GROUND_TRUTH_TABLES = (
     "memory_gt_known",
     "memory_gt_current_known",
@@ -216,6 +218,7 @@ class OwnerService:
         models: Sequence[Mapping[str, Any]] = (),
         artifacts: dict[str, ArtifactCombiner] | None = None,
         model_parts_factory: Callable[[DatabaseAccess], ModelParts] | None = None,
+        settings_changer: SettingsChanger | None = None,
     ):
         """Initialize the service with socket and db paths.
 
@@ -268,6 +271,7 @@ class OwnerService:
         self.store: NumbersStore | None = None
         self.numbers: NumbersServices | None = None
         self._model_parts_factory = model_parts_factory
+        self._settings_changer = settings_changer
         self.model_parts: ModelParts | None = None
         self.cognee_search: CogneeSearch | None = None
 
@@ -629,6 +633,8 @@ class OwnerService:
                     response = await self._rebuild_model(principal, payload)
                 elif operation == "search":
                     response = await self._search(principal, payload)
+                elif operation == "change_settings":
+                    response = await self._change_settings(principal, payload)
                 elif operation == "model_parts":
                     response = await self._model_parts_report()
                 elif operation == "model":
@@ -767,6 +773,43 @@ class OwnerService:
         filters = filters_from(request, datetime.now(timezone.utc))
         answers = await self.retrieval.retrieve(principal, query, limit, filters)
         return {"status": "success", "tiers": answers}
+
+    async def _change_settings(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Change settings in the memory database through the service itself, for the service's own user only.
+
+        Goes in: assignments (setting name to its new value), descriptions (setting name to its words),
+        unset (names to remove). Comes out: one line per change, as the set-setting command prints. The
+        runtime's own settings writer checks the complete result with the service's validator first,
+        records old value, new value, when and who, and changes nothing if anything is wrong. Settings
+        are read at start, so a change takes effect when the service is next started. Only the
+        operating-system user that runs the service may do this; any other caller gets a refusal.
+        Raises PermissionError for another caller and ValueError for a malformed request or a
+        rejected setting.
+        """
+        if self._settings_changer is None:
+            raise ValueError("this service was built without a settings writer")
+        if principal.agent_id != f"os-uid-{os.getuid()}":
+            raise PermissionError("only the user that runs the service may change its settings")
+        assignments = request.get("assignments", {})
+        descriptions = request.get("descriptions", {})
+        unset = request.get("unset", [])
+        if (
+            not isinstance(assignments, dict)
+            or not isinstance(descriptions, dict)
+            or not isinstance(unset, list)
+            or any(not isinstance(words, str) for words in descriptions.values())
+            or any(not isinstance(name, str) for name in unset)
+        ):
+            raise ValueError(
+                "change_settings needs assignments and descriptions (objects), unset (list)"
+            )
+        try:
+            lines = await asyncio.to_thread(
+                self._settings_changer, assignments, descriptions, unset, principal.agent_id
+            )
+        except ValueError as refusal:
+            raise ValueError(f"settings not changed: {refusal}") from refusal
+        return {"status": "success", "changes": lines, "takes_effect": "at the next start"}
 
     async def _search(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
         """Run one named search type (Cognee's) over the memory the principal may see.
