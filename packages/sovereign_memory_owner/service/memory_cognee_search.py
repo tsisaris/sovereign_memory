@@ -2,15 +2,19 @@
 
 It is for the search types of Cognee that are not plain chunk ranking: CHUNKS_LEXICAL (Cognee's own
 BM25 chunk retriever, no model and no numbers), SUMMARIES (the Zep summaries ranked by meaning),
-RAG_COMPLETION and GRAPH_COMPLETION (an answer written by the language model from the best chunks, or
-from the dated facts, episodes and summaries, with Cognee's own completion prompts), TEMPORAL (the time
+RAG_COMPLETION, HYBRID_COMPLETION, GRAPH_COMPLETION and TRIPLET_COMPLETION (an answer written by the
+language model from the best chunks, from the dated facts, episodes and summaries, or from both, with
+Cognee's own completion prompts), GRAPH_SUMMARY_COMPLETION (the facts summarised first by Cognee's own
+summariser), GRAPH_COMPLETION_CONTEXT_EXTENSION, GRAPH_COMPLETION_COT and GRAPH_COMPLETION_DECOMPOSITION
+(Cognee's reasoning loops and question splitting over the same facts, with Cognee's own prompts and its
+own default number of rounds), FEELING_LUCKY (Cognee's own selector picks the type), TEMPORAL (the time
 window Cognee's own interval step reads out of the question, then the search narrowed to it) and CHUNKS
 (the ordinary per-model ranking). It takes the asker, the search type, the question, the limit, an
 optional filter and which opinion (main or second model) writes any answer. It gives back the type, the
 hits or the answer with the context it was written from, and the model that really answered. It never
-reads what the asker may not see, never writes, and refuses a search type Cognee has that has no data
-here (its code, Cypher and natural-language-graph types need a Cognee graph this service does not keep)
-by naming the reason, never by answering something else.
+reads what the asker may not see, never writes, and refuses a search type that cannot run here (Cypher,
+natural language, code, rules, skills, graph report, broad and the agent) by naming the measured
+reason, never by answering something else.
 
 | Prior-art row | Capability | Tools looked at | Verdict |
 | memory_cognee_search.py | Cognee's search types over DuckDB memory | cognee.search (needs a Cognee dataset, user and graph file this service does not keep), Cognee BM25ChunksRetriever (reused for its scorer), Cognee generate_completion (reused), Graphiti search recipes (already the temporal tier), Letta archival_memory_search (already the episodic tier) | Cognee's retrievers reused where their data can be handed to them; the composition is the only new code |
@@ -36,17 +40,34 @@ SEARCH_TYPES = (
     "CHUNKS_LEXICAL",
     "SUMMARIES",
     "RAG_COMPLETION",
+    "HYBRID_COMPLETION",
     "GRAPH_COMPLETION",
+    "TRIPLET_COMPLETION",
+    "GRAPH_SUMMARY_COMPLETION",
+    "GRAPH_COMPLETION_COT",
+    "GRAPH_COMPLETION_CONTEXT_EXTENSION",
+    "GRAPH_COMPLETION_DECOMPOSITION",
+    "FEELING_LUCKY",
     "TEMPORAL",
 )
+# The types that cannot run here, each with the measured reason (docs/prior_art.md has the rows).
 REFUSED_TYPES = {
-    "CYPHER": "it runs a Cypher query on a Cognee graph file, which this service does not keep",
-    "NATURAL_LANGUAGE": "it turns the question into Cypher for a Cognee graph file, which this service does not keep",
-    "CODE": "it searches a code graph; no code is stored here",
-    "CODING_RULES": "it searches coding rules; none are stored here",
-    "SKILLS": "it searches Cognee skills; none are stored here",
-    "FEELING_LUCKY": "it picks another search type by asking the model; name the type you want",
+    "CYPHER": "Cognee's DuckDB graph adapter raises 'Cypher queries not supported in DuckDB' "
+    "(cognee_community_hybrid_adapter_duckdb/duckdb_adapter.py, query), and no Cypher engine "
+    "(Kuzu, Ladybug) is installed in the project's environment",
+    "NATURAL_LANGUAGE": "it turns the question into Cypher for a Cypher engine, and none runs here "
+    "(see CYPHER)",
+    "CODE": "it searches a code graph built by Cognee's code pipeline; no code is stored here",
+    "CODING_RULES": "it searches coding rules built by Cognee's rules pipeline; none are stored here",
+    "SKILLS": "it searches Cognee skills built by Cognee's skills pipeline; none are stored here",
+    "GRAPH_REPORT": "it reads graph reports that only Cognee's cognify pipeline writes; "
+    "this service runs no cognify",
+    "BROAD": "it reads the global context buckets that only Cognee's cognify pipeline writes; "
+    "this service runs no cognify",
+    "AGENTIC_COMPLETION": "it runs a tool-using agent over a Cognee dataset and user, which this "
+    "service does not keep",
 }
+MODEL_REPORT_KEYS = ("requested_model", "achieved_model", "placement", "seconds", "opinion")
 
 
 @cache
@@ -138,6 +159,8 @@ class CogneeSearch:
             return await self._lexical(principal, query, limit, filters)
         if search_type == "TEMPORAL":
             return await self._temporal(principal, query, limit, filters)
+        if search_type == "FEELING_LUCKY":
+            return await self._lucky(principal, query, limit, filters, opinion)
         answers = await self.retrieval.retrieve(principal, query, limit, filters)
         if search_type == "CHUNKS":
             return {
@@ -148,13 +171,192 @@ class CogneeSearch:
         if search_type == "SUMMARIES":
             summaries = self._items(answers["temporal"], "summary_id")
             return {"search_type": search_type, "summaries": summaries[:limit]}
+        chunks = self._items(answers["relational"], "chunk_id")[:limit]
+        facts = self._items(answers["temporal"], None)[:limit]
         if search_type == "RAG_COMPLETION":
-            chunks = self._items(answers["relational"], "chunk_id")[:limit]
             context = "\n".join(item["text"] for item in chunks)
             return await self._complete(search_type, "chunks", query, context, chunks, opinion)
-        facts = self._items(answers["temporal"], None)[:limit]
+        if search_type == "HYBRID_COMPLETION":
+            context = (
+                "PASSAGES:\n"
+                + "\n".join(f"- {item['text']}" for item in chunks)
+                + "\nFACTS, EPISODES AND SUMMARIES:\n"
+                + "\n".join(self._graph_line(item) for item in facts)
+            )
+            return await self._complete(
+                search_type, "hybrid", query, context, chunks + facts, opinion
+            )
         context = "\n".join(self._graph_line(item) for item in facts)
-        return await self._complete(search_type, "graph", query, context, facts, opinion)
+        if search_type in ("GRAPH_COMPLETION", "TRIPLET_COMPLETION"):
+            reply = await self._complete(search_type, "graph", query, context, facts, opinion)
+            if search_type == "TRIPLET_COMPLETION":
+                reply["ran_as"] = "GRAPH_COMPLETION (Cognee's own deprecation mapping)"
+            return reply
+        if search_type == "GRAPH_SUMMARY_COMPLETION":
+            summary = await self.parts_run("summarize", {"text": context}, opinion)
+            reply = await self._complete(
+                search_type, "graph", query, summary["summary"], facts, opinion
+            )
+            reply["summary_of_context"] = summary["summary"]
+            return reply
+        if search_type == "GRAPH_COMPLETION_DECOMPOSITION":
+            return await self._decomposed(principal, query, limit, filters, opinion)
+        return await self._reasoned(principal, search_type, query, limit, filters, opinion, facts)
+
+    async def parts_run(
+        self, step: str, args: dict[str, Any], opinion: str | None
+    ) -> dict[str, Any]:
+        """Run one Cognee model step through the router; raises ValueError when no model is configured."""
+        if self.parts is None:
+            raise ValueError("no language model is configured on this service")
+        return await self.parts.run("cognee", step, args, opinion)
+
+    async def _more_facts(
+        self,
+        principal: AuthenticatedPrincipal,
+        question: str,
+        limit: int,
+        filters: RetrievalFilters | None,
+        known: dict[str, dict[str, Any]],
+    ) -> int:
+        """Search again for a new question and add the facts, episodes and summaries not yet known.
+
+        known maps item id to item and grows by what is new; the return value is how many were added.
+        """
+        answers = await self.retrieval.retrieve(principal, question, limit, filters)
+        added = 0
+        for item in self._items(answers["temporal"], None):
+            if item["item_id"] not in known:
+                known[item["item_id"]] = item
+                added += 1
+        return added
+
+    async def _reasoned(
+        self,
+        principal: AuthenticatedPrincipal,
+        search_type: str,
+        query: str,
+        limit: int,
+        filters: RetrievalFilters | None,
+        opinion: str | None,
+        facts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Run Cognee's chain-of-thought or context-extension search type with memory as its graph.
+
+        The number of rounds is Cognee's own default for that type (read from its code by the defaults
+        step). Context extension answers, searches again with the answer as the question and stops when
+        nothing new comes or the rounds are used; chain of thought has the model say what is missing
+        from the answer, ask one follow-up question about it, search for that and answer again. The
+        prompts are Cognee's own files. It returns the final answer, every round and the context used.
+        """
+        defaults = await self.parts_run("defaults", {}, None)
+        known = {item["item_id"]: item for item in facts}
+        rounds: list[dict[str, Any]] = []
+        extending = search_type == "GRAPH_COMPLETION_CONTEXT_EXTENSION"
+        total = defaults["context_extension_rounds" if extending else "cot_rounds"]
+        answer = None
+        for number in range(1, total + 1):
+            context = "\n".join(self._graph_line(item) for item in known.values())
+            written = await self._complete(search_type, "graph", query, context, [], opinion)
+            answer = written.get("answer")
+            if answer is None:
+                break
+            if extending:
+                question = answer
+                step: dict[str, Any] = {"round": number, "answer": answer}
+            else:
+                reasoning = await self.parts_run(
+                    "prompted",
+                    {
+                        "system_prompt_file": "cot_validation_system_prompt.txt",
+                        "user_prompt_file": "cot_validation_user_prompt.txt",
+                        "variables": {"query": query, "answer": answer, "context": context},
+                    },
+                    opinion,
+                )
+                followup = await self.parts_run(
+                    "prompted",
+                    {
+                        "system_prompt_file": "cot_followup_system_prompt.txt",
+                        "user_prompt_file": "cot_followup_user_prompt.txt",
+                        "variables": {
+                            "query": query,
+                            "answer": answer,
+                            "reasoning": reasoning["reply"],
+                        },
+                    },
+                    opinion,
+                )
+                question = followup["reply"]
+                step = {
+                    "round": number,
+                    "answer": answer,
+                    "missing": reasoning["reply"],
+                    "follow_up_question": question,
+                }
+            step["new_items"] = await self._more_facts(principal, question, limit, filters, known)
+            rounds.append(step)
+            if extending and step["new_items"] == 0:
+                break
+        context = "\n".join(self._graph_line(item) for item in known.values())
+        final = await self._complete(
+            search_type, "graph", query, context, list(known.values()), opinion
+        )
+        final["rounds"] = rounds
+        final["rounds_allowed"] = total
+        return final
+
+    async def _decomposed(
+        self,
+        principal: AuthenticatedPrincipal,
+        query: str,
+        limit: int,
+        filters: RetrievalFilters | None,
+        opinion: str | None,
+    ) -> dict[str, Any]:
+        """Split the question into sub-questions with Cognee's decomposition, gather facts for each, answer once.
+
+        This is Cognee's combined-context mode: the facts found for every sub-question are put together
+        and one answer is written from them. The sub-questions and what each found are returned.
+        """
+        parts = await self.parts_run("decompose", {"question": query}, None)
+        known: dict[str, dict[str, Any]] = {}
+        found: list[dict[str, Any]] = []
+        for sub in parts["subqueries"]:
+            found.append(
+                {
+                    "sub_question": sub,
+                    "new_items": await self._more_facts(principal, sub, limit, filters, known),
+                }
+            )
+        context = "\n".join(self._graph_line(item) for item in known.values())
+        final = await self._complete(
+            "GRAPH_COMPLETION_DECOMPOSITION", "graph", query, context, list(known.values()), opinion
+        )
+        final["sub_questions"] = found
+        final["fell_back"] = parts["fell_back"]
+        return final
+
+    async def _lucky(
+        self,
+        principal: AuthenticatedPrincipal,
+        query: str,
+        limit: int,
+        filters: RetrievalFilters | None,
+        opinion: str | None,
+    ) -> dict[str, Any]:
+        """Let Cognee's own selector pick the search type, then run that one if it can run here.
+
+        Raises ValueError, naming the picked type and why, when the pick is one this service refuses;
+        never answers with a different type than the one picked.
+        """
+        picked = (await self.parts_run("select_search_type", {"question": query}, None))[
+            "search_type"
+        ]
+        if picked == "FEELING_LUCKY":
+            raise ValueError("the selector picked FEELING_LUCKY itself; name a search type")
+        reply = await self.run(principal, picked, query, limit, filters, opinion)
+        return {"search_type": "FEELING_LUCKY", "picked": picked, "result": reply}
 
     @staticmethod
     def _items(answer: dict[str, Any], key: str | None) -> list[dict[str, Any]]:
@@ -203,10 +405,7 @@ class CogneeSearch:
             "search_type": search_type,
             "answer": written["answer"],
             "context": used,
-            "model": {
-                key: written[key]
-                for key in ("requested_model", "achieved_model", "placement", "seconds", "opinion")
-            },
+            "model": {key: written[key] for key in MODEL_REPORT_KEYS},
         }
 
     async def _lexical(

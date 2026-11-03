@@ -258,12 +258,41 @@ def _step_opinions(table: dict[str, Any], where: str) -> None:
                 )
 
 
+def _step_models(table: dict[str, Any], where: str) -> None:
+    """Check language_model.step_models: part, then step, then a table with model and optionally think.
+
+    A step named here runs on the model the setting names, whatever the main and second-opinion
+    models are; "think" false means every request to that model carries thinking switched off.
+    It checks the shape only (whether a part and step exist is checked when the router is built),
+    and a step may not be named both here and in step_opinions.
+    """
+    steps = table["step_models"]
+    if not isinstance(steps, dict):
+        raise ConfigurationError(f"{where}.step_models must be a table of parts")
+    for part, by_step in steps.items():
+        if not isinstance(by_step, dict) or not by_step:
+            raise ConfigurationError(f"{where}.step_models.{part} must be a table of steps")
+        for step, entry in by_step.items():
+            here = f"{where}.step_models.{part}.{step}"
+            if not isinstance(entry, dict) or "model" not in entry:
+                raise ConfigurationError(f"{here} must be a table with a model")
+            unknown = sorted(set(entry) - {"model", "think"})
+            if unknown:
+                raise ConfigurationError(f"{here} holds {', '.join(unknown)}; only model and think")
+            _text(entry, here, "model")
+            if "think" in entry and not isinstance(entry["think"], bool):
+                raise ConfigurationError(f"{here}.think must be true or false")
+            if step in table.get("step_opinions", {}).get(part, {}):
+                raise ConfigurationError(f"{here} is also set in {where}.step_opinions; set one")
+
+
 def _language_model(table: Any) -> dict[str, Any]:
     """Read the language_model table: which model, where it answers, and its options.
 
     Every key is required and none has a default, except second_opinion_model, which is
     optional and, when present, names the model a caller may ask for instead of the main
-    one. The provider must be ollama (the local server this round uses); the model name,
+    one. think is also optional: false means every request to the main and the second-opinion
+    model carries thinking switched off. The provider must be ollama (the local server this round uses); the model name,
     the address it answers on, the key the client sends (a local server ignores it), the
     time limit of one request and the options object are all settings, so changing models
     changes settings only.
@@ -274,11 +303,15 @@ def _language_model(table: Any) -> dict[str, Any]:
             table,
             where,
             ("provider", "model", "base_url", "api_key", "request_timeout_seconds", "options"),
-            ("second_opinion_model", "step_opinions"),
+            ("second_opinion_model", "step_opinions", "step_models", "think"),
         )
     )
+    if "think" in table and not isinstance(table["think"], bool):
+        raise ConfigurationError(f"{where}.think must be true or false")
     if "step_opinions" in table:
         _step_opinions(table, where)
+    if "step_models" in table:
+        _step_models(table, where)
     if _text(table, where, "provider") != "ollama":
         raise ConfigurationError(f"{where}.provider must be ollama")
     for key in ("model", "base_url", "api_key"):

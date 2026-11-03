@@ -8,6 +8,7 @@ and no classifier calls.
 """
 
 import asyncio
+import inspect
 import json
 import os
 from collections import Counter
@@ -26,7 +27,7 @@ from cognee.infrastructure.llm.extraction.knowledge_graph.extract_event_graph im
     extract_event_graph,
 )
 from cognee.infrastructure.llm.LLMGateway import LLMGateway
-from cognee.infrastructure.llm.prompts import render_prompt
+from cognee.infrastructure.llm.prompts import read_query_prompt, render_prompt
 from cognee.modules.chunking.chunk_id import chunk_content_hash, content_chunk_id
 from cognee.modules.chunking.models import DocumentChunk
 from cognee.modules.data.processing.document_types import TextDocument
@@ -34,8 +35,17 @@ from cognee.modules.engine.models.Event import Event
 from cognee.modules.engine.utils.generate_event_datapoint import generate_event_datapoint
 from cognee.modules.engine.utils.timestamp_from_text import timestamp_from_text
 from cognee.modules.graph.utils.get_graph_from_model import get_graph_from_model
+from cognee.modules.retrieval.graph_completion_context_extension_retriever import (
+    GraphCompletionContextExtensionRetriever,
+)
+from cognee.modules.retrieval.graph_completion_cot_retriever import GraphCompletionCotRetriever
 from cognee.modules.retrieval.temporal_hybrid.matching import extract_query_interval, to_epoch_ms
-from cognee.modules.retrieval.utils.completion import generate_completion
+from cognee.modules.retrieval.utils.completion import generate_completion, summarize_text
+from cognee.modules.retrieval.utils.query_decomposition import (
+    QueryDecomposition,
+    normalize_subqueries,
+)
+from cognee.modules.search.operations.select_search_type import select_search_type
 from cognee.shared.data_models import KnowledgeGraph
 from cognee.tasks.memify.consolidate_entity_descriptions.constants import prompt_name
 from cognee.tasks.memify.consolidate_entity_descriptions.read_neighborhood import (
@@ -56,14 +66,22 @@ from cognee.tasks.temporal_graph.extract_knowledge_graph_from_events import (
 from cognee.tasks.temporal_graph.models import Event as FoundEvent
 from cognee.tasks.temporal_graph.models import EventList
 
+from service.memory_model_parts import thinking_off_models, without_thinking
+
 COMPLETION_STYLES: dict[str, str] = {
     "chunks": "context_for_question.txt",
     "graph": "graph_context_for_question.txt",
+    "hybrid": "hybrid_context_for_question.txt",
 }
 COMPLETION_SYSTEM_PROMPT = "answer_simple_question.txt"
 
 STEP_NAMES: dict[str, tuple[str, ...]] = {
     "complete": ("question", "context", "style"),
+    "prompted": ("system_prompt_file", "user_prompt_file", "variables"),
+    "summarize": ("text",),
+    "decompose": ("question",),
+    "select_search_type": ("question",),
+    "defaults": (),
     "extract_graph": ("text",),
     "extract_events": ("text",),
     "store_events": ("text",),
@@ -129,6 +147,8 @@ def cognee_llm_fields(language_model: dict[str, Any]) -> dict[str, Any]:
     for key in ("temperature", "top_p", "reasoning_effort"):
         if key in options:
             arguments[key] = options[key]
+    if language_model["model"] in thinking_off_models(language_model):
+        arguments = without_thinking(arguments)
     fields: dict[str, Any] = {
         "llm_provider": "openai",
         "llm_model": f"openai/{language_model['model']}",
@@ -407,6 +427,64 @@ class CogneeModel:
             system_prompt_path=COMPLETION_SYSTEM_PROMPT,
         )
         return {"answer": answer, "style": style}
+
+    async def step_prompted(
+        self, system_prompt_file: str, user_prompt_file: str, variables: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Ask the model with one of Cognee's own prompt files for the system words and one for the user's.
+
+        It takes the name of a system prompt file, the name of a user prompt file in Cognee's prompt
+        folder, and the values that template names. It renders the template with Cognee's renderer and
+        gives back the model's text reply. It reads no file outside Cognee's prompt folder and stores
+        nothing.
+        """
+        reply = await LLMGateway.acreate_structured_output(
+            text_input=render_prompt(user_prompt_file, variables),
+            system_prompt=read_query_prompt(system_prompt_file),
+            response_model=str,
+        )
+        return {"reply": reply}
+
+    async def step_summarize(self, text: str) -> dict[str, Any]:
+        """Summarise facts without repeating them, with Cognee's own summariser and its prompt."""
+        return {"summary": await summarize_text(text, "summarize_search_results.txt")}
+
+    async def step_decompose(self, question: str) -> dict[str, Any]:
+        """Split a question into the few focused sub-questions Cognee's decomposition prompt asks for.
+
+        The sub-questions are cleaned and bounded by Cognee's own normalize_subqueries; a failed
+        model call falls back, as Cognee's retriever does, to the question itself, and says so.
+        """
+        try:
+            decomposition = await LLMGateway.acreate_structured_output(
+                text_input=question,
+                system_prompt=read_query_prompt("graph_completion_decomposition_system_prompt.txt"),
+                response_model=QueryDecomposition,
+            )
+        except (ValueError, RuntimeError) as error:
+            return {"subqueries": [question], "fell_back": f"{type(error).__name__}: {error}"}
+        return {
+            "subqueries": normalize_subqueries(
+                question, getattr(decomposition, "subqueries", None)
+            ),
+            "fell_back": None,
+        }
+
+    async def step_select_search_type(self, question: str) -> dict[str, Any]:
+        """Have Cognee's own selector name the best search type for a question (FEELING_LUCKY)."""
+        return {"search_type": (await select_search_type(question)).value}
+
+    async def step_defaults(self) -> dict[str, Any]:
+        """Give Cognee's own default number of rounds for its reasoning search types.
+
+        Read from the signatures of Cognee's chain-of-thought and context-extension retrievers, so the
+        number is Cognee's declared default and is written nowhere here.
+        """
+        cot = inspect.signature(GraphCompletionCotRetriever.__init__).parameters["max_iter"]
+        extension = inspect.signature(GraphCompletionContextExtensionRetriever.__init__).parameters[
+            "context_extension_rounds"
+        ]
+        return {"cot_rounds": cot.default, "context_extension_rounds": extension.default}
 
     async def step_query_window(self, question: str) -> dict[str, Any]:
         """Turn a question into the time window Cognee's temporal search would use.

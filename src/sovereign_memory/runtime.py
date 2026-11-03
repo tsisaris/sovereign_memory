@@ -66,8 +66,7 @@ def _built_kinds(config: RuntimeConfig) -> dict[str, list[Any]]:
     """Build the kinds of memory the settings name, grouped by tier.
 
     Goes in: the validated configuration. Comes out: tier to its built kinds; empty when the settings
-    name none. Raises ConfigurationError naming the kind when its class cannot be built or when it
-    names a tier that does not carry kinds yet (only the episodic and temporal tiers do). It imports
+    name none. Raises ConfigurationError naming the kind when its class cannot be built. It imports
     only the modules the settings name.
     """
     if not config.kinds:
@@ -78,12 +77,6 @@ def _built_kinds(config: RuntimeConfig) -> dict[str, list[Any]]:
         built = load_kinds(config.kinds)
     except ValueError as error:
         raise ConfigurationError(str(error)) from error
-    unsupported = sorted(set(built) - {"episodic", "temporal"})
-    if unsupported:
-        raise ConfigurationError(
-            f"kinds for the {', '.join(unsupported)} tier cannot be added: only the episodic and "
-            "temporal tiers carry kinds"
-        )
     return built
 
 
@@ -119,7 +112,11 @@ def build_tiers(config: RuntimeConfig, only_tier: str | None = None) -> list[Any
             """Build the relational tier: one Cognee chunk per supplied piece, no model of its own."""
             from service.memory_cognee_chunks import CogneeChunkTier
 
-            return CogneeChunkTier(database_name, embedding_model=embedding_model)
+            return CogneeChunkTier(
+                database_name,
+                embedding_model=embedding_model,
+                kinds=tuple(kinds.get("relational", ())),
+            )
 
         tiers.append(_built("relational", relational))
     if config.personalization is not None and only_tier in (None, "personalization"):
@@ -129,7 +126,11 @@ def build_tiers(config: RuntimeConfig, only_tier: str | None = None) -> list[Any
         tiers.append(
             _built(
                 "personalization",
-                lambda: Mem0Tier(memory, terminal_error=TerminalProcessingError),
+                lambda: Mem0Tier(
+                    memory,
+                    terminal_error=TerminalProcessingError,
+                    kinds=tuple(kinds.get("personalization", ())),
+                ),
             )
         )
     if only_tier is not None and not tiers:
