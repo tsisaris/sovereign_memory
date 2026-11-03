@@ -247,7 +247,14 @@ def model_state(
         "WHERE p.source = ?",
         [source],
     ).fetchone()
-    (stale_rows,) = handle.execute(f"SELECT count(*) FROM {table} WHERE stale").fetchone()
+    # A stale row of a retired piece or a removed event is never replaced and never ranks, so only
+    # the stale rows of live pieces make a model stale.
+    (stale_rows,) = handle.execute(
+        f"SELECT count(*) FROM {table} n JOIN memory_pieces p ON p.piece_id = n.piece_id "
+        "LEFT JOIN memory_removals r ON r.target_event_id = p.event_id "
+        "LEFT JOIN memory_piece_retirements x ON x.piece_id = p.piece_id "
+        "WHERE n.stale AND r.target_event_id IS NULL AND x.piece_id IS NULL"
+    ).fetchone()
     (missing,) = handle.execute(
         f"SELECT count(*) FROM memory_pieces p LEFT JOIN memory_removals r "
         f"ON r.target_event_id = p.event_id "

@@ -62,6 +62,31 @@ def _built(tier: str, make: Callable[[], Any]) -> Any:
         raise ConfigurationError(f"tiers.{tier} cannot be built: {error}") from error
 
 
+def _built_kinds(config: RuntimeConfig) -> dict[str, list[Any]]:
+    """Build the kinds of memory the settings name, grouped by tier.
+
+    Goes in: the validated configuration. Comes out: tier to its built kinds; empty when the settings
+    name none. Raises ConfigurationError naming the kind when its class cannot be built or when it
+    names a tier that does not carry kinds yet (only the episodic and temporal tiers do). It imports
+    only the modules the settings name.
+    """
+    if not config.kinds:
+        return {}
+    from service.memory_kinds import load_kinds
+
+    try:
+        built = load_kinds(config.kinds)
+    except ValueError as error:
+        raise ConfigurationError(str(error)) from error
+    unsupported = sorted(set(built) - {"episodic", "temporal"})
+    if unsupported:
+        raise ConfigurationError(
+            f"kinds for the {', '.join(unsupported)} tier cannot be added: only the episodic and "
+            "temporal tiers carry kinds"
+        )
+    return built
+
+
 def build_tiers(config: RuntimeConfig, only_tier: str | None = None) -> list[Any]:
     """Build one engine object per configured tier; each is both processor and retriever.
 
@@ -73,16 +98,19 @@ def build_tiers(config: RuntimeConfig, only_tier: str | None = None) -> list[Any
     """
     if only_tier is not None and only_tier not in TIER_KEYS:
         raise ConfigurationError(f"Unknown tier {only_tier!r}")
+    kinds = _built_kinds(config)
     tiers: list[Any] = []
     if config.episodic_organization is not None and only_tier in (None, "episodic"):
         from service.memory_letta_recall import LettaRecallTier
 
         organization = config.episodic_organization
-        tiers.append(_built("episodic", lambda: LettaRecallTier(organization)))
+        episodic_kinds = tuple(kinds.get("episodic", ()))
+        tiers.append(_built("episodic", lambda: LettaRecallTier(organization, episodic_kinds)))
     if config.temporal_enabled and only_tier in (None, "temporal"):
         from service.memory_graphiti_episodes import GraphitiEpisodeTier
 
-        tiers.append(_built("temporal", GraphitiEpisodeTier))
+        temporal_kinds = tuple(kinds.get("temporal", ()))
+        tiers.append(_built("temporal", lambda: GraphitiEpisodeTier(temporal_kinds)))
     if config.relational_database_name is not None and only_tier in (None, "relational"):
         database_name = config.relational_database_name
         embedding_model = config.relational_embedding_model
@@ -204,6 +232,9 @@ def build_service(config: RuntimeConfig, only_tier: str | None = None) -> OwnerS
             models=config.models,
             supplier=supplier,
             model_parts_factory=model_parts_factory(config, tiers),
+            settings_changer=lambda assignments, descriptions, unsets, who: change_settings(
+                config.database_path, assignments, descriptions, unsets, who
+            ),
         )
     except ValueError as error:
         raise ConfigurationError(f"ranking: {error}") from error

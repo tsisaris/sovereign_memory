@@ -5,6 +5,7 @@ must implement to participate in the unified Owner Service transaction lifecycle
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, TypeVar
 
 import duckdb
@@ -54,18 +55,48 @@ class Visibility:
 
 
 @dataclass(frozen=True)
+class RetrievalFilters:
+    """What the caller asked to narrow a search to: a time window and tags.
+
+    since and until are aware UTC moments: a hit's time must be at or after since and before until
+    (either may be missing). tags are words a hit must carry, any of them or all of them as tag_match
+    says. A hit that carries no tags never matches a tag filter. period names the calendar period a
+    phrase such as "last week" resolved to, or None when the caller gave moments. It narrows only
+    and never decides who may see a hit.
+    """
+
+    since: datetime | None = None
+    until: datetime | None = None
+    tags: tuple[str, ...] = ()
+    tag_match: str = "any"
+    period: str | None = None
+
+    def describe(self) -> dict[str, Any]:
+        """Return the filter as plain data for a reply: the window as text, the tags and how they match."""
+        return {
+            "since": None if self.since is None else self.since.isoformat(),
+            "until": None if self.until is None else self.until.isoformat(),
+            "tags": list(self.tags),
+            "tag_match": self.tag_match,
+            "period": self.period,
+        }
+
+
+@dataclass(frozen=True)
 class RetrievalScope:
     """The authenticated identity and visibility a retrieval is allowed to use.
 
     agent_id is the transport-authenticated principal (provenance); scope is the
     authenticator's scope label; visibility is what the policy resolved from
     them. Engines must restrict every read, cache and traversal to events the
-    visibility permits. It never carries anything the caller merely claimed.
+    visibility permits. filters is what the caller asked to narrow the search to, or
+    None. It never carries anything the caller merely claimed about who may see what.
     """
 
     agent_id: str
     scope: str
     visibility: Visibility
+    filters: RetrievalFilters | None = None
 
 
 class VisibilityPolicy(Protocol):

@@ -658,10 +658,44 @@ class NumbersStore:
         """Return the numbers still owed by the supplier."""
         return await self.run_in_transaction(pending_requests)
 
-    async def sync(self, supplier: NumbersSupplier) -> dict[str, Any]:
+    async def rebuild_model(
+        self, supplier: NumbersSupplier, model_id: str, revision: str, reason: str
+    ) -> dict[str, Any]:
+        """Throw away one model's numbers as current and bring them back from the supplier, that model only.
+
+        Goes in: the supplier and the model's id, revision and the reason. It marks every row of that
+        model's numbers table stale (the rows stay until replaced), then runs the ordinary pull for
+        that one model: the saved numbers of every event and the single-text numbers of every
+        derived text. Comes out: how many rows were marked stale, what the pull received and what
+        is still owed, and the model's rows that are still stale afterwards. No other model's table,
+        no piece and no original is read for writing. Raises ValueError for a model that is not
+        registered or a missing reason.
+        """
+        if not reason:
+            raise ValueError("A rebuild needs its reason")
+        marked = await self.mark_stale(model_id, revision, f"rebuild requested: {reason}")
+        report = await self.sync(supplier, only=(model_id, revision))
+        label = model_label(model_id, revision)
+
+        def left(handle):
+            """Count this model's stale rows of live pieces (rows of retired pieces never rank)."""
+            model = get_model(handle, model_id, revision)
+            return model_state(handle, model).stale_rows
+
+        return {
+            "model": label,
+            "marked_stale": marked,
+            "pull": report[label],
+            "still_stale": await self.run_in_transaction(left),
+        }
+
+    async def sync(
+        self, supplier: NumbersSupplier, only: tuple[str, str] | None = None
+    ) -> dict[str, Any]:
         """Compare every model's label with the supplier's, then pull what it can hand over.
 
-        For each registered model: ask the supplier for its current row. If the
+        For each registered model (or only the one named by only, as model id and revision): ask
+        the supplier for its current row. If the
         supplier cannot answer, record the check as unverified and the pending
         work, and pull nothing. If the label no longer matches, mark that
         model's rows stale, record the mismatch, ask for recomputation and keep
@@ -673,6 +707,8 @@ class NumbersStore:
         now = _now()
         await self.run_in_transaction(lambda handle: withdraw_removed_requests(handle, now))
         for model in await self.models():
+            if only is not None and (model.model_id, model.revision) != only:
+                continue
             summary: dict[str, Any] = {"received_events": 0, "pending": None}
             report[model.label] = summary
             try:

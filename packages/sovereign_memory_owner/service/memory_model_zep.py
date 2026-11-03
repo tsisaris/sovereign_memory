@@ -6,8 +6,10 @@ the validated language_model settings, a way to reach the database and the zep s
 answers the steps "set_instructions", "thread_summary", "get_summary" and "user_summary". The
 thread summary is translated from Zep's own message summariser (graphiti_duckdb.zep_summarizer)
 and the user summary from Graphiti's entity-summary prompt plus Zep's user summary instructions.
-It never makes numbers (Zep's summary embedding waits on them) and never holds a database
-connection across a model call.
+When a summary step is given the id of the stored event the conversation came from, the supplier's
+numbers for the summary are owed from every registered model (Zep's summary embedding), and a search
+finds the summary by meaning (memory_kind_zep_summaries.py). It never makes numbers and never holds a
+database connection across a model call.
 """
 
 import math
@@ -166,9 +168,41 @@ class ZepModel:
             return await self._set_instructions(project, args)
         if step == "get_summary":
             return await self._get_summary(project, self._text(args, "session_id"))
+        event_id = args.get("event_id")
+        if event_id is not None and (not isinstance(event_id, str) or not event_id):
+            raise ValueError("event_id must be the id of a stored event")
         if step == "thread_summary":
-            return await self._thread_summary(project, self._text(args, "session_id"), model)
-        return await self._user_summary(project, self._text(args, "user_id"), model)
+            result = await self._thread_summary(project, self._text(args, "session_id"), model)
+        else:
+            result = await self._user_summary(project, self._text(args, "user_id"), model)
+        if result.get("summary") and result.get("outcome") == "summarised":
+            result["summary_numbers"] = await self._owe_summary_numbers(event_id, result["summary"])
+        return result
+
+    async def _owe_summary_numbers(self, event_id: str | None, summary: str) -> dict[str, Any]:
+        """Record that the supplier owes numbers for a summary, once per registered embedding model.
+
+        Goes in: the event the conversation came from (or None) and the summary's words. Comes out: how
+        many requests were made and for how many models, or the reason none were. The next numbers
+        sync fetches the summary whole from the supplier's door and stores it as a derived piece of
+        that event, which is what lets a search find the summary by meaning (Zep's summary embedding).
+        A summary made without an event has nothing to hang numbers on and is found by no search. It
+        makes no number and changes no summary.
+        """
+        numbers = self.database.numbers
+        if numbers is None:
+            return {"requests": 0, "reason": "the service has no numbers services"}
+        if event_id is None:
+            return {
+                "requests": 0,
+                "reason": "no event_id was given: name the stored event the conversation came from",
+            }
+        models = await numbers.store.models("embedding")
+        for model in models:
+            await numbers.request(
+                model.model_id, model.revision, event_id, summary, "numbers for a Zep summary"
+            )
+        return {"requests": len(models), "models": len(models), "event_id": event_id}
 
     @staticmethod
     def _text(args: Mapping[str, Any], key: str) -> str:

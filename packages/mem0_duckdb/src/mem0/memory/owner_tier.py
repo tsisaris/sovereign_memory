@@ -712,6 +712,8 @@ class Mem0Tier:
                         "actor_agent_id": payload.get("actor_agent_id"),
                         "memory": payload.get("data"),
                         "distance": distance,
+                        "created_at": payload.get("created_at"),
+                        "updated_at": payload.get("updated_at"),
                         "source_artifact_id": payload.get("source_artifact_id"),
                         "source_revision": payload.get("source_revision"),
                     }
