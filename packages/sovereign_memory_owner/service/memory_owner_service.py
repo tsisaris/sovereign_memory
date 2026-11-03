@@ -1260,11 +1260,14 @@ class OwnerService:
         write the record is raised, never hidden, so no step looks recorded when it is not.
         """
         asked = None if self.model_parts is None else self.model_parts.language_model
-        requested = (
-            None
-            if asked is None
-            else asked.get("model" if opinion == "main" else "second_opinion_model")
-        )
+        if opinion == "step_model":
+            requested = self.model_parts.model_of(part, step, opinion)
+        else:
+            requested = (
+                None
+                if asked is None
+                else asked.get("model" if opinion == "main" else "second_opinion_model")
+            )
         achieved = None if output is None else output.get("achieved_model")
         seconds = None if output is None else output.get("seconds")
         recorded_at = datetime.now(timezone.utc).isoformat()

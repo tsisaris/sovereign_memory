@@ -66,6 +66,8 @@ from cognee.tasks.temporal_graph.extract_knowledge_graph_from_events import (
 from cognee.tasks.temporal_graph.models import Event as FoundEvent
 from cognee.tasks.temporal_graph.models import EventList
 
+from service.memory_model_parts import thinking_off_models, without_thinking
+
 COMPLETION_STYLES: dict[str, str] = {
     "chunks": "context_for_question.txt",
     "graph": "graph_context_for_question.txt",
@@ -145,6 +147,8 @@ def cognee_llm_fields(language_model: dict[str, Any]) -> dict[str, Any]:
     for key in ("temperature", "top_p", "reasoning_effort"):
         if key in options:
             arguments[key] = options[key]
+    if language_model["model"] in thinking_off_models(language_model):
+        arguments = without_thinking(arguments)
     fields: dict[str, Any] = {
         "llm_provider": "openai",
         "llm_model": f"openai/{language_model['model']}",
