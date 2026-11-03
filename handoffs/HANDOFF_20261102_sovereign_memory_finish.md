@@ -1,0 +1,32 @@
+# HANDOFF 2026-11-02 — sovereign_memory: the "Not built" list built, kinds as settings, the record DSPy will learn from
+
+Shawn's words that govern it: "I thought with the memory system that we created that works with DuckDB. We can start using it. It was never finished." (2026-11-01 14:32:32) and "I need to know that the memory system is absolutely as complete or more than what it would have had using Leta and Zepp and maybe whatever others." (2026-10-16 15:56:35).
+
+## What was built (each proved by real requests through the one doorway on a scratch copy of the live database; the saved output is in `~/portable/projects/architect/reports/memory_done_proof_20261102/`)
+
+- **Narrowing every search** (`memory_time_window.py`): `retrieve`, `retrieve_batch`, `context` and `search` take `since`, `until`, `when` (a phrase such as "last week" or "3 days ago", read by dateparser into the whole calendar period), `reference_date`, `tags` and `tag_match` ("any" or "all"). This is Mem0's time search, Letta's archival date and tag filter and Cognee's time window in one reader. A hit's time is its fact's `valid_at`, otherwise the time of the event it came from.
+- **Letta archival memory** (`memory_kind_archival.py`): an event of type `archival_memory` with payload `{"archival_memory": {"text": "...", "tags": [...]}}` is stored as an archival passage in the actor's own archive through Letta's own store; the supplier's numbers for the text are owed from every registered model; search ranks passages one ranking per model beside the recall messages.
+- **Graphiti node matching and `add_triplet`** (`memory_model_graphiti.py`): model step `add_triplet` runs Graphiti's own `add_triplet` unchanged. Graphiti's embedder slot is now answered by the supplier's door for the one model the settings `graphiti.embedding_model` name; a new entity is matched to stored ones by cosine similarity of name numbers (at least `graphiti.node_match_minimum_similarity`) and by shared words, then the model decides. Stored entities and facts that had no embedding are given theirs (reported as `embedded_stored_before`).
+- **Validity for episodes** (`memory_graphiti_episodes.py`): each episode hit carries `validity`: `current`, `partly_ended` or `no_facts`; an episode all of whose extracted facts have ended is held back in `not_current` with its own `invalid_at`.
+- **Zep summary embedding** (`memory_model_zep.py`, `memory_kind_zep_summaries.py`): the `thread_summary` and `user_summary` steps take an optional `event_id` and owe the supplier's numbers for the summary; searches find summaries by meaning (hit key `summary_id`).
+- **Cognee's other search types** (`memory_cognee_search.py`, model step `cognee.complete`): operation `search` with `search_type` CHUNKS, CHUNKS_LEXICAL (Cognee's own BM25 scorer), SUMMARIES, RAG_COMPLETION and GRAPH_COMPLETION (the model writes the answer with Cognee's own completion prompts from the memory the asker may see), TEMPORAL (Cognee's own interval step, then a search inside it). CYPHER, NATURAL_LANGUAGE, CODE, CODING_RULES, SKILLS and FEELING_LUCKY are refused by name with the reason.
+- **Rebuild of one model** (`memory_numbers.py`): operation `rebuild_model` marks one model's numbers stale and pulls them again from the supplier; no other model is touched. A stale row of a retired piece or a removed event no longer makes a model stale (`memory_models.py`).
+- **Kinds are settings** (`memory_kinds.py`): `kinds.<name>.tier`, `.module` and `.class` name a class that adds a kind of memory to the episodic or temporal tier; the runtime imports only what the settings name. The first two kinds are `letta_archival` and `zep_summaries`. The relational and personalization tiers refuse kinds by name (not built).
+- **The record DSPy will learn from** (`memory_model_runs.py`, `docs/dspy_connection.md`): every model step run through the `model` operation, worked or failed, is appended to `memory_model_runs` and read through `ground_truth_table`.
+
+## Settings to add to a database that lacks them (the live one does until the service is restarted with them)
+
+    kinds.letta_archival.tier="episodic"  kinds.letta_archival.module="service.memory_kind_archival"  kinds.letta_archival.class="ArchivalKind"
+    kinds.zep_summaries.tier="temporal"   kinds.zep_summaries.module="service.memory_kind_zep_summaries"   kinds.zep_summaries.class="ZepSummaryKind"
+    graphiti.embedding_model.model_id / .revision   (a registered embedding model; the proof used static_retrieval_mrl_en_v1)
+    graphiti.node_match_minimum_similarity          (the proof used 0.8, a starting value to be tuned on known answers as the weights are)
+
+## Disclosures
+
+- The second-opinion model (a 4-billion-parameter one) merged "marine biology" into the stored entity "Bergen Marine Institute" in one `add_triplet` run. The merge is Graphiti's own model-decided step; the similarity threshold only offers candidates. Use the main model for facts that matter.
+- Graphiti's invalidation of an old fact is the model's decision: with the second-opinion model the "drinks coffee" fact did not end the "drinks green tea" fact in the first run (see the saved validity output for what ended).
+- `pre-commit run --all-files` run locally fails only in mypy, with 196 errors in 98 vendored Cognee and Graphiti files. The same 196 errors in 98 files appear on a clean checkout of `main` in the same shell (measured), because the editable installs put those files on mypy's path; none is in a file this work touches. The GitHub check passes.
+- The test command in `AGENTS.md` now carries the laptop form (`UV_PROJECT_ENVIRONMENT=... uv run --no-sync ...`); the shell's own setting in `~/.bashrc` was left alone, because it is the laptop's guard against uv building environments.
+- Upstream Letta, Graphiti, Zep, Mem0 and Cognee were not installed over the local copies; the rows in `docs/prior_art.md` say why.
+- Not built, and why: kinds for the relational and personalization tiers; the other Cognee search types (they need a Cognee graph file this service does not keep); a consumer of an accepted DSPy instruction (DSPy is a later item, see `docs/dspy_connection.md`).
+- The shared router's client (`~/sovereign/shared/shared_memory_router.py`, `ServiceDoor`) does not yet carry the narrowing fields or the `search` and `rebuild_model` operations; it is under `~/sovereign` and was not touched.

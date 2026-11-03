@@ -2,8 +2,11 @@
 
 One framed JSON request per connection, with "op" one of: "capture" (store an
 event and its pending receipts, then process it in the background),
-"retrieve" (scoped retrieval across the tiers), "retrieve_batch" (several questions at once, each
-model asked once for all of them), "record_known" (the known-right answer to a test question, or a
+"retrieve" (scoped retrieval across the tiers, narrowed by tags, a time window or a phrase such as
+"last week" when the request carries them), "search" (one of Cognee's search types: CHUNKS,
+CHUNKS_LEXICAL, SUMMARIES, RAG_COMPLETION, GRAPH_COMPLETION or TEMPORAL), "rebuild_model" (replace one
+registered model's numbers from the supplier, that model only), "retrieve_batch" (several questions at
+once, each model asked once for all of them), "record_known" (the known-right answer to a test question, or a
 correction), "ground_truth_table" (a ground-truth table or view, whole), "forget" (durably remove an
 event the principal produced, then remove its projections) and "status" (an
 event's durable receipts and whether every tier finished). The review screen adds
@@ -34,6 +37,7 @@ from graphiti_core.nodes import EpisodeType, EpisodicNode
 from graphiti_core.search.search_config import SearchResults
 from graphiti_core.search.search_helpers import search_results_to_context_string
 
+from service.memory_cognee_search import CogneeSearch
 from service.memory_combiners import (
     SCORES,
     ArtifactCombiner,
@@ -56,6 +60,7 @@ from service.memory_ground_truth import (
     verify_export,
 )
 from service.memory_model_parts import OPINIONS, DatabaseAccess, ModelParts
+from service.memory_model_runs import initialize_model_runs_schema, record_model_run
 from service.memory_models import list_models, model_state
 from service.memory_numbers import NumbersStore, initialize_numbers_schema, pending_requests
 from service.memory_numbers_services import NumbersServices
@@ -70,6 +75,7 @@ from service.memory_settings import (
 )
 from service.memory_supplier import NumbersSupplier, UnavailableSupplier
 from service.memory_tier_support import group_of
+from service.memory_time_window import filters_from
 
 logger = logging.getLogger(__name__)
 OPERATIONS = (
@@ -92,6 +98,8 @@ OPERATIONS = (
     "load",
     "record_claim",
     "record_get",
+    "rebuild_model",
+    "search",
 )
 GROUND_TRUTH_TABLES = (
     "memory_gt_known",
@@ -103,6 +111,7 @@ GROUND_TRUTH_TABLES = (
     "memory_gt_judgments",
     "memory_gt_ranking_items",
     "memory_gt_ranking_scores",
+    "memory_model_runs",
 )
 SETTINGS_SOURCE = "memory_runtime_settings table, [ranking]"
 SUPPLIER_ABSENT_REASON = (
@@ -260,6 +269,7 @@ class OwnerService:
         self.numbers: NumbersServices | None = None
         self._model_parts_factory = model_parts_factory
         self.model_parts: ModelParts | None = None
+        self.cognee_search: CogneeSearch | None = None
 
     async def start(self, *, process_pending: bool = True) -> None:
         """Initialize database connection and start UNIX socket server.
@@ -295,6 +305,13 @@ class OwnerService:
             self.review = ReviewScreen(self.lifetime_conn, self.retrieval.policy)
             if self._model_parts_factory is not None:
                 self.model_parts = self._model_parts_factory(_ServiceDatabase(self))
+            conn = self.lifetime_conn
+            self.cognee_search = CogneeSearch(
+                self.retrieval,
+                OwnerCore(conn),
+                lambda work: conn.run(lambda: work(conn.native)),
+                self.model_parts,
+            )
             await self.dispatcher.initialize_storage()
             # Ensure socket directory exists
             self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -349,6 +366,7 @@ class OwnerService:
             initialize_numbers_schema(handle)
             initialize_combiner_schema(handle)
             initialize_ground_truth_schema(handle)
+            initialize_model_runs_schema(handle)
             initialize_settings_schema(handle)
             if self.settings is not None:
                 record_settings(handle, self.settings, SETTINGS_SOURCE, now)
@@ -378,6 +396,22 @@ class OwnerService:
         Where the supplier cannot answer, the numbers stay recorded as pending work.
         """
         return await self.store.sync(self.supplier)
+
+    async def _rebuild_model(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Rebuild one registered model's numbers from the supplier, leaving every other model as it is.
+
+        Goes in: model_id, revision and reason (text). Comes out: the model's label, how many of its
+        rows were marked stale, what the supplier handed back and what is still owed, and how many of
+        its rows are still stale. While it runs that model is stale and left out of searches with the
+        reason; no other model, piece or original is touched. Raises ValueError for a malformed
+        request or a model that is not registered, and RuntimeError when the numbers services are absent.
+        """
+        model_id, revision, reason = (request.get(k) for k in ("model_id", "revision", "reason"))
+        if not all(isinstance(value, str) and value for value in (model_id, revision, reason)):
+            raise ValueError("rebuild_model needs model_id, revision and reason (text)")
+        report = await self.store.rebuild_model(self.supplier, model_id, revision, reason)
+        logger.info("Rebuilt %s for %s: %s", report["model"], principal.agent_id, reason)
+        return {"status": "success", **report}
 
     async def propose_combiner(self, **fields: Any):
         """Register a candidate combiner (it does not become current) and return its row."""
@@ -591,6 +625,10 @@ class OwnerService:
                     response = await self._record_claim(principal, payload)
                 elif operation == "record_get":
                     response = await self._record_get(principal, payload)
+                elif operation == "rebuild_model":
+                    response = await self._rebuild_model(principal, payload)
+                elif operation == "search":
+                    response = await self._search(principal, payload)
                 elif operation == "model_parts":
                     response = await self._model_parts_report()
                 elif operation == "model":
@@ -726,8 +764,33 @@ class OwnerService:
         query, limit = request.get("query"), request.get("limit")
         if not isinstance(query, str) or not isinstance(limit, int) or limit < 1:
             raise ValueError("Invalid retrieval request: query and limit required")
-        answers = await self.retrieval.retrieve(principal, query, limit)
+        filters = filters_from(request, datetime.now(timezone.utc))
+        answers = await self.retrieval.retrieve(principal, query, limit, filters)
         return {"status": "success", "tiers": answers}
+
+    async def _search(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
+        """Run one named search type (Cognee's) over the memory the principal may see.
+
+        Goes in: search_type (CHUNKS, CHUNKS_LEXICAL, SUMMARIES, RAG_COMPLETION, GRAPH_COMPLETION or
+        TEMPORAL), query, limit, optionally opinion ("main" or "second", the model that writes an
+        answer) and the same narrowing fields as retrieve. Comes out: the search type's own reply (see
+        memory_cognee_search). Raises ValueError for a malformed request, an unknown or refused
+        search type or a type that needs a language model when none is configured.
+        """
+        search_type, query, limit = (request.get(k) for k in ("search_type", "query", "limit"))
+        if (
+            not isinstance(search_type, str)
+            or not isinstance(query, str)
+            or not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit < 1
+        ):
+            raise ValueError("search needs search_type and query (text) and limit (a whole number)")
+        filters = filters_from(request, datetime.now(timezone.utc))
+        reply = await self.cognee_search.run(
+            principal, search_type, query, limit, filters, request.get("opinion", "main")
+        )
+        return {"status": "success", **reply}
 
     async def _retrieve_batch(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
         """Answer several scoped retrievals at once so each model is asked for all of them in one request.
@@ -746,7 +809,8 @@ class OwnerService:
             raise ValueError(
                 "Invalid batch retrieval request: queries (text list) and limit required"
             )
-        answers = await self.retrieval.retrieve_many(principal, queries, limit)
+        filters = filters_from(request, datetime.now(timezone.utc))
+        answers = await self.retrieval.retrieve_many(principal, queries, limit, filters)
         return {
             "status": "success",
             "answers": [
@@ -833,6 +897,8 @@ class OwnerService:
             if "right_events" in columns
             else []
         )
+        if "event_ids" in columns:
+            known_events = [set(json.loads(row[columns.index("event_ids")])) for row in rows]
         every_event = sorted(
             {event for events in events_of_case.values() for event in events}.union(*known_events)
         )
@@ -848,6 +914,13 @@ class OwnerService:
 
         kept = []
         for row in rows:
+            if "event_ids" in columns:
+                events = set(json.loads(row[columns.index("event_ids")]))
+                own = row[columns.index("recorded_by")] == principal.agent_id
+                # A run that names no event is visible only to the one who asked for it.
+                if (own or events) and allowed(events):
+                    kept.append(row)
+                continue
             if "right_events" in columns:
                 events = set(json.loads(row[columns.index("right_events")]))
             elif "case_id" in columns:
@@ -880,7 +953,8 @@ class OwnerService:
         query, limit = request.get("query"), request.get("limit")
         if not isinstance(query, str) or not isinstance(limit, int) or limit < 1:
             raise ValueError("Invalid context request: query and limit required")
-        answers = await self.retrieval.retrieve(principal, query, limit)
+        filters = filters_from(request, datetime.now(timezone.utc))
+        answers = await self.retrieval.retrieve(principal, query, limit, filters)
         entries = [
             (tier, hit)
             for tier in ("temporal", "episodic")
@@ -1080,7 +1154,10 @@ class OwnerService:
             raise ValueError(f"opinion must be one of {', '.join(OPINIONS)}")
         visibility = await self.retrieval.policy.resolve(principal)
         core = OwnerCore(self.lifetime_conn)
-        for event_id in args.get("event_ids", []):
+        named = list(args.get("event_ids", []))
+        if isinstance(args.get("event_id"), str):
+            named.append(args["event_id"])
+        for event_id in named:
             event, _ = await core.load_event(event_id)
             if not visibility.permits(
                 event.get("actor_agent_id", event.get("agent_id")), principal.agent_id
@@ -1107,11 +1184,58 @@ class OwnerService:
                 raise PermissionError(f"The {key} {args[key]!r} is not visible to this principal")
         try:
             result = await self.model_parts.run(part, step, args, opinion)
-        except (ValueError, PermissionError):
+        except (ValueError, PermissionError) as refusal:
+            await self._record_run(principal, part, step, opinion, args, None, refusal)
             raise
         except Exception as error:
+            await self._record_run(principal, part, step, opinion, args, None, error)
             raise RuntimeError(f"{type(error).__name__}: {error}") from error
+        await self._record_run(principal, part, step, opinion, args, result, None)
         return {"status": "success", **result}
+
+    async def _record_run(
+        self,
+        principal: AuthenticatedPrincipal,
+        part: str,
+        step: str,
+        opinion: str,
+        args: dict,
+        output: dict | None,
+        error: BaseException | None,
+    ) -> None:
+        """Append one model step to the record of runs, whether it worked or failed.
+
+        Goes in: who asked, which part, step and opinion, the arguments, and either the step's output
+        or the error that stopped it. The record is what a prompt optimiser learns from. A failure to
+        write the record is raised, never hidden, so no step looks recorded when it is not.
+        """
+        asked = None if self.model_parts is None else self.model_parts.language_model
+        requested = (
+            None
+            if asked is None
+            else asked.get("model" if opinion == "main" else "second_opinion_model")
+        )
+        achieved = None if output is None else output.get("achieved_model")
+        seconds = None if output is None else output.get("seconds")
+        recorded_at = datetime.now(timezone.utc).isoformat()
+        run_id = f"run-{hashlib.sha256(f'{recorded_at}{principal.agent_id}{part}{step}'.encode()).hexdigest()[:24]}"
+        await self.store.run_in_transaction(
+            lambda handle: record_model_run(
+                handle,
+                run_id=run_id,
+                recorded_at=recorded_at,
+                recorded_by=principal.agent_id,
+                part=part,
+                step=step,
+                opinion=opinion,
+                requested_model=requested,
+                achieved_model=achieved,
+                seconds=seconds,
+                args=args,
+                output=output,
+                error=None if error is None else f"{type(error).__name__}: {error}",
+            )
+        )
 
     async def _models(self) -> dict:
         """Report every registered model with its freshness and reasons, and the numbers still owed.

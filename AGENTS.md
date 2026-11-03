@@ -17,6 +17,13 @@ packages and its checkers. Install nothing else by hand.
 All three must pass, and deptry must not print a line starting with "Assuming". Your pull request is checked again on GitHub, and a
 failure there comes back to you to fix in this same task.
 
+On the owner's laptop the shell sets `UV_PROJECT_ENVIRONMENT` to a path that cannot exist, so
+that uv can never build an environment there, and the three commands above stop with "failed to
+create directory". Put `UV_PROJECT_ENVIRONMENT="$HOME/micromamba/envs/sovereign_memory"` in front
+of each one and `--no-sync` after `uv run`, for example
+`UV_PROJECT_ENVIRONMENT="$HOME/micromamba/envs/sovereign_memory" uv run --no-sync pytest`.
+That points uv at the declared environment and changes nothing in it.
+
 ## How you work
 
 - Do not stop to ask about a routine choice. Decide by the task and this file,

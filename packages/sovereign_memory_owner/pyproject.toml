@@ -11,6 +11,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
     "cognee==1.6.5",
+    "dateparser==1.4.3",
     "duckdb==1.5.6",
     "duckdb_sqlalchemy_async==0.1.0",
     "graphiti-duckdb==0.1.0",
