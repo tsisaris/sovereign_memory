@@ -118,7 +118,7 @@ class CogneeSearch:
         query: str,
         limit: int,
         filters: RetrievalFilters | None,
-        opinion: str,
+        opinion: str | None,
     ) -> dict[str, Any]:
         """Run one search type and return its reply; raises ValueError for an unknown or refused type.
 
@@ -132,12 +132,12 @@ class CogneeSearch:
             )
         if search_type not in SEARCH_TYPES:
             raise ValueError(f"search_type must be one of {', '.join(SEARCH_TYPES)}")
-        if opinion not in OPINIONS:
+        if opinion is not None and opinion not in OPINIONS:
             raise ValueError(f"opinion must be one of {', '.join(OPINIONS)}")
         if search_type == "CHUNKS_LEXICAL":
             return await self._lexical(principal, query, limit, filters)
         if search_type == "TEMPORAL":
-            return await self._temporal(principal, query, limit, filters, opinion)
+            return await self._temporal(principal, query, limit, filters)
         answers = await self.retrieval.retrieve(principal, query, limit, filters)
         if search_type == "CHUNKS":
             return {
@@ -184,7 +184,7 @@ class CogneeSearch:
         query: str,
         context: str,
         used: list[dict[str, Any]],
-        opinion: str,
+        opinion: str | None,
     ) -> dict[str, Any]:
         """Have the language model write the answer from the context with Cognee's completion prompt."""
         if self.parts is None:
@@ -264,7 +264,6 @@ class CogneeSearch:
         query: str,
         limit: int,
         filters: RetrievalFilters | None,
-        opinion: str,
     ) -> dict[str, Any]:
         """Read the time window out of the question with Cognee's interval step, then search inside it.
 
@@ -274,7 +273,7 @@ class CogneeSearch:
         """
         if self.parts is None:
             raise ValueError("no language model is configured on this service")
-        window = await self.parts.run("cognee", "query_window", {"question": query}, opinion)
+        window = await self.parts.run("cognee", "query_window", {"question": query}, None)
         if window["starts_at"] is None and window["ends_at"] is None:
             return {
                 "search_type": "TEMPORAL",

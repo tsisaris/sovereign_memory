@@ -831,7 +831,7 @@ class OwnerService:
             raise ValueError("search needs search_type and query (text) and limit (a whole number)")
         filters = filters_from(request, datetime.now(timezone.utc))
         reply = await self.cognee_search.run(
-            principal, search_type, query, limit, filters, request.get("opinion", "main")
+            principal, search_type, query, limit, filters, request.get("opinion")
         )
         return {"status": "success", **reply}
 
@@ -1179,7 +1179,8 @@ class OwnerService:
     async def _model(self, principal: AuthenticatedPrincipal, request: dict) -> dict:
         """Run one named step of one part with the main or the second-opinion model.
 
-        Goes in: part, step, args (an object) and opinion ("main" by default or "second"). Every
+        Goes in: part, step, args (an object) and opinion ("main" by default or "second"; a step the
+        setting language_model.step_opinions fixes runs with that model and refuses the other). Every
         event the args name must be visible to the principal and a group id must be one the
         principal may see. Comes out: the step's real output plus part, step, opinion,
         requested_model, achieved_model, placement and seconds. Raises ValueError for a
@@ -1190,10 +1191,10 @@ class OwnerService:
         if self.model_parts is None:
             raise ValueError("no language model is configured on this service")
         part, step = request.get("part"), request.get("step")
-        args, opinion = request.get("args", {}), request.get("opinion", "main")
+        args, opinion = request.get("args", {}), request.get("opinion")
         if not isinstance(part, str) or not isinstance(step, str) or not isinstance(args, dict):
             raise ValueError("model needs part and step (text) and args (an object)")
-        if opinion not in OPINIONS:
+        if opinion is not None and opinion not in OPINIONS:
             raise ValueError(f"opinion must be one of {', '.join(OPINIONS)}")
         visibility = await self.retrieval.policy.resolve(principal)
         core = OwnerCore(self.lifetime_conn)
@@ -1226,14 +1227,18 @@ class OwnerService:
             if key in args and actors is not None and args[key] not in actors:
                 raise PermissionError(f"The {key} {args[key]!r} is not visible to this principal")
         try:
+            used = self.model_parts.opinion_for(part, step, opinion)
+        except ValueError:
+            used = opinion or "main"
+        try:
             result = await self.model_parts.run(part, step, args, opinion)
         except (ValueError, PermissionError) as refusal:
-            await self._record_run(principal, part, step, opinion, args, None, refusal)
+            await self._record_run(principal, part, step, used, args, None, refusal)
             raise
         except Exception as error:
-            await self._record_run(principal, part, step, opinion, args, None, error)
+            await self._record_run(principal, part, step, used, args, None, error)
             raise RuntimeError(f"{type(error).__name__}: {error}") from error
-        await self._record_run(principal, part, step, opinion, args, result, None)
+        await self._record_run(principal, part, step, used, args, result, None)
         return {"status": "success", **result}
 
     async def _record_run(
