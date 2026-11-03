@@ -232,6 +232,9 @@ def build_service(config: RuntimeConfig, only_tier: str | None = None) -> OwnerS
             models=config.models,
             supplier=supplier,
             model_parts_factory=model_parts_factory(config, tiers),
+            settings_changer=lambda assignments, descriptions, unsets, who: change_settings(
+                config.database_path, assignments, descriptions, unsets, who
+            ),
         )
     except ValueError as error:
         raise ConfigurationError(f"ranking: {error}") from error
