@@ -108,6 +108,11 @@ select = [
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
+# Only the files the check is given are graded. A file the check reaches by following an import
+# (the vendored engine copies the pre-commit exclude list leaves out, which an editable install
+# puts on mypy's path on the laptop and a normal install hides in site-packages on GitHub) is read
+# for types and never reported, so the laptop and GitHub give the same answer.
+follow_imports = "silent"
 check_untyped_defs = true
 # Classes ruled ADVISORY in sovereign/pyproject.toml (no birth case yet).
 # Every other class gates, so a class never seen before stops the build

@@ -217,13 +217,31 @@ class ModelParts:
             },
         }
 
-    async def run(self, part: str, step: str, args: dict[str, Any], opinion: str) -> dict[str, Any]:
+    def opinion_for(self, part: str, step: str, asked: str | None) -> str:
+        """Return the opinion a step runs with: the one the settings fix for it, else the one asked, else "main".
+
+        A step listed in language_model.step_opinions is fixed to the model the setting names; a caller
+        that asks for the other opinion is refused with ValueError, naming the setting. A step not
+        listed takes the caller's opinion, "main" when none is given. It calls no model.
+        """
+        fixed = self.language_model.get("step_opinions", {}).get(part, {}).get(step)
+        if fixed is not None and asked is not None and asked != fixed:
+            raise ValueError(
+                f"the step {part}.{step} is fixed to the {fixed} model by the setting "
+                f"language_model.step_opinions.{part}.{step}; it cannot run with {asked}"
+            )
+        return fixed or asked or "main"
+
+    async def run(
+        self, part: str, step: str, args: dict[str, Any], opinion: str | None
+    ) -> dict[str, Any]:
         """Run one step and return its output with the model that answered, the device and the time.
 
-        It takes a part name, a step name, the step's arguments and "main" or "second". It
-        returns the step's own dict plus the keys part, step, opinion, requested_model,
-        achieved_model, placement and seconds. It raises ValueError for an unknown part, step
-        or opinion, and never retries a failed step.
+        It takes a part name, a step name, the step's arguments and "main", "second" or None (the
+        setting that fixes the step, else "main"). It returns the step's own dict plus the keys part,
+        step, opinion (the one really used), requested_model, achieved_model, placement and seconds.
+        It raises ValueError for an unknown part, step or opinion, or for an opinion the settings
+        forbid for that step, and never retries a failed step.
         """
         if part not in self.parts:
             raise ValueError(f"unknown part {part!r}; the parts are {', '.join(self.parts)}")
@@ -232,6 +250,7 @@ class ModelParts:
             raise ValueError(
                 f"part {part!r} has no step {step!r}; its steps are {', '.join(target.steps())}"
             )
+        opinion = self.opinion_for(part, step, opinion)
         model = model_for(self.language_model, opinion)
         started = time.monotonic()
         output = await target.run_step(step, args, model)

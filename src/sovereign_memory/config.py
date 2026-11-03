@@ -234,6 +234,30 @@ def _zep(table: Any) -> dict[str, Any]:
 MODEL_OPTIONS_FOR_MEM0 = ("temperature", "max_tokens", "top_p", "reasoning_effort")
 
 
+def _step_opinions(table: dict[str, Any], where: str) -> None:
+    """Check language_model.step_opinions: part, then step, then "main" or "second".
+
+    A step named here is fixed to that model: a caller that asks for the other one is refused.
+    "second" needs second_opinion_model. It checks the shape only; whether a part and step
+    exist is checked when the router is built.
+    """
+    steps = table["step_opinions"]
+    if not isinstance(steps, dict):
+        raise ConfigurationError(f"{where}.step_opinions must be a table of parts")
+    for part, by_step in steps.items():
+        if not isinstance(by_step, dict) or not by_step:
+            raise ConfigurationError(f"{where}.step_opinions.{part} must be a table of steps")
+        for step, opinion in by_step.items():
+            if opinion not in ("main", "second"):
+                raise ConfigurationError(
+                    f'{where}.step_opinions.{part}.{step} must be "main" or "second"'
+                )
+            if opinion == "second" and "second_opinion_model" not in table:
+                raise ConfigurationError(
+                    f"{where}.step_opinions.{part}.{step} is second but no second_opinion_model is set"
+                )
+
+
 def _language_model(table: Any) -> dict[str, Any]:
     """Read the language_model table: which model, where it answers, and its options.
 
@@ -250,9 +274,11 @@ def _language_model(table: Any) -> dict[str, Any]:
             table,
             where,
             ("provider", "model", "base_url", "api_key", "request_timeout_seconds", "options"),
-            ("second_opinion_model",),
+            ("second_opinion_model", "step_opinions"),
         )
     )
+    if "step_opinions" in table:
+        _step_opinions(table, where)
     if _text(table, where, "provider") != "ollama":
         raise ConfigurationError(f"{where}.provider must be ollama")
     for key in ("model", "base_url", "api_key"):
