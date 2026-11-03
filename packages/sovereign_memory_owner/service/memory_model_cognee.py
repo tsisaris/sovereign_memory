@@ -35,6 +35,7 @@ from cognee.modules.engine.utils.generate_event_datapoint import generate_event_
 from cognee.modules.engine.utils.timestamp_from_text import timestamp_from_text
 from cognee.modules.graph.utils.get_graph_from_model import get_graph_from_model
 from cognee.modules.retrieval.temporal_hybrid.matching import extract_query_interval, to_epoch_ms
+from cognee.modules.retrieval.utils.completion import generate_completion
 from cognee.shared.data_models import KnowledgeGraph
 from cognee.tasks.memify.consolidate_entity_descriptions.constants import prompt_name
 from cognee.tasks.memify.consolidate_entity_descriptions.read_neighborhood import (
@@ -55,7 +56,14 @@ from cognee.tasks.temporal_graph.extract_knowledge_graph_from_events import (
 from cognee.tasks.temporal_graph.models import Event as FoundEvent
 from cognee.tasks.temporal_graph.models import EventList
 
+COMPLETION_STYLES: dict[str, str] = {
+    "chunks": "context_for_question.txt",
+    "graph": "graph_context_for_question.txt",
+}
+COMPLETION_SYSTEM_PROMPT = "answer_simple_question.txt"
+
 STEP_NAMES: dict[str, tuple[str, ...]] = {
+    "complete": ("question", "context", "style"),
     "extract_graph": ("text",),
     "extract_events": ("text",),
     "store_events": ("text",),
@@ -381,6 +389,24 @@ class CogneeModel:
                     )
             attached.append({"event": node.name, "attributes": pairs})
         return {"events": attached, "answered_for": len(enriched), "asked_for": len(nodes)}
+
+    async def step_complete(self, question: str, context: str, style: str) -> dict[str, Any]:
+        """Answer a question from a context with Cognee's own completion and its own prompts.
+
+        It takes the question, a context made of retrieved memory (text) and a style: "chunks"
+        reads the context as passages (Cognee's RAG completion prompt) and "graph" reads it as
+        facts and entities (its graph completion prompt). It gives back the answer the model
+        wrote. It stores nothing and adds nothing to the context.
+        """
+        if style not in COMPLETION_STYLES:
+            raise ValueError(f"style must be one of {', '.join(COMPLETION_STYLES)}")
+        answer = await generate_completion(
+            query=question,
+            context=context,
+            user_prompt_path=COMPLETION_STYLES[style],
+            system_prompt_path=COMPLETION_SYSTEM_PROMPT,
+        )
+        return {"answer": answer, "style": style}
 
     async def step_query_window(self, question: str) -> dict[str, Any]:
         """Turn a question into the time window Cognee's temporal search would use.

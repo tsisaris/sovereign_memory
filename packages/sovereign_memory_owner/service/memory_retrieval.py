@@ -21,6 +21,7 @@ holding every reader's ranking, the keyword, merged and second-stage orders and 
 import hashlib
 import json
 import logging
+import sys
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Any
@@ -51,19 +52,21 @@ from service.memory_owner_core import TIERS, OwnerCore
 from service.memory_processor_seam import (
     AuthenticatedPrincipal,
     MemoryRetriever,
+    RetrievalFilters,
     RetrievalScope,
     VisibilityPolicy,
 )
 from service.memory_review import disagree
 from service.memory_settings import SearchSettings
 from service.memory_supplier import NumbersNotYetSupplied
+from service.memory_time_window import passes
 from service.memory_visibility import RestrictedPolicy
 
 logger = logging.getLogger(__name__)
 
 
 def item_kind(hit: dict[str, Any]) -> str:
-    """Name what kind of thing a hit is ("fact", "memory", "episode" or "other"); pure.
+    """Name what kind of thing a hit is ("fact", "memory", "episode", "passage" or "other"); pure.
 
     It takes a tier's hit and reads only which keys it carries. It returns the kind so the
     ground-truth record can tell a Graphiti fact from a Mem0 memory or an episode. It never
@@ -75,6 +78,10 @@ def item_kind(hit: dict[str, Any]) -> str:
         return "memory"
     if "episode_uuid" in hit:
         return "episode"
+    if "passage_id" in hit:
+        return "passage"
+    if "summary_id" in hit:
+        return "summary"
     return "other"
 
 
@@ -107,43 +114,60 @@ class MemoryRetrievalService:
         self.numbers = numbers
 
     async def retrieve(
-        self, principal: AuthenticatedPrincipal, query: str, limit: int
+        self,
+        principal: AuthenticatedPrincipal,
+        query: str,
+        limit: int,
+        filters: RetrievalFilters | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Return tier -> {"status", "hits", "withheld"/"reason", ...} for the authenticated principal.
 
         A tier that ranks by models also reports "combiner", "models" (used,
         ranked_not_combined, left_out), "settings_used", the merged order, the second
         stage ("rerank") and the facts it held back as no longer true ("not_current").
-        The question's numbers are fetched once per model for all tiers. The scope comes
-        only from the principal. Apart from recording a disagreement case it never
-        writes, and it never returns another actor's hits.
+        filters, when given, narrows every tier to a time window and tags and each answer
+        says how many hits it left out for that and what the filter was. The question's
+        numbers are fetched once per model for all tiers. The scope comes only from the
+        principal. Apart from recording a disagreement case it never writes, and it never
+        returns another actor's hits.
         """
-        return (await self.retrieve_many(principal, [query], limit))[0]
+        return (await self.retrieve_many(principal, [query], limit, filters))[0]
 
     async def retrieve_many(
-        self, principal: AuthenticatedPrincipal, queries: list[str], limit: int
+        self,
+        principal: AuthenticatedPrincipal,
+        queries: list[str],
+        limit: int,
+        filters: RetrievalFilters | None = None,
     ) -> list[dict[str, dict[str, Any]]]:
         """Answer several questions, asking each model for all their numbers in one request.
 
-        Goes in: the principal, the questions and the limit. Comes out: one answer per question, in
-        order, each as retrieve describes. Each model's numbers for every question are fetched first,
-        once per model, so a supplier that loads a model when asked loads it once for the whole
-        batch; the second-stage scorer is asked after, question by question. It never answers one
-        principal's question with another's scope.
+        Goes in: the principal, the questions, the limit and the optional filter. Comes out: one
+        answer per question, in order, each as retrieve describes. Each model's numbers for every
+        question are fetched first, once per model, so a supplier that loads a model when asked
+        loads it once for the whole batch; the second-stage scorer is asked after, question by
+        question. It never answers one principal's question with another's scope.
         """
         context = (
             nullcontext() if self.numbers is None else self.numbers.question_batch(list(queries))
         )
         async with context:
-            return [await self._retrieve_one(principal, query, limit) for query in queries]
+            return [await self._retrieve_one(principal, query, limit, filters) for query in queries]
 
     async def _retrieve_one(
-        self, principal: AuthenticatedPrincipal, query: str, limit: int
+        self,
+        principal: AuthenticatedPrincipal,
+        query: str,
+        limit: int,
+        filters: RetrievalFilters | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Answer one question tier by tier, using numbers the batch already fetched."""
         visibility = await self.policy.resolve(principal)
         scope = RetrievalScope(
-            agent_id=principal.agent_id, scope=principal.scope, visibility=visibility
+            agent_id=principal.agent_id,
+            scope=principal.scope,
+            visibility=visibility,
+            filters=filters,
         )
         answers: dict[str, dict[str, Any]] = {}
         for tier in TIERS:
@@ -169,7 +193,9 @@ class MemoryRetrievalService:
                         raise RuntimeError(f"Projection rebuild {active[0]} is not complete")
 
                 await self.conn.run(ready)
-                prepared = await retriever.prepare_query(scope, query, limit)
+                # A narrowed search is cut to the limit only after the filter, so no tier may cut first.
+                reach = limit if filters is None else sys.maxsize
+                prepared = await retriever.prepare_query(scope, query, reach)
 
                 def read(ready=ready, retriever=retriever, prepared=prepared):
                     """Check rebuilding again after preparation, before the actual index read."""
@@ -181,6 +207,8 @@ class MemoryRetrievalService:
                     answers[tier] = await self._filter(tier, result, scope)
                     answers[tier]["combiner"] = None
                     answers[tier]["combiner_note"] = "this memory kind ranks by no model's numbers"
+                    if filters is not None:
+                        answers[tier]["filters"] = filters.describe()
                 else:
                     answers[tier] = await self._merge(tier, result, scope, principal, query, limit)
             except Exception as error:
@@ -191,6 +219,17 @@ class MemoryRetrievalService:
                     "hits": [],
                 }
         return answers
+
+    async def narrow(
+        self, tier: str, hits: list[dict[str, Any]], scope: RetrievalScope
+    ) -> dict[str, Any]:
+        """Keep the hits of live events the scope permits and that meet its filter; count the rest.
+
+        For a search made outside the tiers' own rankings (such as Cognee's lexical search) so it
+        meets the same identity and filter checks as every other hit. Returns hits, withheld and
+        narrowed_out. Raises ValueError for a hit without an event_id.
+        """
+        return await self._filter(tier, hits, scope)
 
     async def _filter(
         self, tier: str, hits: list[dict[str, Any]], scope: RetrievalScope
@@ -210,7 +249,16 @@ class MemoryRetrievalService:
             if hit["event_id"] in producers
             and scope.visibility.permits(producers[hit["event_id"]], scope.agent_id)
         ]
-        return {"status": "ok", "hits": kept, "withheld": len(hits) - len(kept)}
+        withheld = len(hits) - len(kept)
+        narrowed_out = 0
+        if scope.filters is not None:
+            times = await self.core.event_times([hit["event_id"] for hit in kept])
+            narrowed = [
+                hit for hit in kept if passes(scope.filters, hit, times.get(hit["event_id"]))
+            ]
+            narrowed_out = len(kept) - len(narrowed)
+            kept = narrowed
+        return {"status": "ok", "hits": kept, "withheld": withheld, "narrowed_out": narrowed_out}
 
     async def _merge(
         self,
@@ -235,14 +283,18 @@ class MemoryRetrievalService:
             raise RuntimeError("Merging rankings needs the declared search settings")
         kept: dict[str, list[dict[str, Any]]] = {}
         withheld = 0
+        narrowed_out = 0
         for label, hits in result.rankings.items():
             filtered = await self._filter(tier, hits, scope)
             kept[label] = filtered["hits"]
             withheld += filtered["withheld"]
+            narrowed_out += filtered["narrowed_out"]
         left_out = dict(result.left_out)
         combiner = await self.conn.run(lambda: current_combiner(self.conn.native))
         settings_used = self.settings.report()
         base = {"withheld": withheld, "settings_used": settings_used}
+        if scope.filters is not None:
+            base = {**base, "filters": scope.filters.describe(), "narrowed_out": narrowed_out}
         if combiner is None:
             return {
                 **base,
@@ -331,7 +383,15 @@ class MemoryRetrievalService:
                 label: [
                     {
                         key: hit[key]
-                        for key in ("item_id", "event_id", "distance", "text", "memory", "content")
+                        for key in (
+                            "item_id",
+                            "event_id",
+                            "distance",
+                            "text",
+                            "memory",
+                            "content",
+                            "tags",
+                        )
                         if key in hit
                     }
                     for hit in kept[label][:limit]
@@ -600,6 +660,9 @@ class MemoryRetrievalService:
         if known is None and not disagree(outputs):
             return None, None
         involved = sorted({h["event_id"] for hits in kept.values() for h in hits})
+        if not involved:
+            # A narrowed search can leave nothing; a case points to events, so there is none to record.
+            return None, None
         digest = hashlib.sha256(
             json.dumps(
                 [

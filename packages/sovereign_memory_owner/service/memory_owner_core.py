@@ -308,6 +308,21 @@ class OwnerCore:
             rows.pop(expired_id, None)
         return rows
 
+    async def event_times(self, event_ids: list[str]) -> dict[str, str]:
+        """Map each captured event among event_ids to the time it was recorded as happening.
+
+        Goes in: event ids. Comes out: event id to its created_at text (a legacy event's timestamp);
+        an unknown id is left out. Reads only; it says nothing about whether the event is live.
+        """
+        if not event_ids:
+            return {}
+        cursor = await self.conn.cursor()
+        await cursor.execute(
+            "SELECT event_id, created_at FROM memory_events WHERE event_id IN (SELECT unnest(?))",
+            (list(dict.fromkeys(event_ids)),),
+        )
+        return dict(await cursor.fetchall())
+
     async def receipts(self, event_id: str) -> dict[str, dict]:
         """Return tier -> durable receipt for one event (empty for an unknown event). Reads only."""
         cursor = await self.conn.cursor()

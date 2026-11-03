@@ -3,9 +3,11 @@
 It is for turning a stored episode into entities, dated facts, contradiction decisions and
 summaries, and a group of entities into named communities, with the model the settings name.
 It takes the validated language_model settings and a way to reach the database, and answers
-the steps "ingest" and "communities". It never makes or asks for numbers (so the steps of
-Graphiti that rank by similarity are replaced by name-word overlap and by shared entities,
-and the reply says so), and it never holds a database connection across a model call.
+the steps "ingest", "communities", "saga_summary" and "add_triplet". It never makes numbers: when
+the settings graphiti.embedding_model name a registered model, Graphiti's embedder slot is answered
+by the supplier's door for that model (node matching by similarity of names, and add_triplet); without
+that setting those steps that need numbers refuse and the others match by name-word overlap and by
+shared entities. It never holds a database connection across a model call.
 """
 
 import asyncio
@@ -23,7 +25,7 @@ from graphiti_core.graphiti_types import GraphitiClients, uses_prompt_routing
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.nodes import EntityNode, EpisodicNode, SagaNode
-from graphiti_core.search.search_utils import RELEVANT_SCHEMA_LIMIT
+from graphiti_core.search.search_utils import RELEVANT_SCHEMA_LIMIT, calculate_cosine_similarity
 from graphiti_core.telemetry.telemetry import TELEMETRY_ENV_VAR
 from graphiti_core.tracer import NoOpTracer
 from graphiti_core.utils.bulk_utils import resolve_edge_pointers
@@ -58,6 +60,7 @@ from graphiti_duckdb.duckdb_driver import DuckDBDriver
 
 from service.memory_graphiti_episodes import episode_uuid
 from service.memory_model_parts import AchievedRecorder, DatabaseAccess, build_door
+from service.memory_numbers_services import NumbersServices
 
 CANDIDATE_MODES = ("same_entity", "same_subject", "whole_group")
 SUMMARY_MODES = ("graphiti_default", "always_model")
@@ -81,6 +84,42 @@ class NoNumbersEmbedder(EmbedderClient):
     async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
         """Refuse with the plain words that numbers have not been supplied."""
         raise RuntimeError(NO_NUMBERS)
+
+
+class ReceivedNumbersEmbedder(EmbedderClient):
+    """Graphiti's embedder slot, answered only by numbers the supplier's door gives for one model.
+
+    It is for Graphiti's node matching by similarity and for add_triplet, which need a number for an
+    entity's name and for a fact's words. It takes the numbers services and the id and revision of the
+    one registered model Graphiti's own stored embeddings come from (the setting graphiti.embedding_model).
+    It gives back, for a text, the numbers the supplier's single-text door returns for that model,
+    checked against the registered width. It never makes a number itself; when the door cannot
+    answer it raises the plain "numbers not yet supplied" refusal and never returns a made-up vector.
+    """
+
+    def __init__(self, services: NumbersServices, model_id: str, revision: str) -> None:
+        """Keep the numbers services and the model revision the numbers are asked for."""
+        self.services = services
+        self.model_id = model_id
+        self.revision = revision
+
+    @staticmethod
+    def _text_of(input_data: Any) -> str:
+        """Return the one text Graphiti asked for (its first when it passes a list); ValueError otherwise."""
+        first = input_data[0] if isinstance(input_data, list) and input_data else input_data
+        if not isinstance(first, str) or not first.strip():
+            raise ValueError("the embedder is asked for the numbers of a non-empty text")
+        return first
+
+    async def create(self, input_data: Any) -> list[float]:
+        """Return the door's numbers for the text, read as a stored passage."""
+        return await self.services.question_numbers(
+            self.model_id, self.revision, self._text_of(input_data), "passage"
+        )
+
+    async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
+        """Return the door's numbers for each text in turn, in the same order."""
+        return [await self.create(text) for text in input_data_list]
 
 
 class NoNumbersCrossEncoder(CrossEncoderClient):
@@ -133,6 +172,14 @@ class GraphitiModel:
                 f"the setting graphiti.contradiction_candidates must be one of {', '.join(CANDIDATE_MODES)}"
             )
         self.contradiction_candidates: str = mode
+        self.embedding: tuple[str, str] | None = None
+        self.node_match_minimum: float | None = None
+        if "embedding_model" in settings:
+            self.embedding = (
+                settings["embedding_model"]["model_id"],
+                settings["embedding_model"]["revision"],
+            )
+            self.node_match_minimum = float(settings["node_match_minimum_similarity"])
         self.language_model = dict(language_model)
         self.database = database
         self.recorder = AchievedRecorder()
@@ -141,7 +188,7 @@ class GraphitiModel:
 
     def steps(self) -> tuple[str, ...]:
         """Return the step names this part answers."""
-        return ("ingest", "communities", "saga_summary")
+        return ("ingest", "communities", "saga_summary", "add_triplet")
 
     def achieved_model(self) -> str | None:
         """Return the model name the server reported for the latest answer, or None before any."""
@@ -150,9 +197,10 @@ class GraphitiModel:
     def _clients(self, model: str) -> GraphitiClients:
         """Build Graphiti's client bundle for one model, from the settings and nothing else.
 
-        The embedder and reranker slots refuse; the database slot holds an empty private
-        database that the steps never use, because every read and write goes through the
-        service's own access.
+        The embedder slot answers from the supplier's numbers for the one model the setting
+        graphiti.embedding_model names, or refuses when no such setting is given; the reranker
+        slot refuses; the database slot holds an empty private database that the steps never use,
+        because every read and write goes through the service's own access.
         """
         options = self.language_model["options"]
         config = LLMConfig(
@@ -163,10 +211,14 @@ class GraphitiModel:
             **{key: options[key] for key in ("temperature", "max_tokens") if key in options},
         )
         llm_client = OpenAIGenericClient(config=config, client=self.door)
+        services = self.database.numbers
+        embedder: EmbedderClient = NoNumbersEmbedder()
+        if self.embedding is not None and services is not None:
+            embedder = ReceivedNumbersEmbedder(services, *self.embedding)
         return GraphitiClients(
             driver=DuckDBDriver(connection=self.unused),
             llm_client=llm_client,
-            embedder=NoNumbersEmbedder(),
+            embedder=embedder,
             cross_encoder=NoNumbersCrossEncoder(),
             tracer=NoOpTracer(),
         )
@@ -193,6 +245,8 @@ class GraphitiModel:
         group_id = args.get("group_id")
         if not isinstance(group_id, str) or not group_id:
             raise ValueError("this step needs a group_id")
+        if step == "add_triplet":
+            return await self._add_triplet(clients, group_id, args)
         if step == "saga_summary":
             return await self._saga_summary(clients, group_id, args)
         return await self._communities(clients, group_id)
@@ -251,6 +305,180 @@ class GraphitiModel:
             "episodes_read": saga._summary_episodes_selected,
         }
 
+    async def _add_triplet(
+        self, clients: GraphitiClients, group_id: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Store one stated fact (source entity, relation, target entity) with Graphiti's own add_triplet.
+
+        Goes in: the clients, the group and the arguments event_id (the stored event that states the
+        fact, whose episode the fact is linked to), source and target ({"name", optionally "summary"}),
+        relation (the edge's name), fact (its words) and optionally valid_at and invalid_at (ISO 8601).
+        Comes out: the entities and facts Graphiti saved, which of the two entities were matched to
+        ones already stored, the facts it ended as contradicted, and how many numbers are now owed for
+        the fact. It is Graphiti.add_triplet run unchanged: it matches each entity to stored ones by
+        similarity of name numbers and by words, lets the model decide duplicates and contradictions,
+        and stores the embeddings the supplier gave. Raises ValueError for a malformed argument, an
+        event with no episode yet, or when the embedding setting is not given.
+        """
+        if not self._real_embedder(clients):
+            raise ValueError(
+                "add_triplet needs the settings graphiti.embedding_model and "
+                "graphiti.node_match_minimum_similarity"
+            )
+        event_id, fact, relation = args.get("event_id"), args.get("fact"), args.get("relation")
+        ends = {key: args.get(key) for key in ("source", "target")}
+        if (
+            not isinstance(event_id, str)
+            or not event_id
+            or not isinstance(fact, str)
+            or not fact.strip()
+            or not isinstance(relation, str)
+            or not relation
+            or any(
+                not isinstance(end, dict)
+                or not isinstance(end.get("name"), str)
+                or not end["name"].strip()
+                for end in ends.values()
+            )
+        ):
+            raise ValueError(
+                "add_triplet needs event_id, fact, relation, and source and target with a name"
+            )
+        moments: dict[str, datetime | None] = {}
+        for key in ("valid_at", "invalid_at"):
+            text = args.get(key)
+            moments[key] = None if text is None else datetime.fromisoformat(str(text))
+
+        def read(handle: Any) -> dict[str, Any]:
+            """Read the event's episode and the group's stored entities and facts; no model."""
+            driver = DuckDBDriver(connection=handle)
+            found = _drive(driver.episode_node_ops.get_by_uuids(driver, [episode_uuid(event_id)]))
+            if not found:
+                raise ValueError(f"event {event_id} has no episode in the graph yet")
+            return {
+                "episode": found[0],
+                "nodes": _drive(driver.entity_node_ops.get_by_group_ids(driver, [group_id])),
+                "edges": _drive(driver.entity_edge_ops.get_by_group_ids(driver, [group_id])),
+            }
+
+        loaded = await self.database.read(read)
+        embedded_before = await self._embed_missing(clients, loaded["nodes"], loaded["edges"])
+        episode = loaded["episode"]
+        source = EntityNode(
+            name=ends["source"]["name"],
+            group_id=group_id,
+            summary=ends["source"].get("summary", ""),
+            labels=["Entity"],
+        )
+        target = EntityNode(
+            name=ends["target"]["name"],
+            group_id=group_id,
+            summary=ends["target"].get("summary", ""),
+            labels=["Entity"],
+        )
+        edge = EntityEdge(
+            group_id=group_id,
+            source_node_uuid=source.uuid,
+            target_node_uuid=target.uuid,
+            created_at=utc_now(),
+            name=relation,
+            fact=fact,
+            episodes=[episode.uuid],
+            valid_at=moments["valid_at"],
+            invalid_at=moments["invalid_at"],
+        )
+        os.environ[TELEMETRY_ENV_VAR] = "false"
+        client = Graphiti(
+            graph_driver=DuckDBDriver(db=str(self.database.path)),
+            llm_client=clients.llm_client,
+            embedder=clients.embedder,
+            cross_encoder=NoNumbersCrossEncoder(),
+        )
+        try:
+            results = await client.add_triplet(source, edge, target, episode)
+        finally:
+            await client.driver.close()
+        stored_before = {node.uuid for node in loaded["nodes"]}
+        owed = await self._owe_fact_numbers(event_id, [saved.fact for saved in results.edges])
+        return {
+            "event_id": event_id,
+            "embedded_stored_before": embedded_before,
+            "entities": [
+                {
+                    "uuid": node.uuid,
+                    "name": node.name,
+                    "summary": node.summary,
+                    "matched_stored_entity": node.uuid in stored_before,
+                }
+                for node in results.nodes
+            ],
+            "facts": [self._fact(saved, saved.uuid == edge.uuid) for saved in results.edges],
+            "fact_numbers_owed": owed,
+        }
+
+    def _real_embedder(self, clients: GraphitiClients) -> bool:
+        """Say whether Graphiti's embedder slot answers from the supplier (the setting is given)."""
+        return isinstance(clients.embedder, ReceivedNumbersEmbedder)
+
+    async def _embed_missing(
+        self, clients: GraphitiClients, nodes: list[EntityNode], edges: list[EntityEdge]
+    ) -> dict[str, int]:
+        """Give each stored entity and fact that has no embedding the supplier's numbers for it, and store them.
+
+        Goes in: the clients and the entities and facts just read. Comes out: how many entities and
+        facts were embedded. Without the setting graphiti.embedding_model nothing is embedded and
+        both counts are zero. The numbers are the supplier's, for the one model that setting names;
+        nothing else changes in the graph, and nothing is stored when the supplier cannot answer.
+        """
+        if not self._real_embedder(clients):
+            return {"entities": 0, "facts": 0}
+        todo_nodes = [node for node in nodes if not node.name_embedding]
+        todo_edges = [edge for edge in edges if not edge.fact_embedding]
+        for node in todo_nodes:
+            await node.generate_name_embedding(clients.embedder)
+        for edge in todo_edges:
+            await edge.generate_embedding(clients.embedder)
+
+        def save(handle: Any) -> None:
+            """Store the embedded entities and facts in one transaction."""
+            driver = DuckDBDriver(connection=handle)
+            for node in todo_nodes:
+                _drive(driver.entity_node_ops.save(driver, node))
+            for edge in todo_edges:
+                _drive(driver.entity_edge_ops.save(driver, edge))
+
+        if todo_nodes or todo_edges:
+            await self.database.write(save)
+        return {"entities": len(todo_nodes), "facts": len(todo_edges)}
+
+    async def _matching_candidates(
+        self, clients: GraphitiClients, node: EntityNode, existing: list[EntityNode]
+    ) -> list[EntityNode]:
+        """Return the stored entities a new entity may be the same as, by similarity of names.
+
+        This is Graphiti's node matching: with the supplier's numbers for the name, the stored
+        entities whose name numbers are at least graphiti.node_match_minimum_similarity alike (cosine)
+        come first, most alike first, then the entities that share name words, up to Graphiti's own
+        candidate limit. Without the embedding setting only the shared-word candidates are returned.
+        It changes no stored entity; it embeds the new entity's name only.
+        """
+        by_words = self._candidates_for(node, existing)
+        if not self._real_embedder(clients) or self.node_match_minimum is None:
+            return by_words
+        if not node.name_embedding:
+            await node.generate_name_embedding(clients.embedder)
+        scored = [
+            (calculate_cosine_similarity(node.name_embedding, other.name_embedding), other)
+            for other in existing
+            if other.name_embedding and len(other.name_embedding) == len(node.name_embedding)
+        ]
+        alike = [pair for pair in scored if pair[0] >= self.node_match_minimum]
+        alike.sort(key=lambda pair: pair[0], reverse=True)
+        merged = {other.uuid: other for _, other in alike}
+        for other in by_words:
+            merged.setdefault(other.uuid, other)
+        return list(merged.values())[:NODE_DEDUP_CANDIDATE_LIMIT]
+
     @staticmethod
     def _load(handle: Any, event_id: str) -> dict[str, Any]:
         """Read one episode, the episodes before it and the group's entities and facts; no model."""
@@ -297,11 +525,13 @@ class GraphitiModel:
         """Decide which extracted entities are already known, translated from resolve_extracted_nodes.
 
         Original: graphiti_core/utils/maintenance/node_operations.py, resolve_extracted_nodes.
-        Only the candidate search differs (word overlap instead of numbers). It takes the clients,
+        Only the candidate search differs (shared name words, plus similarity of the supplier's name numbers when graphiti.embedding_model is set). It takes the clients,
         the extracted entities, the episode, the earlier episodes and the group's entities, and
         returns the resolved entities with a map from each extracted uuid to its resolved uuid.
         """
-        candidates_by_node = [self._candidates_for(node, existing) for node in extracted]
+        candidates_by_node = [
+            await self._matching_candidates(clients, node, existing) for node in extracted
+        ]
         state = DedupResolutionState(
             resolved_nodes=[None] * len(extracted), uuid_map={}, unresolved_indices=[]
         )
@@ -441,6 +671,8 @@ class GraphitiModel:
         loaded = await self.database.read(lambda handle: self._load(handle, event_id))
         episode, previous = loaded["episode"], loaded["previous"]
         t = asyncio.get_running_loop().time()
+        embedded_before = await self._embed_missing(clients, loaded["nodes"], loaded["edges"])
+        t = lap("embed_stored_seconds", t)
         extracted, index_map = await extract_nodes(clients, episode, previous, None, None, None)
         t = lap("extract_entities_seconds", t)
         nodes, uuid_map = await self._resolve_nodes(
@@ -486,6 +718,13 @@ class GraphitiModel:
         )
         lap("summaries_seconds", t)
         entity_edges = resolved + invalidated
+        if self._real_embedder(clients):
+            for node in nodes:
+                if not node.name_embedding:
+                    await node.generate_name_embedding(clients.embedder)
+            for edge in entity_edges:
+                if not edge.fact_embedding:
+                    await edge.generate_embedding(clients.embedder)
         episode.entity_edges = [e.uuid for e in entity_edges]
         episodic_edges = build_episodic_edges(nodes, [episode.uuid], utc_now(), index_map)
 
@@ -508,6 +747,7 @@ class GraphitiModel:
             "candidates": mode,
             "candidate_facts_shown_per_new_fact": shown,
             "stored_facts_before": len(loaded["edges"]),
+            "embedded_stored_before": embedded_before,
             "entities": [{"uuid": n.uuid, "name": n.name, "summary": n.summary} for n in nodes],
             "facts": [self._fact(e, e in new_edges) for e in resolved],
             "ended_facts": [self._fact(e, False) for e in invalidated],
