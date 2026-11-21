@@ -14,3 +14,4 @@ purpose: 'One large, connected, seamless local memory system on DuckDB: every us
 python_version: '3.12'
 sovereign_agent: false
 tests_dir: tests
+python_pin: 3.12.15
